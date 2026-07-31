@@ -14,6 +14,19 @@ check:
 test:
     cargo test --workspace --all-features
 
+brokers-up:
+    docker compose -f docker-compose.test.yml up -d --wait
+
+brokers-down:
+    docker compose -f docker-compose.test.yml down -v
+
+test-brokers: brokers-up
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap 'just brokers-down' EXIT
+    PUBSUB_TEST_HOST=127.0.0.1:8085 \
+        cargo test --workspace --all-features -- --test-threads=1
+
 fmt:
     cargo fmt --all
 
