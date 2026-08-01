@@ -15,7 +15,7 @@ authors = ["RustStream contributors"]
 [workspace.dependencies]
 ruststream-gcp-pubsub = { path = "crates/ruststream-gcp-pubsub" }
 
-ruststream = { version = "0.6.0", default-features = false }
+ruststream = { version = ">=0.6.0, <0.7.0", default-features = false }
 
 google-cloud-pubsub = "1.3"
 google-cloud-auth = "1"
