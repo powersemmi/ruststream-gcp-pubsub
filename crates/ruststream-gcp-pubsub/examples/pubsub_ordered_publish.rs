@@ -2,27 +2,30 @@
 //! deliveries for one key stay in publish order.
 //!
 //! Run the emulator first (`just brokers-up`), then:
-//! `cargo run --example pubsub_ordered_publish`
+//! `cargo run --example pubsub_ordered_publish -- run`
 
-use ruststream::{Broker, ConnectedBroker, Headers, OutgoingMessage, Publisher};
-use ruststream_gcp_pubsub::{PARTITION_KEY_HEADER, PubSubBroker};
+use std::io;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let connected = PubSubBroker::new("my-project")
-        .emulator("localhost:8085")
-        .connect()
-        .await?;
+use ruststream::runtime::{App, AppInfo, RustStream};
+use ruststream::{Headers, OutgoingMessage, Publisher};
+use ruststream_gcp_pubsub::{PARTITION_KEY_HEADER, PubSubBroker, PubSubPublish};
 
-    let publisher = connected.publisher();
-    for step in ["created", "paid", "shipped"] {
-        let mut headers = Headers::new();
-        headers.insert(PARTITION_KEY_HEADER, "order-42");
-        publisher
-            .publish(OutgoingMessage::new("orders", step.as_bytes()).with_headers(headers))
-            .await?;
-    }
-
-    connected.shutdown().await?;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    RustStream::new(AppInfo::new("order-events", "0.1.0")).with_broker(
+        PubSubBroker::new("my-project").emulator("localhost:8085"),
+        |b| {
+            // The scope's after_startup is the home of a first publish: the publisher arrives
+            // already paired with the connected broker, so the seed cannot race the connect.
+            b.after_startup(PubSubPublish, async move |publisher| -> io::Result<()> {
+                for step in ["created", "paid", "shipped"] {
+                    let mut headers = Headers::new();
+                    headers.insert(PARTITION_KEY_HEADER, "order-42");
+                    let msg = OutgoingMessage::new("orders", step.as_bytes()).with_headers(headers);
+                    publisher.publish(msg).await.map_err(io::Error::other)?;
+                }
+                Ok(())
+            });
+        },
+    )
 }
