@@ -61,8 +61,48 @@ jobs:
       - name: cargo check (all features)
         run: cargo check --workspace --all-targets --all-features
 
-      - name: cargo test
+      - name: cargo test (handler-stub only, no live broker)
         run: cargo test --workspace --all-features
+
+  broker-integration:
+    name: Broker integration (Pub/Sub emulator)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Start the Pub/Sub emulator
+        run: |
+          docker run -d --name pubsub \
+            -p 127.0.0.1:8085:8085 \
+            gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators \
+            gcloud beta emulators pubsub start --host-port=0.0.0.0:8085 --project=ruststream-test
+
+      - name: Wait for the emulator
+        timeout-minutes: 2
+        run: |
+          timeout 90 bash -c 'until docker logs pubsub 2>&1 | grep -q "Server started"; do sleep 1; done'
+          docker logs pubsub | tail -5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run integration + conformance against the emulator
+        env:
+          PUBSUB_TEST_HOST: 127.0.0.1:8085
+        run: >-
+          cargo test -p ruststream-gcp-pubsub --all-features
+          --test integration_pubsub
+          --test conformance_pubsub
+          -- --test-threads=1
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f pubsub
 
   security:
     name: Security scans

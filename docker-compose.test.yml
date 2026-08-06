@@ -1,0 +1,14 @@
+services:
+  pubsub:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+    command: >-
+      gcloud beta emulators pubsub start
+      --host-port=0.0.0.0:8085
+      --project=ruststream-test
+    ports:
+      - "127.0.0.1:8085:8085"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8085 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
