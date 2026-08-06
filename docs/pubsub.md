@@ -7,7 +7,7 @@
 
 ```toml
 ruststream = { version = "0.6", features = ["macros", "json"] }
-ruststream-gcp-pubsub = { git = "https://github.com/powersemmi/ruststream-gcp-pubsub" }
+ruststream-gcp-pubsub = "0.6"
 serde = { version = "1", features = ["derive"] }
 ```
 
