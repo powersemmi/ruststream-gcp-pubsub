@@ -23,14 +23,23 @@
 - **Native acknowledgement.** `ack` and `nack(requeue = true)` map onto the product directly (with the confirmed forms on exactly-once subscriptions). `nack(requeue = false)` acknowledges: Pub/Sub has no drop-without-redelivery verb - poison routing belongs to the subscription's dead-letter policy, and the delivery-attempt count is surfaced as a header.
 - **Ordering keys as the partition key.** A `partition-key` header becomes the message's ordering key on publish and comes back as the same header (feeding `Partitioned`) on delivery.
 - **Attributes carry headers directly** - no envelope format is invented; non-Rust peers see plain Pub/Sub messages.
-- **Emulator as a first-class target.** `PubSubBroker::new(p).emulator("localhost:8085")` wires the plaintext endpoint and anonymous credentials (the client does not honour `PUBSUB_EMULATOR_HOST` on its own), and `PubSubSubscription::create_with_topic` creates the resources on subscribe for local development.
+- **Emulator as a supported target.** `PubSubBroker::new(p).emulator("localhost:8085")` wires the plaintext endpoint and anonymous credentials (the client does not honour `PUBSUB_EMULATOR_HOST` on its own), and `PubSubSubscription::create_with_topic` creates the resources on subscribe for local development.
 - **In-process test broker** (feature `testing`). `PubSubTestBroker` reproduces core routing with no server, implements `ruststream::testing::TestableBroker`, and passes the framework's conformance suite in process.
 
 ## Status
 
-Implemented and verified against the Pub/Sub emulator (the framework's conformance lifecycle suite and the integration tests run in CI against it). Built on the `ruststream` 0.6 line, which is on crates.io; this crate itself is not published yet. Design and scope are tracked in [powersemmi/ruststream#188](https://github.com/powersemmi/ruststream/issues/188).
+Implemented and verified against the Pub/Sub emulator (the framework's conformance lifecycle suite and the integration tests run in CI against it). Published on crates.io, tracking the `ruststream` 0.6 line. Design and scope are tracked in [powersemmi/ruststream#188](https://github.com/powersemmi/ruststream/issues/188).
 
 MSRV is 1.88, tracking the official client (the core stays at 1.85; a dependent may exceed its dependency's floor).
+
+## Install
+
+```toml
+[dependencies]
+ruststream = { version = "0.6", features = ["macros", "json"] }
+ruststream-gcp-pubsub = "0.6"
+serde = { version = "1", features = ["derive"] }
+```
 
 ## Write a service
 
@@ -60,7 +69,7 @@ fn app() -> impl App {
 }
 ```
 
-The descriptor names an existing subscription; `create_with_topic("orders")` opts into creating the subscription (and topic) on subscribe, which is what the emulator workflow wants.
+The descriptor names an existing subscription; `create_with_topic("orders")` opts into creating the subscription (and topic) on subscribe, which the emulator workflow needs.
 
 ## Test it
 
