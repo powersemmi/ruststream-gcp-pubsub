@@ -6,10 +6,17 @@
 
 <p align="center">
   <a href="https://github.com/powersemmi/ruststream-gcp-pubsub/actions/workflows/ci.yml"><img src="https://github.com/powersemmi/ruststream-gcp-pubsub/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://crates.io/crates/ruststream-gcp-pubsub"><img src="https://img.shields.io/crates/v/ruststream-gcp-pubsub.svg" alt="crates.io"></a>
+  <a href="https://crates.io/crates/ruststream-gcp-pubsub"><img src="https://img.shields.io/crates/dr/ruststream-gcp-pubsub" alt="Recent downloads"></a>
+  <a href="https://docs.rs/ruststream-gcp-pubsub"><img src="https://img.shields.io/docsrs/ruststream-gcp-pubsub" alt="docs.rs"></a>
   <img src="https://img.shields.io/badge/MSRV-1.88-blue.svg" alt="MSRV 1.88">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
   <a href="https://t.me/ruststream_community"><img src="https://img.shields.io/badge/-Telegram-blue?logo=telegram&label=News" alt="Telegram news channel"></a>
   <a href="https://t.me/ruststream_communuty_ru_chat"><img src="https://img.shields.io/badge/-Telegram-blue?logo=telegram&label=RU" alt="Telegram RU chat"></a>
+</p>
+
+<p align="center">
+  <b><a href="https://powersemmi.github.io/ruststream-gcp-pubsub/">Documentation</a></b>
 </p>
 
 ---
@@ -26,12 +33,6 @@
 - **Emulator as a supported target.** `PubSubBroker::new(p).emulator("localhost:8085")` wires the plaintext endpoint and anonymous credentials (the client does not honour `PUBSUB_EMULATOR_HOST` on its own), and `PubSubSubscription::create_with_topic` creates the resources on subscribe for local development.
 - **In-process test broker** (feature `testing`). `PubSubTestBroker` reproduces core routing with no server, implements `ruststream::testing::TestableBroker`, and passes the framework's conformance suite in process.
 
-## Status
-
-Implemented and verified against the Pub/Sub emulator (the framework's conformance lifecycle suite and the integration tests run in CI against it). Published on crates.io, tracking the `ruststream` 0.6 line. Design and scope are tracked in [powersemmi/ruststream#188](https://github.com/powersemmi/ruststream/issues/188).
-
-MSRV is 1.88, tracking the official client (the core stays at 1.85; a dependent may exceed its dependency's floor).
-
 ## Install
 
 ```toml
@@ -39,6 +40,9 @@ MSRV is 1.88, tracking the official client (the core stays at 1.85; a dependent 
 ruststream = { version = "0.6", features = ["macros", "json"] }
 ruststream-gcp-pubsub = "0.6"
 serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+ruststream-gcp-pubsub = { version = "0.6", features = ["testing"] }
 ```
 
 ## Write a service
@@ -73,7 +77,20 @@ The descriptor names an existing subscription; `create_with_topic("orders")` opt
 
 ## Test it
 
-The `testing` feature runs handlers against an in-process Pub/Sub stand-in - no server, same routing. Product behaviour (deadline extension, redelivery, ordered delivery) is covered by the env-gated live suite instead: `just test-brokers` starts the emulator and runs the integration tests plus the framework conformance lifecycle against it.
+The `testing` feature runs handlers against an in-process Pub/Sub stand-in - no server, same routing, same ladder. Inject a message as an external producer would with `TestableBroker::inject`, then assert on what a handler published with the free `expect_published`:
+
+```rust
+use ruststream::{Broker, OutgoingMessage};
+use ruststream::testing::{TestableBroker, expect_published};
+use ruststream_gcp_pubsub::testing::PubSubTestBroker;
+
+let broker = PubSubTestBroker::new().connect().await?;
+broker.inject(OutgoingMessage::new("orders-workers", br#"{"id":1}"#));
+let confirmations =
+    expect_published(&broker, "confirmations", 1, std::time::Duration::from_secs(1)).await;
+```
+
+Product behaviour (deadline extension, redelivery, ordered delivery) is covered by the env-gated live suite instead: `just test-brokers` starts the emulator and runs the integration tests plus the framework conformance lifecycle against it.
 
 ## Layout
 
@@ -81,10 +98,14 @@ The `testing` feature runs handlers against an in-process Pub/Sub stand-in - no 
 ruststream-gcp-pubsub/
 ├── crates/
 │   └── ruststream-gcp-pubsub/  the published crate
-│       └── examples/           runnable pubsub_* examples
+│       └── examples/           runnable pubsub_* examples (docs-site snippet sources)
+├── docs/                       the documentation site (properdocs + Material)
 ├── docker-compose.test.yml     the Pub/Sub emulator for the live suite
+├── properdocs.yml              docs site config
 └── Cargo.toml                  workspace
 ```
+
+The Pub/Sub guide, including the acknowledgement, ordering-key, emulator, and capability coverage, lives at [powersemmi.github.io/ruststream-gcp-pubsub](https://powersemmi.github.io/ruststream-gcp-pubsub/). Framework concepts (subscribers, routing, codecs, middleware, the CLI) live in the [RustStream docs](https://powersemmi.github.io/ruststream/).
 
 ## Contributing
 

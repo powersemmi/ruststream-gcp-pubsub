@@ -11,6 +11,21 @@ ruststream-gcp-pubsub = "0.6"
 serde = { version = "1", features = ["derive"] }
 ```
 
+## Capabilities
+
+The framework's optional capability traits, and what this broker implements natively:
+
+| Capability | Native | Notes |
+| --- | --- | --- |
+| `Subscribe` | yes | [subscribe by subscription name](#subscriptions); the subscription must already exist |
+| `BatchSubscriber` | no | the streaming pull yields one message at a time; the batching knob is `max_outstanding` flow control |
+| `TransactionalPublisher` | no | the product has no publish transaction; ordering keys, not atomic batches, are its grouping mechanism |
+| `OwnedTransactions` | no | the product has no publish transaction |
+| `RequestReply` | no | there is no native request/reply; a reply topic and a correlation attribute are an application-level pattern |
+| `Partitioned` | yes | [the partition key is the message's ordering key](#ordering-keys-and-the-partition-key) |
+| `Seekable` and `Positioned` | no | repositioning is a subscription-level admin `seek` to a timestamp or a snapshot, not an offset the subscriber addresses per stream |
+| `DescribeServer` | yes | reports the endpoint in use (emulator host, custom endpoint, or `pubsub.googleapis.com`) with the `googlepubsub` protocol |
+
 ## The lifecycle
 
 The broker is a ladder of consuming transitions, so each state is a distinct type:
