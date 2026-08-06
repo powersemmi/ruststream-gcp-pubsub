@@ -11,13 +11,11 @@ transport, and nothing broker-specific leaks back into the framework.
 
 ```toml
 ruststream = { version = "0.6", features = ["macros", "json"] }
-ruststream-gcp-pubsub = { git = "https://github.com/powersemmi/ruststream-gcp-pubsub" }
+ruststream-gcp-pubsub = "0.6"
 serde = { version = "1", features = ["derive"] }
 ```
 
-The crate is built on the `ruststream` 0.6 line from crates.io and is not published to crates.io
-itself yet, so it is used as a git dependency until the first release. Its MSRV is 1.88, tracking
-the official client; the framework core stays at 1.85.
+The MSRV is 1.88, tracking the official client; the framework core stays at 1.85.
 
 ```rust
 --8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_service.rs:app"
