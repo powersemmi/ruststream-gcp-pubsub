@@ -17,6 +17,7 @@ fn app() -> impl App {
         |b| {
             // The scope's after_startup is the home of a first publish: the publisher arrives
             // already paired with the connected broker, so the seed cannot race the connect.
+            // --8<-- [start:ordered]
             b.after_startup(PubSubPublish, async move |publisher| -> io::Result<()> {
                 for step in ["created", "paid", "shipped"] {
                     let mut headers = Headers::new();
@@ -26,6 +27,7 @@ fn app() -> impl App {
                 }
                 Ok(())
             });
+            // --8<-- [end:ordered]
         },
     )
 }
