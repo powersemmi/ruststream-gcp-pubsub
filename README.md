@@ -28,7 +28,7 @@
 
 ## Status
 
-Implemented and verified against the Pub/Sub emulator (the framework's conformance lifecycle suite and the integration tests run in CI against it). Published on crates.io, tracking the `ruststream` 0.6 line. Design and scope are tracked in [powersemmi/ruststream#188](https://github.com/powersemmi/ruststream/issues/188).
+Implemented and verified against the Pub/Sub emulator (the framework's conformance lifecycle suite and the integration tests run in CI against it). Published on crates.io, tracking the `ruststream` 0.6 line. The design issue is [powersemmi/ruststream#188](https://github.com/powersemmi/ruststream/issues/188).
 
 MSRV is 1.88, tracking the official client (the core stays at 1.85; a dependent may exceed its dependency's floor).
 
