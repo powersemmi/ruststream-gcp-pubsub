@@ -10,7 +10,7 @@
 //!   received messages, not crate machinery.
 //! - Ordering keys map onto the partition key; message attributes carry headers directly, so
 //!   no envelope format is invented.
-//! - The Pub/Sub emulator is a first-class target ([`PubSubBroker::emulator`]) for local
+//! - The Pub/Sub emulator is a supported target ([`PubSubBroker::emulator`]) for local
 //!   development and tests.
 
 #![forbid(unsafe_code)]
