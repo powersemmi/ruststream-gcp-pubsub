@@ -6,8 +6,8 @@
 [RustStream documentation](https://powersemmi.github.io/ruststream/).
 
 ```toml
-ruststream = { version = "0.6", features = ["macros", "json"] }
-ruststream-gcp-pubsub = "0.6"
+ruststream = { version = "0.7", features = ["macros", "json"] }
+ruststream-gcp-pubsub = "0.7"
 serde = { version = "1", features = ["derive"] }
 ```
 
@@ -127,6 +127,12 @@ same idea, so the two are one header. A `partition-key` header (exported as `PAR
 on an outgoing message becomes the message's ordering key, and a delivered message carries its
 ordering key back under the same header, feeding the `Partitioned` capability.
 
+A publish names its key with `with_ordering_key`, this crate's step on the framework's publish
+builder: the step adapts the publisher, so the rest of the chain (codec, headers, destination)
+follows unchanged, and one adapter serves a run of publishes on the same key. It writes the same
+header, so a key named this way stays portable across brokers and comes back through
+`Partitioned`; naming it at the call replaces a key set in the headers.
+
 ```rust
 --8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_ordered_publish.rs:ordered"
 ```
@@ -150,6 +156,15 @@ publishes through it.
 The destination name is the topic id, short or a full resource name. Per-topic client publishers
 are created on first use and cached on the broker, which is what lets `shutdown` flush every
 buffered batch instead of dropping it.
+
+Core 0.7 unified publishing behind one builder: every publish is `message(..)` or `raw(..)`
+followed by the positions the message leaves open, on an `Out` slot, on a publisher held in state,
+and in a startup hook alike. A broker argument that belongs to the message rather than to the
+connection joins that chain as a publisher adapter - a step in front of the builder that captures
+the argument and applies it to the message on its way out. `with_ordering_key` is this crate's
+one such step; everything else Pub/Sub takes per publish is either the payload, a header (message
+attributes), or a subscription-level setting, so it is covered by the builder and the policy as
+they stand.
 
 ## The emulator
 

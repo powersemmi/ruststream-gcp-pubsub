@@ -10,12 +10,12 @@ Handlers, routers, codecs, and middleware come from the framework; this crate su
 transport, and nothing broker-specific leaks back into the framework.
 
 ```toml
-ruststream = { version = "0.6", features = ["macros", "json"] }
-ruststream-gcp-pubsub = "0.6"
+ruststream = { version = "0.7", features = ["macros", "json"] }
+ruststream-gcp-pubsub = "0.7"
 serde = { version = "1", features = ["derive"] }
 ```
 
-The crate is published on crates.io and tracks the `ruststream` 0.6 line. Its MSRV is 1.88,
+The crate is published on crates.io and tracks the `ruststream` 0.7 line. Its MSRV is 1.88,
 tracking the official client; the framework core stays at 1.85.
 
 ```rust

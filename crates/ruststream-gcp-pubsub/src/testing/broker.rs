@@ -10,6 +10,7 @@ use ruststream::{
 };
 
 use crate::error::PubSubError;
+use crate::publisher::PubSubOrdering;
 use crate::testing::router::AddressRouter;
 use crate::testing::subscriber::PubSubTestSubscriber;
 
@@ -152,6 +153,10 @@ impl Publisher for PubSubTestPublisher {
         Ok(())
     }
 }
+
+// The ordering step is written against the crate's publish surface, so a handler tested in
+// process calls it exactly as it does against the real broker.
+impl PubSubOrdering for PubSubTestPublisher {}
 
 /// The publish policy for [`PubSubTestPublisher`], mirroring
 /// [`PubSubPublish`](crate::PubSubPublish) on the real broker.

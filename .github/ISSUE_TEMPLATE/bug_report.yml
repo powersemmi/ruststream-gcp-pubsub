@@ -27,7 +27,7 @@ body:
     attributes:
       label: RustStream version
       description: The `ruststream-gcp-pubsub` version, plus the `ruststream` version.
-      placeholder: "ruststream-gcp-pubsub 0.6.0, ruststream 0.6.0"
+      placeholder: "ruststream-gcp-pubsub 0.7.0, ruststream 0.7.0"
     validations:
       required: true
   - type: input
