@@ -168,6 +168,14 @@ the broker at startup to produce a `PubSubPublisher`. It is also the broker's de
 policy, so a `#[subscriber(.., publish("topic"))]` handler mounted without an explicit publisher
 publishes through it.
 
+The prelude re-exports that policy under its concept name, `Publish`, so a mount site reads
+`.publisher(Publish)` or `.out(M, Publish)` on this broker exactly as it does on any other, and a
+service moves between brokers by changing its import rather than every mount site. A concept name
+absent from the prelude means the broker has no policy of that kind. `PubSubPublish` remains at
+the crate root for a file that speaks to two brokers at once and has to say which one it means.
+The alias is the publish *policy*; the framework's `runtime::Publish` is the builder a call site
+gets back from `message(..)` or `raw(..)`, and a file naming both imports that one explicitly.
+
 The destination name is the topic id, short or a full resource name. Per-topic client publishers
 are created on first use and cached on the broker, which is what lets `shutdown` flush every
 buffered batch instead of dropping it.

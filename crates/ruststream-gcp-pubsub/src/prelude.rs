@@ -5,6 +5,16 @@
 //! publish policy and its live publisher, and the ordering-key step. A service file needs no
 //! other import to write a handler, mount it and publish from it.
 //!
+//! Policies arrive under their concept name, not this broker's: [`PubSubPublish`](crate) is
+//! [`Publish`] here, so a mount site writes `.publisher(Publish)` or `.out(M, Publish)` whichever
+//! broker it runs on, and a service changes brokers by changing one import rather than every
+//! mount site. Every policy this broker supports has such a name, and a concept name that is
+//! missing means the broker has no policy of that kind - the manifest principle, on the policy
+//! layer. The prefixed originals stay at the crate root, for a file that speaks to two brokers at
+//! once. One caveat on [`Publish`]: it is the publish *policy*, the declaration a mount site
+//! attaches, not the framework's `runtime::Publish` builder that a call site gets back from
+//! `message(..)` or `raw(..)`. A file that names both imports that one explicitly.
+//!
 //! It is also this broker's capability manifest: the framework capability traits a service
 //! writes for itself - in a bound, or as a method call on a value a handler is handed, which
 //! needs the trait in scope - and that this crate implements. For Pub/Sub that set is empty, and
@@ -39,10 +49,19 @@
 pub use ruststream::prelude::*;
 
 // Everything a service on this crate names by hand today: the broker, the descriptor its
-// subscribers mount on, the publish policy the runtime pairs at startup, the live publisher a
-// service keeps in state, and the ordering-key step (an extension trait, so the glob is how a
-// call site reaches `with_ordering_key`).
-pub use crate::{PubSubBroker, PubSubOrdering, PubSubPublish, PubSubPublisher, PubSubSubscription};
+// subscribers mount on, the live publisher a service keeps in state, and the ordering-key step
+// (an extension trait, so the glob is how a call site reaches `with_ordering_key`). The live
+// publisher keeps its prefix: it is a type a service names on rare occasion, not a word it writes
+// at a mount site, and only the policy vocabulary below goes uniform.
+pub use crate::{PubSubBroker, PubSubOrdering, PubSubPublisher, PubSubSubscription};
+
+// The policy vocabulary, under concept names rather than this broker's own. A mount site writes
+// `.publisher(Publish)` on every broker, so the word a service reads there says what the policy
+// is for, not which crate it came from, and moving a service between brokers is a change of
+// import rather than a rewrite of every mount site. A concept name missing from this list means
+// the broker has no policy of that kind - the manifest principle, applied to the policy layer.
+// The prefixed originals stay at the crate root for a file that speaks to two brokers at once.
+pub use crate::PubSubPublish as Publish;
 
 // The capability manifest is deliberately empty: no framework capability trait is re-exported
 // here, and the exclusions below say why each candidate is out. Where a broker does have one to
