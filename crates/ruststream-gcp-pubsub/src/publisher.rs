@@ -1,5 +1,7 @@
 //! [`PubSubPublisher`] and its [`PubSubPublish`] policy.
 
+use std::future::{Future, ready};
+
 use google_cloud_pubsub::client::Publisher as GcpPublisher;
 use ruststream::{OutgoingMessage, PairError, PublishPolicy, Publisher};
 
@@ -93,7 +95,10 @@ pub struct PubSubPublish;
 impl PublishPolicy<ConnectedPubSubBroker> for PubSubPublish {
     type Live = PubSubPublisher;
 
-    async fn pair(self, connected: &ConnectedPubSubBroker) -> Result<Self::Live, PairError> {
-        Ok(connected.publisher())
+    fn pair(
+        self,
+        connected: &ConnectedPubSubBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(connected.publisher()))
     }
 }
