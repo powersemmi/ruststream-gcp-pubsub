@@ -129,9 +129,13 @@ ordering key back under the same header, feeding the `Partitioned` capability.
 
 A publish names its key with `with_ordering_key`, this crate's step on the framework's publish
 builder: the step adapts the publisher, so the rest of the chain (codec, headers, destination)
-follows unchanged, and one adapter serves a run of publishes on the same key. It writes the same
-header, so a key named this way stays portable across brokers and comes back through
-`Partitioned`; naming it at the call replaces a key set in the headers.
+follows unchanged, and one adapter serves a run of publishes on the same key. The key is offered
+as the adapter's base headers rather than stamped into the message, so it travels under whatever
+the publish itself names: other headers ride along with it, a message declaring a header contract
+still publishes with a key, and a `partition-key` named at the call wins over the adapter's - the
+adapter serves many publishes, the call names one message, so the call has the last word. It is
+the same portable header either way, so an ordered publish stays portable across brokers and comes
+back through `Partitioned`.
 
 ```rust
 --8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_ordered_publish.rs:ordered"
@@ -160,11 +164,15 @@ buffered batch instead of dropping it.
 Core 0.7 unified publishing behind one builder: every publish is `message(..)` or `raw(..)`
 followed by the positions the message leaves open, on an `Out` slot, on a publisher held in state,
 and in a startup hook alike. A broker argument that belongs to the message rather than to the
-connection joins that chain as a publisher adapter - a step in front of the builder that captures
-the argument and applies it to the message on its way out. `with_ordering_key` is this crate's
-one such step; everything else Pub/Sub takes per publish is either the payload, a header (message
-attributes), or a subscription-level setting, so it is covered by the builder and the policy as
-they stand.
+connection joins that chain as a publisher adapter: a handle that offers the argument as base
+headers, which the builder writes the publish's own headers over, key by key. `with_ordering_key`
+is this crate's one such step; everything else Pub/Sub takes per publish is either the payload, a
+header (message attributes), or a subscription-level setting, so it is covered by the builder and
+the policy as they stand.
+
+Base headers reach the message where the builder assembles it. A message built by hand and handed
+to `Publisher::publish` is sent as it is, which is the path to take when the header map is what you
+want to control.
 
 ## The emulator
 

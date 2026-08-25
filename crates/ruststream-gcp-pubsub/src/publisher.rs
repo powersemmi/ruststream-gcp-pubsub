@@ -6,7 +6,7 @@ use std::fmt;
 use bytes::Bytes;
 use google_cloud_pubsub::client::Publisher as GcpPublisher;
 use ruststream::runtime::{OutSlot, SlotPublisher};
-use ruststream::{OutgoingMessage, PairError, PublishPolicy, Publisher};
+use ruststream::{Headers, OutgoingMessage, PairError, PublishPolicy, Publisher};
 
 use crate::broker::{ConnectedPubSubBroker, Core, CoreCell};
 use crate::error::{PubSubError, box_err};
@@ -84,9 +84,11 @@ impl Publisher for PubSubPublisher {
 /// rather than to the connection.
 ///
 /// The framework's publish builder ends in a [`Publisher`], so a broker step is a publisher
-/// adapter in front of it: `with_ordering_key` returns an [`OrderedPublisher`] that carries the
-/// key and is itself a publisher, and the builder's own entry points (`message`, `raw`) and the
-/// rest of the chain (codec, headers, destination) follow unchanged.
+/// adapter in front of it: `with_ordering_key` returns an [`OrderedPublisher`] that offers the
+/// key as its [base headers](Publisher::base_headers), and the builder's own entry points
+/// (`message`, `raw`) and the rest of the chain (codec, headers, destination) follow unchanged.
+/// The builder writes the publish's own headers over the base key by key, so a message declaring
+/// a header contract publishes with an ordering key too.
 ///
 /// Implemented for the live publisher, for the in-process test publisher, and for the `Out` slot
 /// wrapper, so the same call works in a handler, in a startup hook and under the test harness.
@@ -120,24 +122,30 @@ pub trait PubSubOrdering: Publisher {
 
 impl PubSubOrdering for PubSubPublisher {}
 
-// The slot wrapper delegates rather than reaching through `inner`, so publishes made with an
-// ordering key stay attributed to the slot under the test harness.
+// The adapter wraps the slot rather than reaching through `inner`, so publishes made with an
+// ordering key stay attributed to the slot under the test harness; the wrapper forwards the base
+// headers of whatever it holds, so wrapping it either way keeps the key on the message.
 impl<P: PubSubOrdering, M: OutSlot> PubSubOrdering for SlotPublisher<P, M> {}
 
-/// A publisher that stamps one ordering key onto every message it sends, returned by
+/// A publisher that offers one ordering key to every publish built on it, returned by
 /// [`PubSubOrdering::with_ordering_key`].
 ///
-/// The key is written as the `partition-key` header the crate already maps onto the message's
+/// The key travels as the `partition-key` header the crate already maps onto the message's
 /// ordering key, so an ordered publish stays portable (the same service running against another
 /// broker keeps its partition key) and a delivered message reports the key back through
-/// [`Partitioned`](ruststream::Partitioned). A key named here replaces one set in the headers:
-/// the call site is the more specific level.
+/// [`Partitioned`](ruststream::Partitioned).
+///
+/// It is offered as the adapter's base headers, not stamped into the message, which is what puts
+/// it under the publish's own headers rather than beside them: a `partition-key` named at the
+/// call wins over the adapter's key, and any other header the call names travels with it. The
+/// base reaches the message through the publish builder; a message handed to
+/// [`Publisher::publish`] directly is sent as it was built.
 pub struct OrderedPublisher<'a, P: ?Sized> {
     inner: &'a P,
-    key: Bytes,
+    base: Headers,
 }
 
-impl<'a, P: ?Sized> OrderedPublisher<'a, P> {
+impl<'a, P: Publisher + ?Sized> OrderedPublisher<'a, P> {
     fn new(inner: &'a P, key: Cow<'a, str>) -> Self {
         // The key is converted once per adapter, not once per publish; an owned key moves into
         // the buffer instead of being copied.
@@ -145,14 +153,19 @@ impl<'a, P: ?Sized> OrderedPublisher<'a, P> {
             Cow::Borrowed(key) => Bytes::copy_from_slice(key.as_bytes()),
             Cow::Owned(key) => Bytes::from(key),
         };
-        Self { inner, key }
+        // Whatever the wrapped handle already contributes stays contributed: the adapter adds a
+        // key on top of it rather than replacing the handle's base, and the key wins over an
+        // entry of the same name because the adapter is the more specific level.
+        let mut base = inner.base_headers().cloned().unwrap_or_default();
+        base.insert(PARTITION_KEY_HEADER, key);
+        Self { inner, base }
     }
 }
 
 impl<P: ?Sized> fmt::Debug for OrderedPublisher<'_, P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OrderedPublisher")
-            .field("ordering_key", &String::from_utf8_lossy(&self.key))
+            .field("base_headers", &self.base)
             .finish_non_exhaustive()
     }
 }
@@ -161,11 +174,11 @@ impl<P: Publisher + ?Sized> Publisher for OrderedPublisher<'_, P> {
     type Error = P::Error;
 
     async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
-        let mut headers = msg.headers().clone();
-        headers.insert(PARTITION_KEY_HEADER, self.key.clone());
-        self.inner
-            .publish(OutgoingMessage::new(msg.name(), msg.payload()).with_headers(headers))
-            .await
+        self.inner.publish(msg).await
+    }
+
+    fn base_headers(&self) -> Option<&Headers> {
+        Some(&self.base)
     }
 }
 
@@ -197,19 +210,31 @@ mod tests {
     use std::future::{Future, ready};
     use std::sync::Mutex;
 
-    use ruststream::Headers;
     use ruststream::runtime::PublishExt;
 
     use super::*;
 
     /// A publisher that keeps what it was handed, so the adapter's effect on the message is
-    /// observable without a connection.
+    /// observable without a connection. `base` stands for a handle that already contributes
+    /// headers of its own.
     #[derive(Debug, Default)]
-    struct Recorder(Mutex<Vec<(String, Vec<u8>, Headers)>>);
+    struct Recorder {
+        sent: Mutex<Vec<(String, Vec<u8>, Headers)>>,
+        base: Option<Headers>,
+    }
 
     impl Recorder {
+        fn tagged(name: &str, value: &str) -> Self {
+            let mut base = Headers::new();
+            base.insert(name, value.to_owned());
+            Self {
+                sent: Mutex::default(),
+                base: Some(base),
+            }
+        }
+
         fn last(&self) -> (String, Vec<u8>, Headers) {
-            self.0.lock().expect("no panic held the lock")[0].clone()
+            self.sent.lock().expect("no panic held the lock")[0].clone()
         }
     }
 
@@ -220,12 +245,16 @@ mod tests {
             &self,
             msg: OutgoingMessage<'_>,
         ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-            self.0.lock().expect("no panic held the lock").push((
+            self.sent.lock().expect("no panic held the lock").push((
                 msg.name().to_owned(),
                 msg.payload().to_vec(),
                 msg.headers().clone(),
             ));
             ready(Ok(()))
+        }
+
+        fn base_headers(&self) -> Option<&Headers> {
+            self.base.as_ref()
         }
     }
 
@@ -268,10 +297,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_named_key_replaces_one_set_in_the_headers() {
+    async fn a_key_named_at_the_call_wins_over_the_adapter() {
         let recorder = Recorder::default();
         let mut headers = Headers::new();
-        headers.insert(PARTITION_KEY_HEADER, "stale");
+        headers.insert(PARTITION_KEY_HEADER, "order-9");
         recorder
             .with_ordering_key("order-42")
             .raw(b"created")
@@ -281,7 +310,40 @@ mod tests {
             .await
             .expect("the recorder accepts the message");
 
+        // The adapter serves a run of publishes and the call names one message, so the call has
+        // the last word - the framework's precedence for every position of the builder.
         let (.., headers) = recorder.last();
+        assert_eq!(headers.get_str(PARTITION_KEY_HEADER), Some("order-9"));
+    }
+
+    #[tokio::test]
+    async fn the_wrapped_handles_own_base_survives() {
+        let recorder = Recorder::tagged("x-tenant", "acme");
+        recorder
+            .with_ordering_key("order-42")
+            .raw(b"created")
+            .to("orders")
+            .publish()
+            .await
+            .expect("the recorder accepts the message");
+
+        let (.., headers) = recorder.last();
+        assert_eq!(headers.get_str("x-tenant"), Some("acme"));
         assert_eq!(headers.get_str(PARTITION_KEY_HEADER), Some("order-42"));
+    }
+
+    #[tokio::test]
+    async fn a_message_published_directly_carries_no_base() {
+        let recorder = Recorder::default();
+        let ordered = recorder.with_ordering_key("order-42");
+        // Not the builder path: base headers reach the message when the builder assembles it, so
+        // an already-built message travels as its author wrote it.
+        ordered
+            .publish(OutgoingMessage::new("orders", b"created".as_slice()))
+            .await
+            .expect("the recorder accepts the message");
+
+        let (.., headers) = recorder.last();
+        assert_eq!(headers.get_str(PARTITION_KEY_HEADER), None);
     }
 }
