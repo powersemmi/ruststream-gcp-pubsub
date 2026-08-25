@@ -48,11 +48,7 @@ ruststream-gcp-pubsub = { version = "0.7", features = ["testing"] }
 ## Write a service
 
 ```rust
-use std::time::Duration;
-
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
-use ruststream::subscriber;
-use ruststream_gcp_pubsub::{PubSubBroker, PubSubSubscription};
+use ruststream_gcp_pubsub::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -72,6 +68,8 @@ fn app() -> impl App {
         .with_broker(PubSubBroker::new("my-project"), |b| b.include(handle))
 }
 ```
+
+One glob is the whole import list: `ruststream_gcp_pubsub::prelude` re-exports the framework's own prelude alongside this crate's surface, and naming the crate in that path is how the service states which broker it runs on.
 
 The descriptor names an existing subscription; `create_with_topic("orders")` opts into creating the subscription (and topic) on subscribe, which the emulator workflow needs.
 

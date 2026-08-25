@@ -13,12 +13,16 @@
 //!   [`PubSubOrdering::with_ordering_key`], the crate's step on the framework's publish builder.
 //! - The Pub/Sub emulator is a supported target ([`PubSubBroker::emulator`]) for local
 //!   development and tests.
+//!
+//! A service imports [`prelude`]: one glob covering the framework's own prelude and this crate's
+//! user-facing surface.
 
 #![forbid(unsafe_code)]
 
 mod broker;
 mod error;
 mod message;
+pub mod prelude;
 mod publisher;
 mod subscriber;
 mod subscription;

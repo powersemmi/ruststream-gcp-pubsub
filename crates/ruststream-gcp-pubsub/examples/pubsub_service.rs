@@ -3,9 +3,7 @@
 //! Run the emulator first (`just brokers-up`), then:
 //! `cargo run --example pubsub_service`
 
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
-use ruststream::subscriber;
-use ruststream_gcp_pubsub::{PubSubBroker, PubSubSubscription};
+use ruststream_gcp_pubsub::prelude::*;
 use serde::Deserialize;
 
 // --8<-- [start:handler]

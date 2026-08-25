@@ -6,8 +6,7 @@
 
 use std::io;
 
-use ruststream::runtime::{App, AppInfo, PublishExt, RustStream};
-use ruststream_gcp_pubsub::{PubSubBroker, PubSubOrdering, PubSubPublish};
+use ruststream_gcp_pubsub::prelude::*;
 
 #[ruststream::app]
 fn app() -> impl App {
