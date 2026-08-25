@@ -26,6 +26,12 @@ The framework's optional capability traits, and what this broker implements nati
 | `Seekable` and `Positioned` | no | repositioning is a subscription-level admin `seek` to a timestamp or a snapshot, not an offset the subscriber addresses per stream |
 | `DescribeServer` | yes | reports the endpoint in use (emulator host, custom endpoint, or `pubsub.googleapis.com`) with the `googlepubsub` protocol |
 
+The crate's prelude is this table in code: `use ruststream_gcp_pubsub::prelude::*;` carries the
+framework traits behind the `yes` rows and none of the others, so what a service reaches through
+the glob is what this broker actually does. They are the framework's own traits, so a service
+speaking to two brokers globs both preludes and the compiler unifies them on the same items
+instead of reporting a clash.
+
 ## The lifecycle
 
 The broker is a ladder of consuming transitions, so each state is a distinct type:

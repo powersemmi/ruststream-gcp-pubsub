@@ -14,8 +14,9 @@
 //! - The Pub/Sub emulator is a supported target ([`PubSubBroker::emulator`]) for local
 //!   development and tests.
 //!
-//! A service imports [`prelude`]: one glob covering the framework's own prelude and this crate's
-//! user-facing surface.
+//! A service imports [`prelude`]: one glob covering the framework's own prelude, this crate's
+//! user-facing surface, and the framework capability traits this broker implements - and only
+//! those, so the glob is a capability manifest as well as an import list.
 
 #![forbid(unsafe_code)]
 

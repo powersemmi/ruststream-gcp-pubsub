@@ -5,6 +5,14 @@
 //! publish policy and its live publisher, and the ordering-key step. A service file needs no
 //! other import to write a handler, mount it and publish from it.
 //!
+//! It is also this broker's capability manifest. The glob carries the framework capability
+//! traits this crate's connected and live forms implement, and only those, so what a service can
+//! reach through it is what Pub/Sub actually does. The rest of the framework's capability
+//! vocabulary - transactions, request-reply, batch subscription, seeking - is not here because
+//! this broker does not implement it, which the [capability
+//! table](https://powersemmi.github.io/ruststream-gcp-pubsub/pubsub/#capabilities) sets out in
+//! full.
+//!
 //! # Examples
 //!
 //! ```
@@ -14,6 +22,12 @@
 //! async fn handle(order: &[u8], ctx: &mut Context<'_>) -> HandlerResult {
 //!     let _ = (order.len(), ctx.name());
 //!     HandlerResult::Ack
+//! }
+//!
+//! // A capability this broker has, reached through the same glob: a delivery reports the
+//! // ordering key it arrived under.
+//! fn key_of(delivery: &impl Partitioned) -> Option<&[u8]> {
+//!     delivery.partition_key()
 //! }
 //! ```
 
@@ -29,6 +43,13 @@ pub use ruststream::prelude::*;
 // call site reaches `with_ordering_key`).
 pub use crate::{PubSubBroker, PubSubOrdering, PubSubPublish, PubSubPublisher, PubSubSubscription};
 
+// The capability manifest: the framework traits this crate's forms implement, and nothing it
+// does not. `Subscribe` opens a subscription from a name alone, `Partitioned` reports a
+// delivery's ordering key, `DescribeServer` names the endpoint in use for AsyncAPI. They are the
+// framework's own items, so a service on two brokers globs both preludes and the compiler
+// unifies them on the same traits rather than reporting a clash.
+pub use ruststream::{DescribeServer, Partitioned, Subscribe};
+
 // Deliberately absent:
 //
 // - The `testing` module: broker-author tooling behind a feature, imported explicitly by the
@@ -38,3 +59,6 @@ pub use crate::{PubSubBroker, PubSubOrdering, PubSubPublish, PubSubPublisher, Pu
 //   deliveries through the framework's handler surface. Code that works at the message level
 //   names those types explicitly, and says by that import which layer it is working at.
 // - `PubSubError`: a service names the error where it handles one, not in every file.
+// - `BatchSubscriber`, `TransactionalPublisher`, `OwnedTransactions`, `RequestReply`, `Seekable`
+//   and `Positioned`: Pub/Sub implements none of them, and a manifest that promised them would
+//   say this broker can do what it cannot.
