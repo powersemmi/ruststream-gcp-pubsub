@@ -80,18 +80,14 @@ impl Publisher for PubSubPublisher {
     }
 }
 
-/// Names the ordering key of a publish, the one Pub/Sub argument that belongs to the message
-/// rather than to the connection.
+/// Names the ordering key of a publish.
 ///
-/// The framework's publish builder ends in a [`Publisher`], so a broker step is a publisher
-/// adapter in front of it: `with_ordering_key` returns an [`OrderedPublisher`] that offers the
-/// key as its [base headers](Publisher::base_headers), and the builder's own entry points
-/// (`message`, `raw`) and the rest of the chain (codec, headers, destination) follow unchanged.
-/// The builder writes the publish's own headers over the base key by key, so a message declaring
-/// a header contract publishes with an ordering key too.
+/// `with_ordering_key` adapts the publisher: every publish built on the returned
+/// [`OrderedPublisher`] carries the key, and the rest of the chain (codec, headers, destination)
+/// is written as usual.
 ///
-/// Implemented for the live publisher, for the in-process test publisher, and for the `Out` slot
-/// wrapper, so the same call works in a handler, in a startup hook and under the test harness.
+/// Implemented for the live publisher, the in-process test publisher and the `Out` slot wrapper,
+/// so the same call works in a handler, in a startup hook and under the test harness.
 ///
 /// # Examples
 ///
@@ -122,24 +118,18 @@ pub trait PubSubOrdering: Publisher {
 
 impl PubSubOrdering for PubSubPublisher {}
 
-// The adapter wraps the slot rather than reaching through `inner`, so publishes made with an
-// ordering key stay attributed to the slot under the test harness; the wrapper forwards the base
-// headers of whatever it holds, so wrapping it either way keeps the key on the message.
+// The adapter wraps the slot instead of reaching through `inner`, which is what keeps a publish
+// attributed to its slot under the test harness.
 impl<P: PubSubOrdering, M: OutSlot> PubSubOrdering for SlotPublisher<P, M> {}
 
-/// A publisher that offers one ordering key to every publish built on it, returned by
+/// A publisher that carries one ordering key into every publish built on it, returned by
 /// [`PubSubOrdering::with_ordering_key`].
 ///
-/// The key travels as the `partition-key` header the crate already maps onto the message's
-/// ordering key, so an ordered publish stays portable (the same service running against another
-/// broker keeps its partition key) and a delivered message reports the key back through
-/// [`Partitioned`](ruststream::Partitioned).
-///
-/// It is offered as the adapter's base headers, not stamped into the message, which is what puts
-/// it under the publish's own headers rather than beside them: a `partition-key` named at the
-/// call wins over the adapter's key, and any other header the call names travels with it. The
-/// base reaches the message through the publish builder; a message handed to
-/// [`Publisher::publish`] directly is sent as it was built.
+/// The key travels as the `partition-key` header, which this crate maps onto the message's
+/// ordering key and a delivery reports back. It rides as the adapter's
+/// [base headers](Publisher::base_headers), so the publish's own headers are written over it:
+/// other headers named at the call travel with the key, and a `partition-key` named there wins.
+/// A message handed to [`Publisher::publish`] directly is sent as it was built.
 pub struct OrderedPublisher<'a, P: ?Sized> {
     inner: &'a P,
     base: Headers,
@@ -147,15 +137,12 @@ pub struct OrderedPublisher<'a, P: ?Sized> {
 
 impl<'a, P: Publisher + ?Sized> OrderedPublisher<'a, P> {
     fn new(inner: &'a P, key: Cow<'a, str>) -> Self {
-        // The key is converted once per adapter, not once per publish; an owned key moves into
-        // the buffer instead of being copied.
+        // Converted once per adapter rather than once per publish; an owned key moves in.
         let key = match key {
             Cow::Borrowed(key) => Bytes::copy_from_slice(key.as_bytes()),
             Cow::Owned(key) => Bytes::from(key),
         };
-        // Whatever the wrapped handle already contributes stays contributed: the adapter adds a
-        // key on top of it rather than replacing the handle's base, and the key wins over an
-        // entry of the same name because the adapter is the more specific level.
+        // Seeded from the wrapped handle so its own base survives the adapter.
         let mut base = inner.base_headers().cloned().unwrap_or_default();
         base.insert(PARTITION_KEY_HEADER, key);
         Self { inner, base }
@@ -310,8 +297,7 @@ mod tests {
             .await
             .expect("the recorder accepts the message");
 
-        // The adapter serves a run of publishes and the call names one message, so the call has
-        // the last word - the framework's precedence for every position of the builder.
+        // The call site wins over the adapter; do not "fix" this to the adapter's key.
         let (.., headers) = recorder.last();
         assert_eq!(headers.get_str(PARTITION_KEY_HEADER), Some("order-9"));
     }
@@ -336,8 +322,7 @@ mod tests {
     async fn a_message_published_directly_carries_no_base() {
         let recorder = Recorder::default();
         let ordered = recorder.with_ordering_key("order-42");
-        // Not the builder path: base headers reach the message when the builder assembles it, so
-        // an already-built message travels as its author wrote it.
+        // Not the builder path: an already-built message keeps the headers it was built with.
         ordered
             .publish(OutgoingMessage::new("orders", b"created".as_slice()))
             .await

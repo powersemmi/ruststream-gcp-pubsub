@@ -26,16 +26,8 @@ The framework's optional capability traits, and what this broker implements nati
 | `Seekable` and `Positioned` | no | repositioning is a subscription-level admin `seek` to a timestamp or a snapshot, not an offset the subscriber addresses per stream |
 | `DescribeServer` | yes | reports the endpoint in use (emulator host, custom endpoint, or `pubsub.googleapis.com`) with the `googlepubsub` protocol |
 
-The crate's prelude re-exports none of these traits, and that is the honest reading of the table.
-A capability belongs in a prelude when a service writes it by hand: in a bound, or as a method
-call on a value a handler is handed, which needs the trait in scope. `Subscribe` and
-`DescribeServer` are implemented but never written by a service - the runtime calls `subscribe` at
-include time, AsyncAPI generation reads the server description. The `no` rows are not implemented
-at all. And `Partitioned`, which a handler genuinely does read per delivery, would break the call
-it exists for: the framework already offers `partition_key` as a defaulted method on
-`IncomingMessage`, which the prelude carries, and this broker's deliveries override it, so a glob
-carrying both traits makes `message.partition_key()` ambiguous on a concrete delivery. Read the
-key off the delivery the framework hands you; no broker-specific import is involved.
+A handler reads the ordering key off the delivery it is handed, with `message.partition_key()`
+and no broker-specific import.
 
 ## The lifecycle
 
@@ -138,15 +130,10 @@ same idea, so the two are one header. A `partition-key` header (exported as `PAR
 on an outgoing message becomes the message's ordering key, and a delivered message carries its
 ordering key back under the same header, feeding the `Partitioned` capability.
 
-A publish names its key with `with_ordering_key`, this crate's step on the framework's publish
-builder: the step adapts the publisher, so the rest of the chain (codec, headers, destination)
-follows unchanged, and one adapter serves a run of publishes on the same key. The key is offered
-as the adapter's base headers rather than stamped into the message, so it travels under whatever
-the publish itself names: other headers ride along with it, a message declaring a header contract
-still publishes with a key, and a `partition-key` named at the call wins over the adapter's - the
-adapter serves many publishes, the call names one message, so the call has the last word. It is
-the same portable header either way, so an ordered publish stays portable across brokers and comes
-back through `Partitioned`.
+A publish names its key with `with_ordering_key`, which adapts the publisher: one adapter serves a
+run of publishes, and the rest of the chain (codec, headers, destination) is written as usual. The
+key rides under the publish's own headers, so other headers named at the call travel with it and a
+`partition-key` named there wins.
 
 ```rust
 --8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_ordered_publish.rs:ordered"
@@ -168,30 +155,22 @@ the broker at startup to produce a `PubSubPublisher`. It is also the broker's de
 policy, so a `#[subscriber(.., publish("topic"))]` handler mounted without an explicit publisher
 publishes through it.
 
-The prelude re-exports that policy under its concept name, `Publish`, so a mount site reads
-`.publisher(Publish)` or `.out(M, Publish)` on this broker exactly as it does on any other, and a
-service moves between brokers by changing its import rather than every mount site. A concept name
-absent from the prelude means the broker has no policy of that kind. `PubSubPublish` remains at
-the crate root for a file that speaks to two brokers at once and has to say which one it means.
-The alias is the publish *policy*; the framework's `runtime::Publish` is the builder a call site
-gets back from `message(..)` or `raw(..)`, and a file naming both imports that one explicitly.
+The prelude carries that policy under the name `Publish`, so a mount site writes
+`.publisher(Publish)` or `.out(M, Publish)`. A file that speaks to two brokers at once names
+`PubSubPublish` from the crate root instead. This `Publish` is the publish policy, not the
+framework's `runtime::Publish` builder returned by `message(..)` and `raw(..)`.
 
 The destination name is the topic id, short or a full resource name. Per-topic client publishers
 are created on first use and cached on the broker, which is what lets `shutdown` flush every
 buffered batch instead of dropping it.
 
-Core 0.7 unified publishing behind one builder: every publish is `message(..)` or `raw(..)`
-followed by the positions the message leaves open, on an `Out` slot, on a publisher held in state,
-and in a startup hook alike. A broker argument that belongs to the message rather than to the
-connection joins that chain as a publisher adapter: a handle that offers the argument as base
-headers, which the builder writes the publish's own headers over, key by key. `with_ordering_key`
-is this crate's one such step; everything else Pub/Sub takes per publish is either the payload, a
-header (message attributes), or a subscription-level setting, so it is covered by the builder and
-the policy as they stand.
+Every publish is `message(..)` or `raw(..)` followed by the positions the message leaves open, on
+an `Out` slot, on a publisher held in state, and in a startup hook alike. `with_ordering_key` is
+this crate's one addition to that chain; message attributes are headers, and everything else
+Pub/Sub takes per publish is a subscription-level setting.
 
-Base headers reach the message where the builder assembles it. A message built by hand and handed
-to `Publisher::publish` is sent as it is, which is the path to take when the header map is what you
-want to control.
+A message built by hand and handed to `Publisher::publish` is sent as it is - the path to take
+when the header map is what you want to control.
 
 ## The emulator
 

@@ -15,8 +15,7 @@
 //!   development and tests.
 //!
 //! A service imports [`prelude`]: one glob covering the framework's own prelude and this crate's
-//! user-facing surface. It is a capability manifest too, and for this broker an empty one - the
-//! module records what each candidate trait was weighed against.
+//! user-facing surface.
 
 #![forbid(unsafe_code)]
 

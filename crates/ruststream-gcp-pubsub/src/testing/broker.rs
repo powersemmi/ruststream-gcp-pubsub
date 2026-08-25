@@ -154,8 +154,7 @@ impl Publisher for PubSubTestPublisher {
     }
 }
 
-// The ordering step is written against the crate's publish surface, so a handler tested in
-// process calls it exactly as it does against the real broker.
+// Keeps `with_ordering_key` callable in a test exactly as against the real broker.
 impl PubSubOrdering for PubSubTestPublisher {}
 
 /// The publish policy for [`PubSubTestPublisher`], mirroring
