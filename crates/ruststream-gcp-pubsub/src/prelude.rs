@@ -7,12 +7,12 @@
 //!
 //! It is also this broker's capability manifest: the framework capability traits a service
 //! writes for itself - in a bound, or as a method call on a value a handler is handed, which
-//! needs the trait in scope - and that this crate implements. For Pub/Sub that is exactly one,
-//! [`Partitioned`], because transactions, request-reply, batch subscription and seeking are not
-//! things this broker does; the [capability
-//! table](https://powersemmi.github.io/ruststream-gcp-pubsub/pubsub/#capabilities) sets out the
-//! whole picture. The traits the runtime consumes on a service's behalf are not part of the
-//! manifest, implemented or not: nobody writes their names.
+//! needs the trait in scope - and that this crate implements. For Pub/Sub that set is empty, and
+//! the comment below records why each candidate is out. Nothing is lost by that: the partition
+//! key, the one capability of this broker a handler reads per delivery, arrives on
+//! [`IncomingMessage`], which the framework's prelude already carries. The [capability
+//! table](https://powersemmi.github.io/ruststream-gcp-pubsub/pubsub/#capabilities) sets out what
+//! this broker does and does not implement.
 //!
 //! # Examples
 //!
@@ -25,9 +25,9 @@
 //!     HandlerResult::Ack
 //! }
 //!
-//! // A capability this broker has, reached through the same glob: a delivery reports the
-//! // ordering key it arrived under.
-//! fn key_of(delivery: &impl Partitioned) -> Option<&[u8]> {
+//! // The ordering key a delivery arrived under, read off the framework's own delivery surface -
+//! // no broker-specific trait needed at the call site.
+//! fn key_of(delivery: &impl IncomingMessage) -> Option<&[u8]> {
 //!     delivery.partition_key()
 //! }
 //! ```
@@ -44,12 +44,10 @@ pub use ruststream::prelude::*;
 // call site reaches `with_ordering_key`).
 pub use crate::{PubSubBroker, PubSubOrdering, PubSubPublish, PubSubPublisher, PubSubSubscription};
 
-// The capability manifest: the framework capability traits a service writes itself and this
-// crate implements. `Partitioned` is the whole list - a handler calls `partition_key()` on the
-// delivery it is handed, and a method call needs its trait in scope. It is the framework's own
-// item, so a service on two brokers globs both preludes and the compiler unifies them on the
-// same trait rather than reporting a clash.
-pub use ruststream::Partitioned;
+// The capability manifest is deliberately empty: no framework capability trait is re-exported
+// here, and the exclusions below say why each candidate is out. Where a broker does have one to
+// offer, it is a framework item, so a service on two brokers globs both preludes and the compiler
+// unifies them on the same trait rather than reporting a clash.
 
 // Deliberately absent:
 //
@@ -68,3 +66,10 @@ pub use ruststream::Partitioned;
 //   traits a service does write - in a bound, or as a method call on a value it holds - but
 //   Pub/Sub implements none of these, and a manifest that promised them would say this broker can
 //   do what it cannot.
+// - `Partitioned`, the exception worth spelling out: it is implemented, and a handler does read
+//   the key per delivery, yet re-exporting it breaks the natural call. The core surfaces
+//   `partition_key` as a defaulted method on `IncomingMessage`, which is already in the glob, and
+//   this crate's deliveries override it by delegating to `Partitioned`; with both traits in scope
+//   `message.partition_key()` on a concrete delivery is ambiguous (E0034). A generic
+//   `&impl Partitioned` bound would still compile, which is exactly why the trap is easy to ship:
+//   it springs on the caller who names the type.

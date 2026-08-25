@@ -26,16 +26,16 @@ The framework's optional capability traits, and what this broker implements nati
 | `Seekable` and `Positioned` | no | repositioning is a subscription-level admin `seek` to a timestamp or a snapshot, not an offset the subscriber addresses per stream |
 | `DescribeServer` | yes | reports the endpoint in use (emulator host, custom endpoint, or `pubsub.googleapis.com`) with the `googlepubsub` protocol |
 
-The crate's prelude is the service-facing half of this table in code. `use
-ruststream_gcp_pubsub::prelude::*;` carries the capability traits a service writes for itself -
-in a bound, or as a method call on a value a handler is handed, which needs the trait in scope -
-and that this broker implements. Here that is `Partitioned` alone: a handler calls
-`partition_key()` on its delivery. `Subscribe` and `DescribeServer` are implemented but stay out,
-because the runtime calls `subscribe` at include time and AsyncAPI generation reads the server
-description; a service never writes either name. The traits below the `no` rows are absent for
-the plainer reason that this broker does not have them. It is the framework's own trait, so a
-service speaking to two brokers globs both preludes and the compiler unifies them on the same
-item instead of reporting a clash.
+The crate's prelude re-exports none of these traits, and that is the honest reading of the table.
+A capability belongs in a prelude when a service writes it by hand: in a bound, or as a method
+call on a value a handler is handed, which needs the trait in scope. `Subscribe` and
+`DescribeServer` are implemented but never written by a service - the runtime calls `subscribe` at
+include time, AsyncAPI generation reads the server description. The `no` rows are not implemented
+at all. And `Partitioned`, which a handler genuinely does read per delivery, would break the call
+it exists for: the framework already offers `partition_key` as a defaulted method on
+`IncomingMessage`, which the prelude carries, and this broker's deliveries override it, so a glob
+carrying both traits makes `message.partition_key()` ambiguous on a concrete delivery. Read the
+key off the delivery the framework hands you; no broker-specific import is involved.
 
 ## The lifecycle
 
