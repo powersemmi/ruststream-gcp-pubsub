@@ -15,8 +15,8 @@
 //!   development and tests.
 //!
 //! A service imports [`prelude`]: one glob covering the framework's own prelude, this crate's
-//! user-facing surface, and the framework capability traits this broker implements - and only
-//! those, so the glob is a capability manifest as well as an import list.
+//! user-facing surface, and the capability traits a service writes itself and this broker
+//! implements - so the glob is a capability manifest as well as an import list.
 
 #![forbid(unsafe_code)]
 

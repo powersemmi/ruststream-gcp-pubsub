@@ -26,11 +26,16 @@ The framework's optional capability traits, and what this broker implements nati
 | `Seekable` and `Positioned` | no | repositioning is a subscription-level admin `seek` to a timestamp or a snapshot, not an offset the subscriber addresses per stream |
 | `DescribeServer` | yes | reports the endpoint in use (emulator host, custom endpoint, or `pubsub.googleapis.com`) with the `googlepubsub` protocol |
 
-The crate's prelude is this table in code: `use ruststream_gcp_pubsub::prelude::*;` carries the
-framework traits behind the `yes` rows and none of the others, so what a service reaches through
-the glob is what this broker actually does. They are the framework's own traits, so a service
-speaking to two brokers globs both preludes and the compiler unifies them on the same items
-instead of reporting a clash.
+The crate's prelude is the service-facing half of this table in code. `use
+ruststream_gcp_pubsub::prelude::*;` carries the capability traits a service writes for itself -
+in a bound, or as a method call on a value a handler is handed, which needs the trait in scope -
+and that this broker implements. Here that is `Partitioned` alone: a handler calls
+`partition_key()` on its delivery. `Subscribe` and `DescribeServer` are implemented but stay out,
+because the runtime calls `subscribe` at include time and AsyncAPI generation reads the server
+description; a service never writes either name. The traits below the `no` rows are absent for
+the plainer reason that this broker does not have them. It is the framework's own trait, so a
+service speaking to two brokers globs both preludes and the compiler unifies them on the same
+item instead of reporting a clash.
 
 ## The lifecycle
 
