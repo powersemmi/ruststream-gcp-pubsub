@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 use std::fmt;
+use std::future::{Future, ready};
 
 use bytes::Bytes;
 use google_cloud_pubsub::client::Publisher as GcpPublisher;
@@ -187,8 +188,11 @@ pub struct PubSubPublish;
 impl PublishPolicy<ConnectedPubSubBroker> for PubSubPublish {
     type Live = PubSubPublisher;
 
-    async fn pair(self, connected: &ConnectedPubSubBroker) -> Result<Self::Live, PairError> {
-        Ok(connected.publisher())
+    fn pair(
+        self,
+        connected: &ConnectedPubSubBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(connected.publisher()))
     }
 }
 

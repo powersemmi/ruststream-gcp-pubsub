@@ -1,5 +1,6 @@
 //! [`PubSubTestBroker`]: the in-process transport and its connected form.
 
+use std::future::{Future, ready};
 use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
@@ -67,8 +68,8 @@ impl Broker for PubSubTestBroker {
     type Error = PubSubError;
     type Connected = ConnectedPubSubTestBroker;
 
-    async fn connect(self) -> Result<Self::Connected, Self::Error> {
-        Ok(ConnectedPubSubTestBroker { state: self.state })
+    fn connect(self) -> impl Future<Output = Result<Self::Connected, Self::Error>> {
+        ready(Ok(ConnectedPubSubTestBroker { state: self.state }))
     }
 }
 
@@ -94,24 +95,24 @@ impl ConnectedBroker for ConnectedPubSubTestBroker {
     type Error = PubSubError;
     type Closed = ();
 
-    async fn shutdown(self) -> Result<(), Self::Error> {
+    fn shutdown(self) -> impl Future<Output = Result<(), Self::Error>> {
         self.state.router.clear();
-        Ok(())
+        ready(Ok(()))
     }
 }
 
 impl Subscribe for ConnectedPubSubTestBroker {
     type Subscriber = PubSubTestSubscriber;
 
-    async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
+    fn subscribe(&self, name: &str) -> impl Future<Output = Result<Self::Subscriber, Self::Error>> {
         let (id, requeue, rx) = self.state.router.subscribe(name.to_owned());
-        Ok(PubSubTestSubscriber::new(
+        ready(Ok(PubSubTestSubscriber::new(
             Arc::clone(&self.state),
             id,
             rx,
             requeue,
             self.state.coordinator().cloned(),
-        ))
+        )))
     }
 }
 
@@ -144,13 +145,13 @@ pub struct PubSubTestPublisher {
 impl Publisher for PubSubTestPublisher {
     type Error = PubSubError;
 
-    async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
+    fn publish(&self, msg: OutgoingMessage<'_>) -> impl Future<Output = Result<(), Self::Error>> {
         self.state.publish(
             msg.name(),
             Bytes::copy_from_slice(msg.payload()),
             msg.headers().clone(),
         );
-        Ok(())
+        ready(Ok(()))
     }
 }
 
@@ -175,8 +176,11 @@ pub struct PubSubTestPublish;
 impl PublishPolicy<ConnectedPubSubTestBroker> for PubSubTestPublish {
     type Live = PubSubTestPublisher;
 
-    async fn pair(self, connected: &ConnectedPubSubTestBroker) -> Result<Self::Live, PairError> {
-        Ok(connected.publisher())
+    fn pair(
+        self,
+        connected: &ConnectedPubSubTestBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(connected.publisher()))
     }
 }
 
