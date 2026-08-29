@@ -6,7 +6,7 @@ use std::fmt;
 use bytes::Bytes;
 use google_cloud_pubsub::client::Publisher as GcpPublisher;
 use ruststream::runtime::{OutSlot, SlotPublisher};
-use ruststream::{Headers, OutgoingMessage, PairError, PublishPolicy, Publisher};
+use ruststream::{HeaderMap, OutgoingMessage, PairError, PublishPolicy, Publisher};
 
 use crate::broker::{ConnectedPubSubBroker, Core, CoreCell};
 use crate::error::{PubSubError, box_err};
@@ -132,7 +132,7 @@ impl<P: PubSubOrdering, M: OutSlot> PubSubOrdering for SlotPublisher<P, M> {}
 /// A message handed to [`Publisher::publish`] directly is sent as it was built.
 pub struct OrderedPublisher<'a, P: ?Sized> {
     inner: &'a P,
-    base: Headers,
+    base: HeaderMap,
 }
 
 impl<'a, P: Publisher + ?Sized> OrderedPublisher<'a, P> {
@@ -164,7 +164,7 @@ impl<P: Publisher + ?Sized> Publisher for OrderedPublisher<'_, P> {
         self.inner.publish(msg).await
     }
 
-    fn base_headers(&self) -> Option<&Headers> {
+    fn base_headers(&self) -> Option<&HeaderMap> {
         Some(&self.base)
     }
 }
@@ -206,13 +206,13 @@ mod tests {
     /// headers of its own.
     #[derive(Debug, Default)]
     struct Recorder {
-        sent: Mutex<Vec<(String, Vec<u8>, Headers)>>,
-        base: Option<Headers>,
+        sent: Mutex<Vec<(String, Vec<u8>, HeaderMap)>>,
+        base: Option<HeaderMap>,
     }
 
     impl Recorder {
         fn tagged(name: &str, value: &str) -> Self {
-            let mut base = Headers::new();
+            let mut base = HeaderMap::new();
             base.insert(name, value.to_owned());
             Self {
                 sent: Mutex::default(),
@@ -220,7 +220,7 @@ mod tests {
             }
         }
 
-        fn last(&self) -> (String, Vec<u8>, Headers) {
+        fn last(&self) -> (String, Vec<u8>, HeaderMap) {
             self.sent.lock().expect("no panic held the lock")[0].clone()
         }
     }
@@ -240,7 +240,7 @@ mod tests {
             ready(Ok(()))
         }
 
-        fn base_headers(&self) -> Option<&Headers> {
+        fn base_headers(&self) -> Option<&HeaderMap> {
             self.base.as_ref()
         }
     }
@@ -267,7 +267,7 @@ mod tests {
     #[tokio::test]
     async fn other_headers_survive_the_step() {
         let recorder = Recorder::default();
-        let mut headers = Headers::new();
+        let mut headers = HeaderMap::new();
         headers.insert("x-tenant", "acme");
         recorder
             .with_ordering_key(format!("order-{}", 7))
@@ -286,7 +286,7 @@ mod tests {
     #[tokio::test]
     async fn a_key_named_at_the_call_wins_over_the_adapter() {
         let recorder = Recorder::default();
-        let mut headers = Headers::new();
+        let mut headers = HeaderMap::new();
         headers.insert(PARTITION_KEY_HEADER, "order-9");
         recorder
             .with_ordering_key("order-42")
