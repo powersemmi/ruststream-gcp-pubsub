@@ -6,7 +6,7 @@ use std::future::{Future, ready};
 
 use bytes::Bytes;
 use google_cloud_pubsub::client::Publisher as GcpPublisher;
-use ruststream::runtime::{OutSlot, SlotPublisher};
+use ruststream::runtime::{OutSlot, Slot};
 use ruststream::{HeaderMap, OutgoingMessage, PairError, PublishPolicy, Publisher};
 
 use crate::broker::{ConnectedPubSubBroker, Core, CoreCell};
@@ -87,8 +87,12 @@ impl Publisher for PubSubPublisher {
 /// [`OrderedPublisher`] carries the key, and the rest of the chain (codec, headers, destination)
 /// is written as usual.
 ///
-/// Implemented for the live publisher, the in-process test publisher and the `Out` slot wrapper,
-/// so the same call works in a handler, in a startup hook and under the test harness.
+/// Implemented for the live publisher, the in-process test publisher and the `Out` slot entry, so
+/// the same call works in a handler, in a startup hook and under the test harness.
+///
+/// The step yields a plain publisher, so a publish built on it resolves the crate's default codec
+/// rather than the include site's; a slot publish that needs the include site's codec goes through
+/// the slot's own `message(..)` and names the key in its headers.
 ///
 /// # Examples
 ///
@@ -123,9 +127,11 @@ pub trait PubSubOrdering: Publisher {
 
 impl PubSubOrdering for PubSubPublisher {}
 
-// The adapter wraps the slot instead of reaching through `inner`, which is what keeps a publish
-// attributed to its slot under the test harness.
-impl<P: PubSubOrdering, M: OutSlot> PubSubOrdering for SlotPublisher<P, M> {}
+// Grafted onto the slot entry a handler body actually holds, next to the core's own capability
+// delegations on it. Resolving the step there keeps the publish attributed to its slot; an impl
+// one layer down is reached by autoderef past the entry instead, and a publish built on it leaves
+// through the unwrapped publisher, where the harness's per-slot capture never sees it.
+impl<M: OutSlot, W: PubSubOrdering, E: Send + Sync, Body> PubSubOrdering for Slot<M, W, E, Body> {}
 
 /// A publisher that carries one ordering key into every publish built on it, returned by
 /// [`PubSubOrdering::with_ordering_key`].
