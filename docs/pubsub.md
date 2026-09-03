@@ -95,11 +95,11 @@ The plain string form `#[subscriber("orders-workers")]` also works: a by-name so
 Settlement is native per message, and it is the confirmed variant on a subscription with
 exactly-once delivery enabled:
 
-| Handler result | Pub/Sub call | Effect |
+| Handler outcome | Pub/Sub call | Effect |
 | --- | --- | --- |
-| `HandlerResult::Ack` | acknowledge | the delivery is done |
-| `HandlerResult::retry()` | nack | the message becomes available again and is redelivered |
-| `HandlerResult::drop()` | acknowledge | the message is not redelivered |
+| `HandlerOutcome::ack()` | acknowledge | the delivery is done |
+| `HandlerOutcome::retry()` | nack | the message becomes available again and is redelivered |
+| `HandlerOutcome::drop()` | acknowledge | the message is not redelivered |
 
 `drop()` acknowledging is the product's model: Pub/Sub has no drop-without-redelivery verb, so
 poison-message routing belongs to the subscription's dead-letter policy, which the service
@@ -107,7 +107,7 @@ configures on the subscription resource rather than per message. When a dead-let
 the delivery-attempt count arrives as the `pubsub-delivery-attempt` header (exported as
 `DELIVERY_ATTEMPT_HEADER`), so a handler can branch on how many times a message has come back.
 
-There is no native delayed nack here, so `HandlerResult::retry_after(delay)` falls back to the
+There is no native delayed nack here, so `HandlerOutcome::retry_after(delay)` falls back to the
 runtime's broker-agnostic deferred re-publish rather than a broker-side timer.
 
 ### Exactly-once acknowledgement
@@ -139,6 +139,9 @@ key rides under the publish's own headers, so other headers named at the call tr
 --8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_ordered_publish.rs:ordered"
 ```
 
+On an `Out` slot the step resolves on the slot itself, so a publish made through it keeps its slot
+attribution and `tb.out::<Marker>()` sees it under the test harness.
+
 Ordered delivery needs the subscription to have message ordering enabled, and a regional
 `endpoint` is what keeps a key ordered across publishers in one region. A publish failure on an
 ordered key pauses that key in the client; this crate resumes it and returns the failure, so one
@@ -155,19 +158,21 @@ the broker at startup to produce a `PubSubPublisher`. It is also the broker's de
 policy, so a `#[subscriber(.., publish("topic"))]` handler mounted without an explicit publisher
 publishes through it.
 
-The prelude carries that policy under the name `Publish`, so a mount site writes
-`.publisher(Publish)` or `.out(M, Publish)`. A file that speaks to two brokers at once names
-`PubSubPublish` from the crate root instead. This `Publish` is the publish policy, not the
-framework's `runtime::Publish` builder returned by `message(..)` and `raw(..)`.
+The prelude carries the policy under its own name, so a mount site writes
+`.publisher(PubSubPublish)` or `.out(M, PubSubPublish)`. The bare name `Publish` belongs to the
+framework, which uses it for its slot capability trait. A handler takes a publisher as
+`Out(out): Out<impl Publisher>`, and one that also wants this crate's ordering step bounds its slot
+with `Out<impl PubSubOrdering>` instead.
 
 The destination name is the topic id, short or a full resource name. Per-topic client publishers
 are created on first use and cached on the broker, which is what lets `shutdown` flush every
 buffered batch instead of dropping it.
 
-Every publish is `message(..)` or `raw(..)` followed by the positions the message leaves open, on
-an `Out` slot, on a publisher held in state, and in a startup hook alike. `with_ordering_key` is
-this crate's one addition to that chain; message attributes are headers, and everything else
-Pub/Sub takes per publish is a subscription-level setting.
+Every publish starts at `message(&value)` and ends at `publish()`, on an `Out` slot, on a publisher
+held in state, and in a startup hook alike; the value's type picks the wire, so a `Serialize` model
+encodes through the codec and a `#[derive(Serialized)]` type's bytes leave as they are.
+`with_ordering_key` is this crate's one addition to that chain; message attributes are headers, and
+everything else Pub/Sub takes per publish is a subscription-level setting.
 
 A message built by hand and handed to `Publisher::publish` is sent as it is - the path to take
 when the header map is what you want to control.
@@ -209,3 +214,9 @@ The test broker routes by exact name match and does not simulate product behavio
 extension, redelivery timing, ordered delivery, dead-letter policies). Those are verified end to
 end against the emulator, where the integration tests and the framework's conformance lifecycle
 suite run.
+
+Because it routes by name, the stand-in serves the by-name subscriber form
+(`#[subscriber("orders-workers")]`). A handler that names a `PubSubSubscription` descriptor is
+bound to the real broker, since the descriptor resolves a subscription against a topic and the
+stand-in models neither; test those handlers by injecting on the connected stand-in directly, as
+above.

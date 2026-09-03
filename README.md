@@ -57,9 +57,9 @@ struct Order {
 }
 
 #[subscriber(PubSubSubscription::new("orders-workers").max_outstanding(1_000))]
-async fn handle(order: &Order) -> HandlerResult {
+async fn handle(order: &Order) -> HandlerOutcome {
     println!("got order {}", order.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 
 #[ruststream::app]
