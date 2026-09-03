@@ -23,7 +23,7 @@ fn app() -> impl App {
             // The scope's after_startup is the home of a first publish: the publisher arrives
             // already paired with the connected broker, so the seed cannot race the connect.
             // --8<-- [start:ordered]
-            b.after_startup(Publish, async move |publisher| -> io::Result<()> {
+            b.after_startup(PubSubPublish, async move |publisher| -> io::Result<()> {
                 let ordered = publisher.with_ordering_key("order-42");
                 for step in ["created", "paid", "shipped"] {
                     ordered
