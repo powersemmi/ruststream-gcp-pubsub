@@ -1,19 +1,24 @@
-//! The crate prelude leaves the framework's vocabulary intact.
+//! The crate prelude serves a routes file, and keeps the two vocabularies apart.
 //!
-//! One glob brings in both preludes, and an explicit re-export wins over a glob, so a name this
-//! crate re-exports quietly takes over the framework's. These pins fail to compile the day that
-//! happens, rather than leaving a service unable to name a trait it was told to use.
+//! Through this glob a publish policy arrives under its mount-site name, so `Publish` here is this
+//! broker's policy: an explicit re-export wins over the glob beside it. The capability traits a
+//! handler body bounds a slot with still come through, because a body names them from the
+//! framework's prelude, which it imports on its own. These are compile-time pins, and they fail
+//! the day either half moves.
 
 use ruststream_gcp_pubsub::prelude::*;
 
-/// A pin, not a helper: the bound is the whole point. `Publish` reached through this glob has to
-/// be the framework's slot capability trait, so re-exporting the publish policy under that name
-/// turns this into `E0404: expected trait, found struct`.
-fn _publish_is_the_frameworks_trait<T: Publish>() {}
+/// A pin, not a helper: the bound is the whole point. The capability a handler body bounds a plain
+/// slot with survives this glob.
+fn _p<T: Publisher>() {}
 
-/// The publish policy travels under its prefixed name, which is what a mount site attaches.
+/// The same for the step this crate adds to that vocabulary.
+fn _o<T: PubSubOrdering>() {}
+
+/// The mount-site vocabulary: the publish policy, under the name every broker's prelude gives it.
+/// This one holds no options, so the name is the whole expression a mount site writes.
 #[test]
-fn the_policy_is_in_the_prelude_under_its_own_name() {
-    let policy = PubSubPublish;
+fn the_policy_arrives_under_its_mount_site_name() {
+    let policy: Publish = Publish;
     assert_eq!(format!("{policy:?}"), "PubSubPublish");
 }

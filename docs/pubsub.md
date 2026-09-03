@@ -158,11 +158,15 @@ the broker at startup to produce a `PubSubPublisher`. It is also the broker's de
 policy, so a `#[subscriber(.., publish("topic"))]` handler mounted without an explicit publisher
 publishes through it.
 
-The prelude carries the policy under its own name, so a mount site writes
-`.publisher(PubSubPublish)` or `.out(M, PubSubPublish)`. The bare name `Publish` belongs to the
-framework, which uses it for its slot capability trait. A handler takes a publisher as
-`Out(out): Out<impl Publisher>`, and one that also wants this crate's ordering step bounds its slot
-with `Out<impl PubSubOrdering>` instead.
+A service writes two vocabularies, and the import says which one a file is in. A file of handler
+bodies imports the framework's prelude alone and bounds a slot with a capability trait -
+`Out(out): Out<impl Publisher>`, or `Out<impl PubSubOrdering>` for a body that also wants this
+crate's ordering step - so it names no broker. A routes file imports
+`ruststream_gcp_pubsub::prelude::*` and attaches policies under their mount-site names, so this
+crate's policy arrives as `Publish` and a mount site writes `.publisher(Publish)` or
+`.out(M, Publish)` whichever broker it runs on. This policy holds no options, so the name is the
+whole expression. The prefixed `PubSubPublish` stays at the crate root for a file that speaks to
+two brokers at once and has to say which one it means.
 
 The destination name is the topic id, short or a full resource name. Per-topic client publishers
 are created on first use and cached on the broker, which is what lets `shutdown` flush every
