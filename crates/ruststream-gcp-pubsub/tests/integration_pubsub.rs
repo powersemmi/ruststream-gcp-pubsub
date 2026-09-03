@@ -9,7 +9,8 @@ use std::time::Duration;
 use futures::StreamExt;
 use ruststream::runtime::PublishExt;
 use ruststream::{
-    Broker, ConnectedBroker, HeaderMap, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
+    Broker, ConnectedBroker, HeaderMap, IncomingMessage, Outgoing, OutgoingMessage, Publisher,
+    Serialized, Subscriber,
 };
 use ruststream_gcp_pubsub::{
     ConnectedPubSubBroker, PARTITION_KEY_HEADER, PubSubBroker, PubSubOrdering, PubSubSubscription,
@@ -17,6 +18,11 @@ use ruststream_gcp_pubsub::{
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(15);
 const TEST_PROJECT: &str = "ruststream-test";
+
+/// Bytes travelling as themselves. The subject here is the ordering key a built publish carries,
+/// so the payload stays exactly what the assertion reads back off the delivery.
+#[derive(Outgoing, Serialized)]
+struct Wire(Vec<u8>);
 
 fn test_host() -> Option<String> {
     match std::env::var("PUBSUB_TEST_HOST") {
@@ -95,7 +101,7 @@ async fn the_ordering_step_sets_the_key_of_a_built_publish() {
     let publisher = connected.publisher();
     publisher
         .with_ordering_key("user-7")
-        .raw(b"ordered")
+        .message(&Wire(b"ordered".to_vec()))
         .to(name.as_str())
         .publish()
         .await

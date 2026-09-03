@@ -7,6 +7,13 @@
 use std::io;
 
 use ruststream_gcp_pubsub::prelude::*;
+use serde::Serialize;
+
+/// The model the seed publishes. It declares no destination, so each publish names the topic.
+#[derive(Serialize, Outgoing)]
+struct OrderStep {
+    step: &'static str,
+}
 
 #[ruststream::app]
 fn app() -> impl App {
@@ -20,7 +27,7 @@ fn app() -> impl App {
                 let ordered = publisher.with_ordering_key("order-42");
                 for step in ["created", "paid", "shipped"] {
                     ordered
-                        .raw(step.as_bytes())
+                        .message(&OrderStep { step })
                         .to("orders")
                         .publish()
                         .await

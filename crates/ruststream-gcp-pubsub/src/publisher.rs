@@ -94,12 +94,16 @@ impl Publisher for PubSubPublisher {
 ///
 /// ```
 /// use ruststream::runtime::PublishExt;
+/// use ruststream::{Outgoing, Serialized};
 /// use ruststream_gcp_pubsub::{PubSubOrdering, PubSubPublisher};
+///
+/// #[derive(Outgoing, Serialized)]
+/// struct OrderEvent(Vec<u8>);
 ///
 /// async fn seed(publisher: &PubSubPublisher) -> Result<(), Box<dyn std::error::Error>> {
 ///     publisher
 ///         .with_ordering_key("order-42")
-///         .raw(b"created")
+///         .message(&OrderEvent(b"created".to_vec()))
 ///         .to("orders")
 ///         .publish()
 ///         .await?;
@@ -202,8 +206,20 @@ mod tests {
     use std::sync::Mutex;
 
     use ruststream::runtime::PublishExt;
+    use ruststream::{Outgoing, Serialized};
 
     use super::*;
+
+    /// Bytes travelling as themselves. The adapter's subject is the headers, so the payload
+    /// takes the lane that leaves it alone rather than a model that would drag a codec in.
+    #[derive(Outgoing, Serialized)]
+    struct Payload(Vec<u8>);
+
+    impl Payload {
+        fn created() -> Self {
+            Self(b"created".to_vec())
+        }
+    }
 
     /// A publisher that keeps what it was handed, so the adapter's effect on the message is
     /// observable without a connection. `base` stands for a handle that already contributes
@@ -256,7 +272,7 @@ mod tests {
         let recorder = Recorder::default();
         recorder
             .with_ordering_key("order-42")
-            .raw(b"created")
+            .message(&Payload::created())
             .to("orders")
             .publish()
             .await
@@ -275,7 +291,7 @@ mod tests {
         headers.insert("x-tenant", "acme");
         recorder
             .with_ordering_key(format!("order-{}", 7))
-            .raw(b"created")
+            .message(&Payload::created())
             .to("orders")
             .with_headers(headers)
             .publish()
@@ -294,7 +310,7 @@ mod tests {
         headers.insert(PARTITION_KEY_HEADER, "order-9");
         recorder
             .with_ordering_key("order-42")
-            .raw(b"created")
+            .message(&Payload::created())
             .to("orders")
             .with_headers(headers)
             .publish()
@@ -311,7 +327,7 @@ mod tests {
         let recorder = Recorder::tagged("x-tenant", "acme");
         recorder
             .with_ordering_key("order-42")
-            .raw(b"created")
+            .message(&Payload::created())
             .to("orders")
             .publish()
             .await

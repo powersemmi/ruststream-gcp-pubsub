@@ -13,9 +13,9 @@ struct Order {
 }
 
 #[subscriber(PubSubSubscription::new("orders-workers").create_with_topic("orders"))]
-async fn handle(order: &Order) -> HandlerResult {
+async fn handle(order: &Order) -> HandlerOutcome {
     println!("got order {}", order.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:handler]
 
