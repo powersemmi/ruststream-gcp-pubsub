@@ -27,6 +27,7 @@
 
 - **Lazy startup contract.** `PubSubBroker::new(project)` is synchronous and does no I/O (Application Default Credentials by default; explicit `credentials`, a regional `endpoint`, or a local `emulator` as builder options); the runtime connects once at startup, so the broker composes with `#[ruststream::app]`.
 - **Streaming pull as the message stream.** Each subscription is a `Stream` of deliveries; the client extends ack deadlines in the background while a handler runs, so a slow handler does not cause redelivery.
+- **Pages for slice handlers.** A `&[T]` handler names its page size at the mount site (`.batch(nonzero!(50))`) like on any broker; the pull hands over one delivery at a time, so the pages are assembled on the client, with `PubSubSubscription::page_wait` closing a partial one.
 - **Native acknowledgement.** `ack` and `nack(requeue = true)` map onto the product directly (with the confirmed forms on exactly-once subscriptions). `nack(requeue = false)` acknowledges: Pub/Sub has no drop-without-redelivery verb - poison routing belongs to the subscription's dead-letter policy, and the delivery-attempt count is surfaced as a header.
 - **Ordering keys as the partition key.** A publish names its key with `with_ordering_key`; the key travels as the `partition-key` header, under the publish's own headers, and comes back as the same header (feeding `Partitioned`) on delivery.
 - **Attributes carry headers directly** - no envelope format is invented; non-Rust peers see plain Pub/Sub messages.

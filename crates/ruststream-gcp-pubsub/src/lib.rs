@@ -6,6 +6,9 @@
 //!
 //! - A streaming pull subscription is the framework's message stream; ack and nack are native
 //!   per message, and the client extends ack deadlines in the background while a handler runs.
+//! - A handler taking a slice gets pages: the pull hands over one delivery at a time, so the
+//!   pages are assembled on the client to the size the mount site named, with
+//!   [`PubSubSubscription::page_wait`] closing a partial one.
 //! - Dead-letter topics and delivery-attempt counts are subscription settings, surfaced on
 //!   received messages, not crate machinery.
 //! - Ordering keys map onto the partition key; message attributes carry headers directly, so

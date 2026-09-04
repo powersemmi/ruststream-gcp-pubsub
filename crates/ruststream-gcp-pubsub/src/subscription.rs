@@ -13,6 +13,11 @@ use crate::broker::ConnectedPubSubBroker;
 use crate::error::PubSubError;
 use crate::subscriber::PubSubSubscriber;
 
+/// How long a partial page waits for more deliveries before it goes out. One streaming-pull
+/// burst crosses the network in tens of milliseconds, so a deadline much shorter than this
+/// would cut most pages down to the first delivery that arrives.
+const DEFAULT_PAGE_WAIT: Duration = Duration::from_millis(50);
+
 /// A subscription descriptor for one Pub/Sub subscription.
 ///
 /// Implements [`SubscriptionSource`], so it can sit inline in the `#[subscriber(..)]`
@@ -34,6 +39,7 @@ pub struct PubSubSubscription {
     create_with_topic: Option<String>,
     max_outstanding: Option<i64>,
     ack_extension: Option<Duration>,
+    page_wait: Duration,
 }
 
 impl PubSubSubscription {
@@ -45,6 +51,7 @@ impl PubSubSubscription {
             create_with_topic: None,
             max_outstanding: None,
             ack_extension: None,
+            page_wait: DEFAULT_PAGE_WAIT,
         }
     }
 
@@ -70,6 +77,27 @@ impl PubSubSubscription {
         self
     }
 
+    /// How long a partial page waits for more deliveries after its first one, for a handler
+    /// that takes a slice. Defaults to 50ms.
+    ///
+    /// How *large* a page may be is not named here: that is the registration's
+    /// `batch(n)`, which reaches the subscription on its own. This is the other half - how
+    /// long the subscription is willing to wait for a page that size, before handing over
+    /// what it has.
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use ruststream_gcp_pubsub::PubSubSubscription;
+    ///
+    /// let source = PubSubSubscription::new("orders-workers")
+    ///     .page_wait(Duration::from_millis(200));
+    /// # let _ = source;
+    /// ```
+    pub fn page_wait(mut self, wait: Duration) -> Self {
+        self.page_wait = wait;
+        self
+    }
+
     /// The subscription name this descriptor resolves.
     #[must_use]
     pub fn subscription(&self) -> &str {
@@ -86,6 +114,10 @@ impl PubSubSubscription {
 
     pub(crate) fn ack_extension_value(&self) -> Option<Duration> {
         self.ack_extension
+    }
+
+    pub(crate) fn page_wait_value(&self) -> Duration {
+        self.page_wait
     }
 
     /// Rejects descriptors that cannot form a subscription, before any I/O.

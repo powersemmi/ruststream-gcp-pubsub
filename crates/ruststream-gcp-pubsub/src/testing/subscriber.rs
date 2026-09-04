@@ -1,12 +1,14 @@
 //! [`PubSubTestSubscriber`] and [`PubSubTestMessage`].
 
 use std::future::{Future, ready};
+use std::num::NonZeroUsize;
 use std::sync::{Arc, OnceLock};
 
 use futures::Stream;
 
 use ruststream::{
-    AckError, HeaderMap, IncomingMessage, Partitioned, Subscriber, testing::Coordinator,
+    AckError, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage, Partitioned,
+    Subscriber, testing::Coordinator,
 };
 
 use crate::PARTITION_KEY_HEADER;
@@ -21,11 +23,7 @@ use crate::testing::router::{Delivery, DeliveryReceiver, DeliverySender, Subscri
 pub struct PubSubTestSubscriber {
     state: Arc<TestState>,
     id: SubscriptionId,
-    rx: DeliveryReceiver,
-    requeue: DeliverySender,
-    /// A clone of the broker's harness coordinator, threaded into each yielded message so a
-    /// requeue re-counts and a consumed delivery decrements. `None` outside a harness run.
-    coordinator: Option<Coordinator>,
+    pages: BufferedSubscriber<Deliveries>,
 }
 
 impl std::fmt::Debug for PubSubTestSubscriber {
@@ -46,9 +44,13 @@ impl PubSubTestSubscriber {
         Self {
             state,
             id,
-            rx,
-            requeue,
-            coordinator,
+            // The default deadline: nothing crosses a network in process, so a page that is
+            // not full closes as soon as the router has run dry.
+            pages: BufferedSubscriber::new(Deliveries {
+                rx,
+                requeue,
+                coordinator,
+            }),
         }
     }
 }
@@ -60,6 +62,38 @@ impl Drop for PubSubTestSubscriber {
 }
 
 impl Subscriber for PubSubTestSubscriber {
+    type Message = PubSubTestMessage;
+    type Error = PubSubError;
+
+    fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
+        self.pages.stream()
+    }
+}
+
+/// The stand-in pages the way the real subscriber does - on the client, off the same one-at-a-time
+/// delivery path - so a page handler runs under `TestApp` exactly as it runs against Pub/Sub.
+impl BatchSubscriber for PubSubTestSubscriber {
+    type Batch = Vec<PubSubTestMessage>;
+
+    fn batches(
+        &mut self,
+        size: NonZeroUsize,
+    ) -> impl Stream<Item = Result<Self::Batch, PubSubError>> + Send + '_ {
+        self.pages.batches(size)
+    }
+}
+
+/// The routed side of a stand-in subscription: the router's channel, read one delivery at a
+/// time. The buffer above it is what turns those into pages.
+struct Deliveries {
+    rx: DeliveryReceiver,
+    requeue: DeliverySender,
+    /// A clone of the broker's harness coordinator, threaded into each yielded message so a
+    /// requeue re-counts and a consumed delivery decrements. `None` outside a harness run.
+    coordinator: Option<Coordinator>,
+}
+
+impl Subscriber for Deliveries {
     type Message = PubSubTestMessage;
     type Error = PubSubError;
 
