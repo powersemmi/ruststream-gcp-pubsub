@@ -23,7 +23,8 @@ use crate::testing::router::{Delivery, DeliveryReceiver, DeliverySender, Subscri
 pub struct PubSubTestSubscriber {
     state: Arc<TestState>,
     id: SubscriptionId,
-    pages: BufferedSubscriber<Deliveries>,
+    // Named for what it is rather than what it yields, as on the real subscriber.
+    buffer: BufferedSubscriber<Deliveries>,
 }
 
 impl std::fmt::Debug for PubSubTestSubscriber {
@@ -44,9 +45,9 @@ impl PubSubTestSubscriber {
         Self {
             state,
             id,
-            // The default deadline: nothing crosses a network in process, so a page that is
+            // The default deadline: nothing crosses a network in process, so a batch that is
             // not full closes as soon as the router has run dry.
-            pages: BufferedSubscriber::new(Deliveries {
+            buffer: BufferedSubscriber::new(Deliveries {
                 rx,
                 requeue,
                 coordinator,
@@ -66,12 +67,13 @@ impl Subscriber for PubSubTestSubscriber {
     type Error = PubSubError;
 
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
-        self.pages.stream()
+        self.buffer.stream()
     }
 }
 
-/// The stand-in pages the way the real subscriber does - on the client, off the same one-at-a-time
-/// delivery path - so a page handler runs under `TestApp` exactly as it runs against Pub/Sub.
+/// The stand-in batches the way the real subscriber does - on the client, off the same
+/// one-at-a-time delivery path - so a slice handler runs under `TestApp` exactly as it runs
+/// against Pub/Sub.
 impl BatchSubscriber for PubSubTestSubscriber {
     type Batch = Vec<PubSubTestMessage>;
 
@@ -79,12 +81,12 @@ impl BatchSubscriber for PubSubTestSubscriber {
         &mut self,
         size: NonZeroUsize,
     ) -> impl Stream<Item = Result<Self::Batch, PubSubError>> + Send + '_ {
-        self.pages.batches(size)
+        self.buffer.batches(size)
     }
 }
 
 /// The routed side of a stand-in subscription: the router's channel, read one delivery at a
-/// time. The buffer above it is what turns those into pages.
+/// time. The buffer above it is what turns those into batches.
 struct Deliveries {
     rx: DeliveryReceiver,
     requeue: DeliverySender,

@@ -6,11 +6,11 @@
 //! no round trip through the pump - the client's `Handler` travels inside each message and is
 //! consumed by `ack`/`nack` directly.
 //!
-//! Pages are assembled on top of that channel. The streaming pull hands over one delivery at a
-//! time, so the subscriber wraps itself in the core's [`BufferedSubscriber`]: the page size
+//! Batches are assembled on top of that channel. The streaming pull hands over one delivery at a
+//! time, so the subscriber wraps itself in the core's [`BufferedSubscriber`]: the batch size
 //! arrives per subscription from the mount site's `batch(n)`, and the deadline that closes a
-//! partial page is this crate's, tunable with
-//! [`PubSubSubscription::page_wait`](crate::PubSubSubscription::page_wait).
+//! partial batch is this crate's, tunable with
+//! [`PubSubSubscription::batch_wait`](crate::PubSubSubscription::batch_wait).
 
 use std::num::NonZeroUsize;
 
@@ -30,13 +30,15 @@ use crate::subscription::PubSubSubscription;
 const CHANNEL_CAPACITY: usize = 16;
 
 /// A subscription to one Pub/Sub subscription; yields [`PubSubMessage`]s one at a time, or in
-/// pages of at most the size the mount site named.
+/// batches of at most the size the mount site named.
 ///
 /// Dropping the subscriber signals the client's shutdown token, which drains the stream and
 /// stops the pump task.
 pub struct PubSubSubscriber {
     subscription: String,
-    pages: BufferedSubscriber<Deliveries>,
+    // Named for what it is rather than what it yields: `buffer.batches(size)` reads, and
+    // `batches.batches(size)` would not.
+    buffer: BufferedSubscriber<Deliveries>,
     shutdown: ShutdownToken,
 }
 
@@ -73,8 +75,8 @@ impl PubSubSubscriber {
 
         Self {
             subscription: name,
-            pages: BufferedSubscriber::new(Deliveries { rx })
-                .max_wait(descriptor.page_wait_value()),
+            buffer: BufferedSubscriber::new(Deliveries { rx })
+                .max_wait(descriptor.batch_wait_value()),
             shutdown,
         }
     }
@@ -99,13 +101,13 @@ impl Subscriber for PubSubSubscriber {
     type Error = PubSubError;
 
     fn stream(&mut self) -> impl Stream<Item = Result<PubSubMessage, PubSubError>> + Send + '_ {
-        self.pages.stream()
+        self.buffer.stream()
     }
 }
 
-/// Pages come off the same channel the single-message stream reads, closed by the size the
-/// registration named or by the descriptor's [`page_wait`](PubSubSubscription::page_wait),
-/// whichever comes first. Nothing at the mount site says the pages are assembled here rather
+/// Batches come off the same channel the single-message stream reads, closed by the size the
+/// registration named or by the descriptor's [`batch_wait`](PubSubSubscription::batch_wait),
+/// whichever comes first. Nothing at the mount site says the batches are assembled here rather
 /// than on the wire.
 impl BatchSubscriber for PubSubSubscriber {
     type Batch = Vec<PubSubMessage>;
@@ -114,13 +116,13 @@ impl BatchSubscriber for PubSubSubscriber {
         &mut self,
         size: NonZeroUsize,
     ) -> impl Stream<Item = Result<Self::Batch, PubSubError>> + Send + '_ {
-        self.pages.batches(size)
+        self.buffer.batches(size)
     }
 }
 
 /// The wire side of a subscription: the pump's output channel, read one delivery at a time.
 /// Private, because a service reaches it through [`PubSubSubscriber`], which owns the buffer
-/// that turns these deliveries into pages.
+/// that turns these deliveries into batches.
 struct Deliveries {
     rx: mpsc::Receiver<Result<PubSubMessage, PubSubError>>,
 }

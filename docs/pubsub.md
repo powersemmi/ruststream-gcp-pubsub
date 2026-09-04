@@ -18,7 +18,7 @@ The framework's optional capability traits, and what this broker implements nati
 | Capability | Native | Notes |
 | --- | --- | --- |
 | `Subscribe` | yes | [subscribe by subscription name](#subscriptions); the subscription must already exist |
-| `BatchSubscriber` | client-side | the streaming pull yields one message at a time, so [pages are assembled on the client](#pages) to the size the mount site names |
+| `BatchSubscriber` | client-side | the streaming pull yields one message at a time, so [batches are assembled on the client](#batches) to the size the mount site names |
 | `TransactionalPublisher` | no | the product has no publish transaction; ordering keys, not atomic batches, are its grouping mechanism |
 | `OwnedTransactions` | no | the product has no publish transaction |
 | `RequestReply` | no | there is no native request/reply; a reply topic and a correlation attribute are an application-level pattern |
@@ -78,7 +78,7 @@ Four options ride the descriptor:
   This is the real prefetch, and it defaults to the client's 1000.
 - `ack_extension(duration)` sets how far each background ack-deadline extension reaches while a
   handler runs. The client clamps it to the protocol's 10s to 600s range and defaults to 60s.
-- `page_wait(duration)` sets how long a partial [page](#pages) waits for the rest of itself.
+- `batch_wait(duration)` sets how long a partial [batch](#batches) waits for the rest of itself.
   It defaults to 50ms and matters only for a handler that takes a slice.
 
 A descriptor that cannot form a subscription (an empty subscription or topic name) is rejected with
@@ -92,38 +92,38 @@ drains the stream.
 The plain string form `#[subscriber("orders-workers")]` also works: a by-name source resolves to
 `PubSubSubscription::new`, which requires the subscription to exist already.
 
-## Pages
+## Batches
 
-A handler that takes a slice consumes a whole page - one database round-trip, one bulk API call,
-per page instead of per order:
+A handler that takes a slice consumes a whole batch - one database round-trip, one bulk API call,
+per batch instead of per order:
 
 ```rust
---8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_pages.rs:handler"
+--8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_batches.rs:handler"
 ```
 
-Mounting it is what every broker does the same way: the page size is the mount site's one word,
+Mounting it is what every broker does the same way: the batch size is the mount site's one word,
 and it is mandatory, because there is no size the framework could invent.
 
 ```rust
---8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_pages.rs:app"
+--8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_batches.rs:app"
 ```
 
-Pub/Sub's streaming pull hands over one delivery at a time, so the pages are assembled on the
+Pub/Sub's streaming pull hands over one delivery at a time, so the batches are assembled on the
 client rather than asked for on the wire. That is invisible at the mount site, which is the
-point: the size is the framework's one word either way, and a page never carries more than it,
+point: the size is the framework's one word either way, and a batch never carries more than it,
 though it may carry fewer.
 
-What is Pub/Sub's own is the other half - how long a page that is not yet full waits for the rest
-of itself. `page_wait` on the descriptor sets that, and defaults to 50ms, roughly one
-streaming-pull burst: shorter and most pages close on their first delivery, longer and a quiet
-subscription holds a page back for nothing. Raise it for a workload whose batches earn their
+What is Pub/Sub's own is the other half - how long a batch that is not yet full waits for the rest
+of itself. `batch_wait` on the descriptor sets that, and defaults to 50ms, roughly one
+streaming-pull burst: shorter and most batches close on their first delivery, longer and a quiet
+subscription holds a batch back for nothing. Raise it for a workload whose batches earn their
 round trip; leave it alone otherwise.
 
 The other subscription settings are unaffected. `max_outstanding` is still flow control - how many
-deliveries may be unacknowledged at once - and it bounds the pull, not the page: it is the
-prefetch a page is assembled out of, not the size of the page.
+deliveries may be unacknowledged at once - and it bounds the pull, not the batch: it is the
+prefetch a batch is assembled out of, not the size of the batch.
 
-The in-process test broker pages the same way, so a `&[T]` handler is unit-testable under
+The in-process test broker batches the same way, so a `&[T]` handler is unit-testable under
 `TestApp` and not only against the emulator.
 
 ## Acknowledgement

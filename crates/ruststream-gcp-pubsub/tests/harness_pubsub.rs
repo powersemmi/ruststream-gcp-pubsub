@@ -1,12 +1,12 @@
 //! Two things a service asserts on the stand-in: the ordering step through an `Out` slot, and a
-//! page handler.
+//! batch handler.
 //!
 //! The step adapts a publisher, so it has to resolve on the slot entry a handler body holds.
 //! Resolved anywhere below that entry it still reaches the broker, but the publish leaves through
 //! the unwrapped publisher and the harness's per-slot capture misses it - a silent hole this test
 //! closes from the outside.
 //!
-//! The page handler is the other half: the stand-in assembles pages the way the real subscriber
+//! The batch handler is the other half: the stand-in assembles batches the way the real subscriber
 //! does, so a `&[T]` body is unit-testable here rather than only against the emulator.
 
 #![cfg(feature = "testing")]
@@ -89,17 +89,17 @@ async fn the_ordering_step_on_a_slot_keeps_the_key_and_its_attribution() {
     tb.shutdown().await.expect("graceful shutdown");
 }
 
-/// Settles whole pages of orders. The slice is what makes it a page handler; the size it is
-/// mounted with is what the pages are built to.
-#[subscriber("orders-pages")]
+/// Settles whole batches of orders. The slice is what makes it a batch handler; the size it is
+/// mounted with is what the batches are built to.
+#[subscriber("orders-batches")]
 async fn settle(orders: &[Order]) -> HandlerOutcome {
-    // However the buffer's deadline split the run, a page that reaches a body is never empty.
-    assert!(!orders.is_empty(), "an empty page reached the body");
+    // However the buffer's deadline split the run, a batch that reaches a body is never empty.
+    assert!(!orders.is_empty(), "an empty batch reached the body");
     HandlerOutcome::ack()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_page_handler_runs_against_the_stand_in() {
+async fn a_batch_handler_runs_against_the_stand_in() {
     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         PubSubTestBroker::new(),
         |b| {
@@ -113,18 +113,18 @@ async fn a_page_handler_runs_against_the_stand_in() {
     for id in 1..=4 {
         tb.broker::<PubSubTestBroker>()
             .message(&Order { id })
-            .to("orders-pages")
+            .to("orders-batches")
             .publish()
             .await
             .expect("the harness accepts the injection");
     }
-    tb.settle().await.expect("the pages settle");
+    tb.settle().await.expect("the batches settle");
 
-    // How the four split across pages is the buffer's business (its deadline against the
+    // How the four split across batches is the buffer's business (its deadline against the
     // injection timing); that every order reached the body is the contract.
     let received: Vec<u64> = tb
         .broker::<PubSubTestBroker>()
-        .subscriber("orders-pages")
+        .subscriber("orders-batches")
         .received::<Order>()
         .into_iter()
         .map(|order| order.id)

@@ -1,7 +1,7 @@
-//! A page handler on Pub/Sub: one call per page of orders instead of one call per order.
+//! A batch handler on Pub/Sub: one call per batch of orders instead of one call per order.
 //!
 //! Run the emulator first (`just brokers-up`), then:
-//! `cargo run --example pubsub_pages`
+//! `cargo run --example pubsub_batches`
 
 use std::time::Duration;
 
@@ -14,12 +14,12 @@ struct Order {
     id: u64,
 }
 
-/// The slice parameter is what makes this a page handler; `page_wait` says how long a page that
-/// is not yet full may wait for the rest of it.
+/// The slice parameter is what makes this a batch handler; `batch_wait` says how long a batch
+/// that is not yet full may wait for the rest of it.
 #[subscriber(
     PubSubSubscription::new("orders-workers")
         .create_with_topic("orders")
-        .page_wait(Duration::from_millis(200))
+        .batch_wait(Duration::from_millis(200))
 )]
 async fn settle(orders: &[Order]) -> HandlerOutcome {
     println!("settling {} orders", orders.len());
