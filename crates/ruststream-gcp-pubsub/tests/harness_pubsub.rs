@@ -51,7 +51,9 @@ async fn the_ordering_step_on_a_slot_keeps_the_key_and_its_attribution() {
     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         PubSubTestBroker::new(),
         |b| {
-            b.include(forward).publisher(PubSubTestPublish);
+            b.include(forward)
+                .out(DefaultSlot, PubSubTestPublish)
+                .build();
         },
     );
     let tb = TestApp::start(app)

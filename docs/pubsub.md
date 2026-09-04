@@ -191,7 +191,7 @@ envelope format is invented, so non-Rust peers see plain Pub/Sub messages.
 A publisher is a policy plus the live clients. `PubSubPublish` holds no connection, so it is
 constructed anywhere (in a router, in configuration, at a mount site) and the runtime pairs it with
 the broker at startup to produce a `PubSubPublisher`. It is also the broker's default publish
-policy, so a `#[subscriber(.., publish("topic"))]` handler mounted without an explicit publisher
+policy, so a `#[subscriber(.., publish("topic"))]` handler mounted without an `.out(Reply, ..)` call
 publishes through it.
 
 A service writes two vocabularies, and the import says which one a file is in. A file of handler
@@ -199,10 +199,11 @@ bodies imports the framework's prelude alone and bounds a slot with a capability
 `Out(out): Out<impl Publisher>`, or `Out<impl PubSubOrdering>` for a body that also wants this
 crate's ordering step - so it names no broker. A routes file imports
 `ruststream_gcp_pubsub::prelude::*` and attaches policies under their mount-site names, so this
-crate's policy arrives as `Publish` and a mount site writes `.publisher(Publish)` or
-`.out(M, Publish)` whichever broker it runs on. This policy holds no options, so the name is the
-whole expression. The prefixed `PubSubPublish` stays at the crate root for a file that speaks to
-two brokers at once and has to say which one it means.
+crate's policy arrives as `Publish` and one verb attaches it wherever it goes:
+`.out(Reply, Publish)` for the value a `publish("topic")` handler returns, `.out(Marker, Publish)`
+for an `Out` slot, and the call reads the same whichever broker it runs on. This policy holds no
+options, so the name is the whole expression. The prefixed `PubSubPublish` stays at the crate root
+for a file that speaks to two brokers at once and has to say which one it means.
 
 The destination name is the topic id, short or a full resource name. Per-topic client publishers
 are created on first use and cached on the broker, which is what lets `shutdown` flush every
