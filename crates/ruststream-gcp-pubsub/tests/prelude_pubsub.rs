@@ -1,8 +1,8 @@
 //! The crate prelude serves a routes file, and keeps the two vocabularies apart.
 //!
 //! Through this glob a publish policy arrives under its mount-site name, so `Publish` here is this
-//! broker's policy: an explicit re-export wins over the glob beside it. The capability traits a
-//! handler body bounds a slot with still come through, because a body names them from the
+//! broker's policy - a name the framework's prelude leaves free for exactly that. The capability
+//! traits a handler body bounds a slot with still come through, because a body names them from the
 //! framework's prelude, which it imports on its own. These are compile-time pins, and they fail
 //! the day either half moves.
 

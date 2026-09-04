@@ -42,11 +42,15 @@ pub use crate::PubSubPublish as Publish;
 pub use crate::{PubSubBroker, PubSubOrdering, PubSubPublisher, PubSubSubscription};
 pub use ruststream::prelude::*;
 
-// The mount-site names are this glob's own vocabulary, and an explicit re-export wins over the
-// glob below, so nothing the framework exports under one of them reaches a routes file through
-// here. That is the arrangement, not a collision to work around: a handler body bounds its slot
-// with a capability trait out of the framework's prelude, which it imports on its own.
+// `Publish` is a policy name, and the framework's prelude exports nothing under it, so this
+// re-export names one thing and collides with nothing: a mount site reads the same whichever
+// broker it is on, and swapping brokers swaps the glob. The capability vocabulary a handler body
+// bounds its slot with comes from the framework's prelude, which such a file imports on its own.
 // `tests/prelude_pubsub.rs` pins both halves.
+//
+// Never alias a policy to a framework trait name (`Publisher`, `TransactionalPublisher`,
+// `OwnedTransactions`, `RequestReply`): a body that globs both preludes has to keep resolving
+// those to the framework's traits.
 
 // `Partitioned` stays out on purpose: the core surfaces `partition_key` as a defaulted method on
 // `IncomingMessage`, which this glob already carries, and this crate's deliveries override it, so
