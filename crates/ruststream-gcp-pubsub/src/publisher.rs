@@ -6,7 +6,7 @@ use std::future::{Future, ready};
 
 use bytes::Bytes;
 use google_cloud_pubsub::client::Publisher as GcpPublisher;
-use ruststream::runtime::{OutSlot, Slot};
+use ruststream::runtime::{OutPipeline, OutSlot, Slot};
 use ruststream::{HeaderMap, OutgoingMessage, PairError, PublishPolicy, Publisher};
 
 use crate::broker::{ConnectedPubSubBroker, Core, CoreCell};
@@ -131,7 +131,10 @@ impl PubSubOrdering for PubSubPublisher {}
 // delegations on it. Resolving the step there keeps the publish attributed to its slot; an impl
 // one layer down is reached by autoderef past the entry instead, and a publish built on it leaves
 // through the unwrapped publisher, where the harness's per-slot capture never sees it.
-impl<M: OutSlot, W: PubSubOrdering, E: Send + Sync, Body> PubSubOrdering for Slot<M, W, E, Body> {}
+impl<M: OutSlot, W: PubSubOrdering, E: Send + Sync, Pipe: OutPipeline, Body> PubSubOrdering
+    for Slot<M, W, E, Pipe, Body>
+{
+}
 
 /// A publisher that carries one ordering key into every publish built on it, returned by
 /// [`PubSubOrdering::with_ordering_key`].
