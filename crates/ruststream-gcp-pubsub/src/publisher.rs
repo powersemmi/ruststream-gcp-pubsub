@@ -90,6 +90,11 @@ impl Publisher for PubSubPublisher {
 /// Implemented for the live publisher, the in-process test publisher and the `Out` slot entry, so
 /// the same call works in a handler, in a startup hook and under the test harness.
 ///
+/// The key is per message, which is why it is a step on the publisher rather than a setting on
+/// [`PubSubPublish`] reached through the mount chain's `map_publisher` hook: it groups one order's
+/// own events, so a key named once at a mount site would funnel everything that registration sends
+/// into a single FIFO lane.
+///
 /// The step yields a plain publisher, so a publish built on it resolves the crate's default codec
 /// rather than the include site's; a slot publish that needs the include site's codec goes through
 /// the slot's own `message(..)` and names the key in its headers.

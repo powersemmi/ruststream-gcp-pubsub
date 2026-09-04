@@ -178,6 +178,14 @@ key rides under the publish's own headers, so other headers named at the call tr
 On an `Out` slot the step resolves on the slot itself, so a publish made through it keeps its slot
 attribution and `tb.out::<Marker>()` sees it under the test harness.
 
+The step is on the publisher and not on the mount chain, where a broker's publisher settings
+normally live, because an ordering key is per message: it is what groups one order's own events, so
+a key named once at a mount site would funnel everything that registration sends into a single FIFO
+lane. `PubSubPublish` carries no settings at all for the same reason, and a mount site writes the
+policy name and nothing else. A `publish("topic")` handler's reply reaches its key through the mount
+chain's `.transform(..)` step, which reads the delivery and writes the reply's `partition-key`
+header per message.
+
 Ordered delivery needs the subscription to have message ordering enabled, and a regional
 `endpoint` is what keeps a key ordered across publishers in one region. A publish failure on an
 ordered key pauses that key in the client; this crate resumes it and returns the failure, so one
