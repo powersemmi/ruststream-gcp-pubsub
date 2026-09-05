@@ -1,12 +1,13 @@
-//! Conformance: the routing suite against the in-process transport, and the lifecycle check
-//! against the Pub/Sub emulator (gated behind `PUBSUB_TEST_HOST`).
+//! Conformance: the routing suite against the in-process transport, and the lifecycle and
+//! batching checks against the Pub/Sub emulator (gated behind `PUBSUB_TEST_HOST`).
 //!
 //! Start the emulator with `just brokers-up`, then:
 //! `PUBSUB_TEST_HOST=127.0.0.1:8085 cargo test --all-features`.
 
 #![cfg(feature = "testing")]
 
-use ruststream::conformance::harness;
+use ruststream::Name;
+use ruststream::conformance::{capabilities, harness};
 use ruststream_gcp_pubsub::testing::PubSubTestBroker;
 use ruststream_gcp_pubsub::{PubSubBroker, PubSubSubscription};
 
@@ -27,14 +28,42 @@ async fn pubsub_test_broker_passes_conformance_suite() {
     harness::run_suite(PubSubTestBroker::new).await;
 }
 
-// `make_source` / `make_publisher` must stay closures: their bounds are higher-ranked
-// (`Fn(&str) -> _` / `Fn(&B) -> _`), so a bare method path - which binds one concrete lifetime -
-// would not type-check.
+// In every check below `make_source` / `make_publisher` must stay closures: their bounds are
+// higher-ranked (`Fn(&str) -> _` / `Fn(&B) -> _`), so a bare method path - which binds one
+// concrete lifetime - would not type-check.
+
+/// The stand-in batches the way the real subscriber does, so it owes the same contract: a batch
+/// never carries more than the size the subscription was opened with.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pubsub_test_broker_honours_the_batch_size() {
+    capabilities::batches(
+        PubSubTestBroker::new,
+        |name| Name::new(name.to_owned()),
+        |connected| connected.publisher(),
+    )
+    .await;
+}
+
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pubsub_broker_passes_lifecycle() {
     let Some(host) = test_host() else { return };
     harness::lifecycle(
+        || PubSubBroker::new(TEST_PROJECT).emulator(host.clone()),
+        |name| PubSubSubscription::new(name).create_with_topic(name),
+        |connected| connected.publisher(),
+    )
+    .await;
+}
+
+/// The same contract against the product itself, where the deliveries the buffer batches come
+/// off a real streaming pull.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pubsub_broker_honours_the_batch_size() {
+    let Some(host) = test_host() else { return };
+    capabilities::batches(
         || PubSubBroker::new(TEST_PROJECT).emulator(host.clone()),
         |name| PubSubSubscription::new(name).create_with_topic(name),
         |connected| connected.publisher(),

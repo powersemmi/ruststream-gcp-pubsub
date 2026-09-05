@@ -1,14 +1,19 @@
-//! Ordered publishing: a `partition-key` header becomes the message's ordering key, so
-//! deliveries for one key stay in publish order.
+//! Ordered publishing: a publish names its ordering key, so deliveries for one key stay in
+//! publish order.
 //!
 //! Run the emulator first (`just brokers-up`), then:
 //! `cargo run --example pubsub_ordered_publish -- run`
 
 use std::io;
 
-use ruststream::runtime::{App, AppInfo, RustStream};
-use ruststream::{Headers, OutgoingMessage, Publisher};
-use ruststream_gcp_pubsub::{PARTITION_KEY_HEADER, PubSubBroker, PubSubPublish};
+use ruststream_gcp_pubsub::prelude::*;
+use serde::Serialize;
+
+/// The model the seed publishes. It declares no destination, so each publish names the topic.
+#[derive(Serialize, Outgoing)]
+struct OrderStep {
+    step: &'static str,
+}
 
 #[ruststream::app]
 fn app() -> impl App {
@@ -18,12 +23,15 @@ fn app() -> impl App {
             // The scope's after_startup is the home of a first publish: the publisher arrives
             // already paired with the connected broker, so the seed cannot race the connect.
             // --8<-- [start:ordered]
-            b.after_startup(PubSubPublish, async move |publisher| -> io::Result<()> {
+            b.after_startup(Publish, async move |publisher| -> io::Result<()> {
+                let ordered = publisher.with_ordering_key("order-42");
                 for step in ["created", "paid", "shipped"] {
-                    let mut headers = Headers::new();
-                    headers.insert(PARTITION_KEY_HEADER, "order-42");
-                    let msg = OutgoingMessage::new("orders", step.as_bytes()).with_headers(headers);
-                    publisher.publish(msg).await.map_err(io::Error::other)?;
+                    ordered
+                        .message(&OrderStep { step })
+                        .to("orders")
+                        .publish()
+                        .await
+                        .map_err(io::Error::other)?;
                 }
                 Ok(())
             });

@@ -6,7 +6,7 @@
 use bytes::Bytes;
 use google_cloud_pubsub::model::Message as GcpMessage;
 use google_cloud_pubsub::subscriber::handler::Handler;
-use ruststream::{AckError, Headers, IncomingMessage, OutgoingMessage, Partitioned};
+use ruststream::{AckError, HeaderMap, IncomingMessage, OutgoingMessage, Partitioned};
 
 /// Header carrying the partition key, mapped onto the message's ordering key.
 ///
@@ -27,7 +27,7 @@ pub const DELIVERY_ATTEMPT_HEADER: &str = "pubsub-delivery-attempt";
 /// from `ack` means the broker accepted it.
 pub struct PubSubMessage {
     payload: Bytes,
-    headers: Headers,
+    headers: HeaderMap,
     handler: Handler,
 }
 
@@ -41,7 +41,7 @@ impl std::fmt::Debug for PubSubMessage {
 
 impl PubSubMessage {
     pub(crate) fn new(message: GcpMessage, handler: Handler) -> Self {
-        let mut headers = Headers::with_capacity(message.attributes.len() + 2);
+        let mut headers = HeaderMap::with_capacity(message.attributes.len() + 2);
         for (name, value) in &message.attributes {
             headers.insert(name.clone(), value.clone());
         }
@@ -70,7 +70,7 @@ impl IncomingMessage for PubSubMessage {
         &self.payload
     }
 
-    fn headers(&self) -> &Headers {
+    fn headers(&self) -> &HeaderMap {
         &self.headers
     }
 
@@ -144,7 +144,7 @@ mod tests {
 
     #[test]
     fn partition_key_header_becomes_the_ordering_key() {
-        let mut headers = Headers::new();
+        let mut headers = HeaderMap::new();
         headers.insert(PARTITION_KEY_HEADER, "user-42");
         headers.insert("x-tenant", "acme");
         let outgoing = OutgoingMessage::new("orders", b"{}".as_slice()).with_headers(headers);
