@@ -15,7 +15,10 @@ authors = ["RustStream contributors"]
 [workspace.dependencies]
 ruststream-gcp-pubsub = { path = "crates/ruststream-gcp-pubsub" }
 
-ruststream = { version = ">=0.7.0, <0.8.0", default-features = false }
+# The floor names the release candidate on purpose: a range that names no pre-release excludes
+# every pre-release, so `>=0.7.0` would not resolve against `0.7.0-rc.1`. The final `0.7.0`
+# satisfies this bound too, so the requirement carries over the release unchanged.
+ruststream = { version = ">=0.7.0-rc.1, <0.8.0", default-features = false }
 
 google-cloud-pubsub = "1.3"
 # The floor the client itself demands: google-cloud-pubsub 1.3 depends on auth 1.15, so a wider
