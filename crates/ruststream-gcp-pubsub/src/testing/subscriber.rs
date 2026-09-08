@@ -3,6 +3,7 @@
 use std::future::{Future, ready};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use futures::Stream;
 
@@ -41,17 +42,19 @@ impl PubSubTestSubscriber {
         rx: DeliveryReceiver,
         requeue: DeliverySender,
         coordinator: Option<Coordinator>,
+        batch_wait: Duration,
     ) -> Self {
         Self {
             state,
             id,
-            // The default deadline: nothing crosses a network in process, so a batch that is
-            // not full closes as soon as the router has run dry.
+            // The descriptor's own deadline, because it is the same knob on the same buffer
+            // here as against the product: batching is on the client either way.
             buffer: BufferedSubscriber::new(Deliveries {
                 rx,
                 requeue,
                 coordinator,
-            }),
+            })
+            .max_wait(batch_wait),
         }
     }
 }
@@ -72,8 +75,9 @@ impl Subscriber for PubSubTestSubscriber {
 }
 
 /// The stand-in batches the way the real subscriber does - on the client, off the same
-/// one-at-a-time delivery path - so a slice handler runs under `TestApp` exactly as it runs
-/// against Pub/Sub.
+/// one-at-a-time delivery path, closed by the size the registration named or by the descriptor's
+/// [`batch_wait`](crate::PubSubSubscription::batch_wait) - so a slice handler runs under
+/// `TestApp` exactly as it runs against Pub/Sub.
 impl BatchSubscriber for PubSubTestSubscriber {
     type Batch = Vec<PubSubTestMessage>;
 

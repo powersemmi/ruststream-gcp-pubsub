@@ -12,6 +12,7 @@ use ruststream::{
 
 use crate::error::PubSubError;
 use crate::publisher::PubSubOrdering;
+use crate::subscription::PubSubSubscription;
 use crate::testing::router::AddressRouter;
 use crate::testing::subscriber::PubSubTestSubscriber;
 
@@ -89,6 +90,61 @@ impl ConnectedPubSubTestBroker {
             state: Arc::clone(&self.state),
         }
     }
+
+    /// Opens the subscription described by `descriptor`, mirroring
+    /// [`ConnectedPubSubBroker::subscribe_descriptor`](crate::ConnectedPubSubBroker::subscribe_descriptor),
+    /// so a service mounts the descriptor it runs in production.
+    ///
+    /// The stand-in routes by one address, and that address is the subscription name: it holds
+    /// no topics, so it has no topic-to-subscription binding to route through. What the
+    /// descriptor says about the service - the batch deadline - carries over; what it says
+    /// about the product does not. [`PubSubSubscription`] carries the full ledger, on its
+    /// `SubscriptionSource` impl for this broker.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PubSubError::InvalidDescriptor`] when the descriptor names no subscription, on
+    /// the same check the real broker runs before any I/O.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream::Broker;
+    /// use ruststream_gcp_pubsub::PubSubSubscription;
+    /// use ruststream_gcp_pubsub::testing::PubSubTestBroker;
+    ///
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> Result<(), ruststream_gcp_pubsub::PubSubError> {
+    /// let broker = PubSubTestBroker::new().connect().await?;
+    /// let subscriber = broker
+    ///     .subscribe_descriptor(PubSubSubscription::new("orders-workers"))
+    ///     .await?;
+    /// # let _ = subscriber;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn subscribe_descriptor(
+        &self,
+        descriptor: PubSubSubscription,
+    ) -> impl Future<Output = Result<PubSubTestSubscriber, PubSubError>> {
+        ready(self.open(descriptor))
+    }
+
+    /// The synchronous body of [`Self::subscribe_descriptor`]: nothing here awaits, and the
+    /// future above exists for call-site parity with the real broker.
+    fn open(&self, descriptor: PubSubSubscription) -> Result<PubSubTestSubscriber, PubSubError> {
+        descriptor.validate()?;
+        let batch_wait = descriptor.batch_wait_value();
+        let (id, requeue, rx) = self.state.router.subscribe(descriptor.into_subscription());
+        Ok(PubSubTestSubscriber::new(
+            Arc::clone(&self.state),
+            id,
+            rx,
+            requeue,
+            self.state.coordinator().cloned(),
+            batch_wait,
+        ))
+    }
 }
 
 impl ConnectedBroker for ConnectedPubSubTestBroker {
@@ -104,15 +160,10 @@ impl ConnectedBroker for ConnectedPubSubTestBroker {
 impl Subscribe for ConnectedPubSubTestBroker {
     type Subscriber = PubSubTestSubscriber;
 
+    /// A name alone is the descriptor's own default form, so the two entry points open the same
+    /// subscription here exactly as they do on the real broker.
     fn subscribe(&self, name: &str) -> impl Future<Output = Result<Self::Subscriber, Self::Error>> {
-        let (id, requeue, rx) = self.state.router.subscribe(name.to_owned());
-        ready(Ok(PubSubTestSubscriber::new(
-            Arc::clone(&self.state),
-            id,
-            rx,
-            requeue,
-            self.state.coordinator().cloned(),
-        )))
+        self.subscribe_descriptor(PubSubSubscription::new(name))
     }
 }
 

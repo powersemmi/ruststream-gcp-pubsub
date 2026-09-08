@@ -264,8 +264,15 @@ extension, redelivery timing, ordered delivery, dead-letter policies). Those are
 end against the emulator, where the integration tests and the framework's conformance lifecycle
 suite run.
 
-Because it routes by name, the stand-in serves the by-name subscriber form
-(`#[subscriber("orders-workers")]`). A handler that names a `PubSubSubscription` descriptor is
-bound to the real broker, since the descriptor resolves a subscription against a topic and the
-stand-in models neither; test those handlers by injecting on the connected stand-in directly, as
-above.
+The descriptor mounts on it too, so a test drives the wiring a service ships rather than a by-name
+rewrite of it: `#[subscriber(PubSubSubscription::new("orders-workers").max_outstanding(1_000))]`
+opens an in-process subscription as readily as it opens a streaming pull.
+
+What the descriptor says about the service carries over, and what it says about the product cannot.
+The stand-in routes by one address, the subscription name, because it holds no topics: there is
+nothing for `create_with_topic` to create and no topic-to-subscription binding to route through. A
+test therefore injects on the subscription name, which is not an address a producer publishes to
+against Pub/Sub - that a message published to the *topic* reaches this subscription is the binding's
+contract, and the emulator suite is what proves it. `batch_wait` is honoured, since batching is on
+the client either way; `max_outstanding` (the streaming pull's flow control) and `ack_extension`
+(lease deadlines) name machinery the stand-in does not have, and are ignored.

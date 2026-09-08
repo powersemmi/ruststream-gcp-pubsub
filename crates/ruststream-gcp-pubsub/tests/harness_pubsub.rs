@@ -1,5 +1,5 @@
-//! Two things a service asserts on the stand-in: the ordering step through an `Out` slot, and a
-//! batch handler.
+//! Three things a service asserts on the stand-in: the ordering step through an `Out` slot, a
+//! batch handler, and the subscription descriptor it declares its handlers with.
 //!
 //! The step adapts a publisher, so it has to resolve on the slot entry a handler body holds.
 //! Resolved anywhere below that entry it still reaches the broker, but the publish leaves through
@@ -8,19 +8,25 @@
 //!
 //! The batch handler is the other half: the stand-in assembles batches the way the real subscriber
 //! does, so a `&[T]` body is unit-testable here rather than only against the emulator.
+//!
+//! The descriptor is what a production routes file writes, and the point of the cases at the end
+//! is that it needs no editing to be mounted here: the same `PubSubSubscription` that opens a
+//! streaming pull opens an in-process subscription.
 
 #![cfg(feature = "testing")]
 
+use std::time::Duration;
+
 use ruststream::runtime::Out;
 use ruststream::testing::TestApp;
-use ruststream::{Outgoing, Serialized};
-use ruststream_gcp_pubsub::PARTITION_KEY_HEADER;
+use ruststream::{Outgoing, Serialized, SubscriptionSource as _};
 use ruststream_gcp_pubsub::prelude::*;
 use ruststream_gcp_pubsub::testing::{PubSubTestBroker, PubSubTestPublish};
+use ruststream_gcp_pubsub::{PARTITION_KEY_HEADER, PubSubError};
 use serde::{Deserialize, Serialize};
 
 /// The order the harness injects.
-#[derive(Debug, Serialize, Deserialize, Outgoing)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Outgoing)]
 struct Order {
     id: u64,
 }
@@ -132,4 +138,124 @@ async fn a_batch_handler_runs_against_the_stand_in() {
     assert_eq!(received, [1, 2, 3, 4]);
 
     tb.shutdown().await.expect("graceful shutdown");
+}
+
+/// The declaration a service ships, carrying the options a production subscription is opened
+/// with. Nothing about it is test-shaped, and nothing about it needs to be.
+#[subscriber(PubSubSubscription::new("orders-descriptor")
+    .create_with_topic("orders")
+    .max_outstanding(500)
+    .ack_extension(Duration::from_secs(30)))]
+async fn confirm(order: &Order) -> HandlerOutcome {
+    let _ = order.id;
+    HandlerOutcome::ack()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_production_descriptor_mounts_on_the_stand_in() {
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+        PubSubTestBroker::new(),
+        |b| {
+            b.include(confirm);
+        },
+    );
+    let tb = TestApp::start(app)
+        .await
+        .expect("the harness starts the app");
+
+    tb.broker::<PubSubTestBroker>()
+        .message(&Order { id: 11 })
+        .to("orders-descriptor")
+        .publish()
+        .await
+        .expect("the harness accepts the injection");
+    tb.settle().await.expect("the handler settles");
+
+    tb.broker::<PubSubTestBroker>()
+        .subscriber("orders-descriptor")
+        .assert_called_once()
+        .with(&Order { id: 11 })
+        .settled(HandlerOutcome::ack());
+
+    // The stand-in routes by the subscription name and holds no topics, so `create_with_topic`
+    // names no second address to reach this handler by. Documented on the source impl, pinned
+    // here so it reads as a decision: the topic-to-subscription hop is the emulator's to prove.
+    tb.broker::<PubSubTestBroker>()
+        .message(&Order { id: 12 })
+        .to("orders")
+        .publish()
+        .await
+        .expect("the harness accepts the injection");
+    tb.settle()
+        .await
+        .expect("a publish nothing subscribes to settles on the spot");
+    tb.broker::<PubSubTestBroker>()
+        .subscriber("orders-descriptor")
+        .assert_called_once();
+
+    tb.shutdown().await.expect("graceful shutdown");
+}
+
+/// The batch half of the same declaration: the descriptor names how long a partial batch waits,
+/// and the registration names how large it may grow.
+#[subscriber(PubSubSubscription::new("orders-descriptor-batches")
+    .batch_wait(Duration::from_millis(20)))]
+async fn settle_descriptor(orders: &[Order]) -> HandlerOutcome {
+    assert!(!orders.is_empty(), "an empty batch reached the body");
+    HandlerOutcome::ack()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_descriptor_mounted_batch_handler_runs_against_the_stand_in() {
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+        PubSubTestBroker::new(),
+        |b| {
+            b.include(settle_descriptor.batch(nonzero!(4)));
+        },
+    );
+    let tb = TestApp::start(app)
+        .await
+        .expect("the harness starts the app");
+
+    for id in 1..=4 {
+        tb.broker::<PubSubTestBroker>()
+            .message(&Order { id })
+            .to("orders-descriptor-batches")
+            .publish()
+            .await
+            .expect("the harness accepts the injection");
+    }
+    tb.settle().await.expect("the batches settle");
+
+    let received: Vec<u64> = tb
+        .broker::<PubSubTestBroker>()
+        .subscriber("orders-descriptor-batches")
+        .received::<Order>()
+        .into_iter()
+        .map(|order| order.id)
+        .collect();
+    assert_eq!(received, [1, 2, 3, 4]);
+
+    tb.shutdown().await.expect("graceful shutdown");
+}
+
+/// The stand-in runs the descriptor's own check rather than a looser one, so a descriptor that
+/// names no subscription fails here exactly where it fails against the product: before any
+/// subscription is opened.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_empty_descriptor_is_rejected_by_the_stand_in() {
+    let broker = PubSubTestBroker::new()
+        .connect()
+        .await
+        .expect("the stand-in connects");
+
+    let err = PubSubSubscription::new("")
+        .subscribe(&broker)
+        .await
+        .expect_err("a descriptor naming no subscription must not open one");
+
+    assert!(
+        matches!(err, PubSubError::InvalidDescriptor(_)),
+        "got {err}"
+    );
 }
