@@ -27,8 +27,9 @@
 
 - **Lazy startup contract.** `PubSubBroker::new(project)` is synchronous and does no I/O (Application Default Credentials by default; explicit `credentials`, a regional `endpoint`, or a local `emulator` as builder options); the runtime connects once at startup, so the broker composes with `#[ruststream::app]`.
 - **Streaming pull as the message stream.** Each subscription is a `Stream` of deliveries; the client extends ack deadlines in the background while a handler runs, so a slow handler does not cause redelivery.
+- **Batches for slice handlers.** A `&[T]` handler names its batch size at the mount site (`.batch(nonzero!(50))`) like on any broker; the pull hands over one delivery at a time, so the batches are assembled on the client, with `PubSubSubscription::batch_wait` closing a partial one.
 - **Native acknowledgement.** `ack` and `nack(requeue = true)` map onto the product directly (with the confirmed forms on exactly-once subscriptions). `nack(requeue = false)` acknowledges: Pub/Sub has no drop-without-redelivery verb - poison routing belongs to the subscription's dead-letter policy, and the delivery-attempt count is surfaced as a header.
-- **Ordering keys as the partition key.** A `partition-key` header becomes the message's ordering key on publish and comes back as the same header (feeding `Partitioned`) on delivery.
+- **Ordering keys as the partition key.** A publish names its key with `with_ordering_key`; the key travels as the `partition-key` header, under the publish's own headers, and comes back as the same header (feeding `Partitioned`) on delivery.
 - **Attributes carry headers directly** - no envelope format is invented; non-Rust peers see plain Pub/Sub messages.
 - **Emulator as a supported target.** `PubSubBroker::new(p).emulator("localhost:8085")` wires the plaintext endpoint and anonymous credentials (the client does not honour `PUBSUB_EMULATOR_HOST` on its own), and `PubSubSubscription::create_with_topic` creates the resources on subscribe for local development.
 - **In-process test broker** (feature `testing`). `PubSubTestBroker` reproduces core routing with no server, implements `ruststream::testing::TestableBroker`, and passes the framework's conformance suite in process.
@@ -37,22 +38,18 @@
 
 ```toml
 [dependencies]
-ruststream = { version = "0.6", features = ["macros", "json"] }
-ruststream-gcp-pubsub = "0.6"
+ruststream = { version = "0.7", features = ["macros", "json"] }
+ruststream-gcp-pubsub = "0.7"
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
-ruststream-gcp-pubsub = { version = "0.6", features = ["testing"] }
+ruststream-gcp-pubsub = { version = "0.7", features = ["testing"] }
 ```
 
 ## Write a service
 
 ```rust
-use std::time::Duration;
-
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
-use ruststream::subscriber;
-use ruststream_gcp_pubsub::{PubSubBroker, PubSubSubscription};
+use ruststream_gcp_pubsub::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -61,9 +58,9 @@ struct Order {
 }
 
 #[subscriber(PubSubSubscription::new("orders-workers").max_outstanding(1_000))]
-async fn handle(order: &Order) -> HandlerResult {
+async fn handle(order: &Order) -> HandlerOutcome {
     println!("got order {}", order.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 
 #[ruststream::app]
@@ -72,6 +69,8 @@ fn app() -> impl App {
         .with_broker(PubSubBroker::new("my-project"), |b| b.include(handle))
 }
 ```
+
+`ruststream_gcp_pubsub::prelude` is the whole import list: the framework's own prelude plus this crate's surface.
 
 The descriptor names an existing subscription; `create_with_topic("orders")` opts into creating the subscription (and topic) on subscribe, which the emulator workflow needs.
 

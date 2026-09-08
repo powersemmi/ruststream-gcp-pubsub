@@ -5,11 +5,19 @@
 //! deliveries, and forwards them into a bounded channel the subscriber polls. Settlement needs
 //! no round trip through the pump - the client's `Handler` travels inside each message and is
 //! consumed by `ack`/`nack` directly.
+//!
+//! Batches are assembled on top of that channel. The streaming pull hands over one delivery at a
+//! time, so the subscriber wraps itself in the core's [`BufferedSubscriber`]: the batch size
+//! arrives per subscription from the mount site's `batch(n)`, and the deadline that closes a
+//! partial batch is this crate's, tunable with
+//! [`PubSubSubscription::batch_wait`](crate::PubSubSubscription::batch_wait).
+
+use std::num::NonZeroUsize;
 
 use futures::Stream;
 
 use google_cloud_pubsub::subscriber::{MessageStream, ShutdownToken};
-use ruststream::Subscriber;
+use ruststream::{BatchSubscriber, BufferedSubscriber, Subscriber};
 use tokio::sync::mpsc;
 
 use crate::broker::Core;
@@ -21,13 +29,16 @@ use crate::subscription::PubSubSubscription;
 /// the client's own flow control (`max_outstanding`); this only decouples the two loops.
 const CHANNEL_CAPACITY: usize = 16;
 
-/// A subscription to one Pub/Sub subscription; yields [`PubSubMessage`]s.
+/// A subscription to one Pub/Sub subscription; yields [`PubSubMessage`]s one at a time, or in
+/// batches of at most the size the mount site named.
 ///
 /// Dropping the subscriber signals the client's shutdown token, which drains the stream and
 /// stops the pump task.
 pub struct PubSubSubscriber {
     subscription: String,
-    rx: mpsc::Receiver<Result<PubSubMessage, PubSubError>>,
+    // Named for what it is rather than what it yields: `buffer.batches(size)` reads, and
+    // `batches.batches(size)` would not.
+    buffer: BufferedSubscriber<Deliveries>,
     shutdown: ShutdownToken,
 }
 
@@ -64,7 +75,8 @@ impl PubSubSubscriber {
 
         Self {
             subscription: name,
-            rx,
+            buffer: BufferedSubscriber::new(Deliveries { rx })
+                .max_wait(descriptor.batch_wait_value()),
             shutdown,
         }
     }
@@ -85,6 +97,37 @@ impl Drop for PubSubSubscriber {
 }
 
 impl Subscriber for PubSubSubscriber {
+    type Message = PubSubMessage;
+    type Error = PubSubError;
+
+    fn stream(&mut self) -> impl Stream<Item = Result<PubSubMessage, PubSubError>> + Send + '_ {
+        self.buffer.stream()
+    }
+}
+
+/// Batches come off the same channel the single-message stream reads, closed by the size the
+/// registration named or by the descriptor's [`batch_wait`](PubSubSubscription::batch_wait),
+/// whichever comes first. Nothing at the mount site says the batches are assembled here rather
+/// than on the wire.
+impl BatchSubscriber for PubSubSubscriber {
+    type Batch = Vec<PubSubMessage>;
+
+    fn batches(
+        &mut self,
+        size: NonZeroUsize,
+    ) -> impl Stream<Item = Result<Self::Batch, PubSubError>> + Send + '_ {
+        self.buffer.batches(size)
+    }
+}
+
+/// The wire side of a subscription: the pump's output channel, read one delivery at a time.
+/// Private, because a service reaches it through [`PubSubSubscriber`], which owns the buffer
+/// that turns these deliveries into batches.
+struct Deliveries {
+    rx: mpsc::Receiver<Result<PubSubMessage, PubSubError>>,
+}
+
+impl Subscriber for Deliveries {
     type Message = PubSubMessage;
     type Error = PubSubError;
 

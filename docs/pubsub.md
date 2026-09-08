@@ -6,8 +6,8 @@
 [RustStream documentation](https://powersemmi.github.io/ruststream/).
 
 ```toml
-ruststream = { version = "0.6", features = ["macros", "json"] }
-ruststream-gcp-pubsub = "0.6"
+ruststream = { version = "0.7", features = ["macros", "json"] }
+ruststream-gcp-pubsub = "0.7"
 serde = { version = "1", features = ["derive"] }
 ```
 
@@ -18,13 +18,16 @@ The framework's optional capability traits, and what this broker implements nati
 | Capability | Native | Notes |
 | --- | --- | --- |
 | `Subscribe` | yes | [subscribe by subscription name](#subscriptions); the subscription must already exist |
-| `BatchSubscriber` | no | the streaming pull yields one message at a time; the batching knob is `max_outstanding` flow control |
+| `BatchSubscriber` | client-side | the streaming pull yields one message at a time, so [batches are assembled on the client](#batches) to the size the mount site names |
 | `TransactionalPublisher` | no | the product has no publish transaction; ordering keys, not atomic batches, are its grouping mechanism |
 | `OwnedTransactions` | no | the product has no publish transaction |
 | `RequestReply` | no | there is no native request/reply; a reply topic and a correlation attribute are an application-level pattern |
 | `Partitioned` | yes | [the partition key is the message's ordering key](#ordering-keys-and-the-partition-key) |
 | `Seekable` and `Positioned` | no | repositioning is a subscription-level admin `seek` to a timestamp or a snapshot, not an offset the subscriber addresses per stream |
 | `DescribeServer` | yes | reports the endpoint in use (emulator host, custom endpoint, or `pubsub.googleapis.com`) with the `googlepubsub` protocol |
+
+A handler reads the ordering key off the delivery it is handed, with `message.partition_key()`
+and no broker-specific import.
 
 ## The lifecycle
 
@@ -66,7 +69,7 @@ other broker:
 --8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_service.rs:app"
 ```
 
-Three options ride the descriptor:
+Four options ride the descriptor:
 
 - `create_with_topic(topic)` creates the subscription and its topic on subscribe when they do not
   exist. It is meant for local development and tests against the emulator; production subscriptions
@@ -75,6 +78,8 @@ Three options ride the descriptor:
   This is the real prefetch, and it defaults to the client's 1000.
 - `ack_extension(duration)` sets how far each background ack-deadline extension reaches while a
   handler runs. The client clamps it to the protocol's 10s to 600s range and defaults to 60s.
+- `batch_wait(duration)` sets how long a partial [batch](#batches) waits for the rest of itself.
+  It defaults to 50ms and matters only for a handler that takes a slice.
 
 A descriptor that cannot form a subscription (an empty subscription or topic name) is rejected with
 `PubSubError::InvalidDescriptor` before any I/O.
@@ -87,16 +92,50 @@ drains the stream.
 The plain string form `#[subscriber("orders-workers")]` also works: a by-name source resolves to
 `PubSubSubscription::new`, which requires the subscription to exist already.
 
+## Batches
+
+A handler that takes a slice consumes a whole batch - one database round-trip, one bulk API call,
+per batch instead of per order:
+
+```rust
+--8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_batches.rs:handler"
+```
+
+Mounting it is what every broker does the same way: the batch size is the mount site's one word,
+and it is mandatory, because there is no size the framework could invent.
+
+```rust
+--8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_batches.rs:app"
+```
+
+Pub/Sub's streaming pull hands over one delivery at a time, so the batches are assembled on the
+client rather than asked for on the wire. That is invisible at the mount site, which is the
+point: the size is the framework's one word either way, and a batch never carries more than it,
+though it may carry fewer.
+
+What is Pub/Sub's own is the other half - how long a batch that is not yet full waits for the rest
+of itself. `batch_wait` on the descriptor sets that, and defaults to 50ms, roughly one
+streaming-pull burst: shorter and most batches close on their first delivery, longer and a quiet
+subscription holds a batch back for nothing. Raise it for a workload whose batches earn their
+round trip; leave it alone otherwise.
+
+The other subscription settings are unaffected. `max_outstanding` is still flow control - how many
+deliveries may be unacknowledged at once - and it bounds the pull, not the batch: it is the
+prefetch a batch is assembled out of, not the size of the batch.
+
+The in-process test broker batches the same way, so a `&[T]` handler is unit-testable under
+`TestApp` and not only against the emulator.
+
 ## Acknowledgement
 
 Settlement is native per message, and it is the confirmed variant on a subscription with
 exactly-once delivery enabled:
 
-| Handler result | Pub/Sub call | Effect |
+| Handler outcome | Pub/Sub call | Effect |
 | --- | --- | --- |
-| `HandlerResult::Ack` | acknowledge | the delivery is done |
-| `HandlerResult::retry()` | nack | the message becomes available again and is redelivered |
-| `HandlerResult::drop()` | acknowledge | the message is not redelivered |
+| `HandlerOutcome::ack()` | acknowledge | the delivery is done |
+| `HandlerOutcome::retry()` | nack | the message becomes available again and is redelivered |
+| `HandlerOutcome::drop()` | acknowledge | the message is not redelivered |
 
 `drop()` acknowledging is the product's model: Pub/Sub has no drop-without-redelivery verb, so
 poison-message routing belongs to the subscription's dead-letter policy, which the service
@@ -104,7 +143,7 @@ configures on the subscription resource rather than per message. When a dead-let
 the delivery-attempt count arrives as the `pubsub-delivery-attempt` header (exported as
 `DELIVERY_ATTEMPT_HEADER`), so a handler can branch on how many times a message has come back.
 
-There is no native delayed nack here, so `HandlerResult::retry_after(delay)` falls back to the
+There is no native delayed nack here, so `HandlerOutcome::retry_after(delay)` falls back to the
 runtime's broker-agnostic deferred re-publish rather than a broker-side timer.
 
 ### Exactly-once acknowledgement
@@ -127,9 +166,25 @@ same idea, so the two are one header. A `partition-key` header (exported as `PAR
 on an outgoing message becomes the message's ordering key, and a delivered message carries its
 ordering key back under the same header, feeding the `Partitioned` capability.
 
+A publish names its key with `with_ordering_key`, which adapts the publisher: one adapter serves a
+run of publishes, and the rest of the chain (codec, headers, destination) is written as usual. The
+key rides under the publish's own headers, so other headers named at the call travel with it and a
+`partition-key` named there wins.
+
 ```rust
 --8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_ordered_publish.rs:ordered"
 ```
+
+On an `Out` slot the step resolves on the slot itself, so a publish made through it keeps its slot
+attribution and `tb.out::<Marker>()` sees it under the test harness.
+
+The step is on the publisher and not on the mount chain, where a broker's publisher settings
+normally live, because an ordering key is per message: it is what groups one order's own events, so
+a key named once at a mount site would funnel everything that registration sends into a single FIFO
+lane. `PubSubPublish` carries no settings at all for the same reason, and a mount site writes the
+policy name and nothing else. A `publish("topic")` handler's reply reaches its key through the mount
+chain's `.transform(..)` step, which reads the delivery and writes the reply's `partition-key`
+header per message.
 
 Ordered delivery needs the subscription to have message ordering enabled, and a regional
 `endpoint` is what keeps a key ordered across publishers in one region. A publish failure on an
@@ -144,12 +199,32 @@ envelope format is invented, so non-Rust peers see plain Pub/Sub messages.
 A publisher is a policy plus the live clients. `PubSubPublish` holds no connection, so it is
 constructed anywhere (in a router, in configuration, at a mount site) and the runtime pairs it with
 the broker at startup to produce a `PubSubPublisher`. It is also the broker's default publish
-policy, so a `#[subscriber(.., publish("topic"))]` handler mounted without an explicit publisher
+policy, so a `#[subscriber(.., publish("topic"))]` handler mounted without an `.out(Reply, ..)` call
 publishes through it.
+
+A service writes two vocabularies, and the import says which one a file is in. A file of handler
+bodies imports the framework's prelude alone and bounds a slot with a capability trait -
+`Out(out): Out<impl Publisher>`, or `Out<impl PubSubOrdering>` for a body that also wants this
+crate's ordering step - so it names no broker. A routes file imports
+`ruststream_gcp_pubsub::prelude::*` and attaches policies under their mount-site names, so this
+crate's policy arrives as `Publish` and one verb attaches it wherever it goes:
+`.out(Reply, Publish)` for the value a `publish("topic")` handler returns, `.out(Marker, Publish)`
+for an `Out` slot, and the call reads the same whichever broker it runs on. This policy holds no
+options, so the name is the whole expression. The prefixed `PubSubPublish` stays at the crate root
+for a file that speaks to two brokers at once and has to say which one it means.
 
 The destination name is the topic id, short or a full resource name. Per-topic client publishers
 are created on first use and cached on the broker, which is what lets `shutdown` flush every
 buffered batch instead of dropping it.
+
+Every publish starts at `message(&value)` and ends at `publish()`, on an `Out` slot, on a publisher
+held in state, and in a startup hook alike; the value's type picks the wire, so a `Serialize` model
+encodes through the codec and a `#[derive(Serialized)]` type's bytes leave as they are.
+`with_ordering_key` is this crate's one addition to that chain; message attributes are headers, and
+everything else Pub/Sub takes per publish is a subscription-level setting.
+
+A message built by hand and handed to `Publisher::publish` is sent as it is - the path to take
+when the header map is what you want to control.
 
 ## The emulator
 
@@ -188,3 +263,9 @@ The test broker routes by exact name match and does not simulate product behavio
 extension, redelivery timing, ordered delivery, dead-letter policies). Those are verified end to
 end against the emulator, where the integration tests and the framework's conformance lifecycle
 suite run.
+
+Because it routes by name, the stand-in serves the by-name subscriber form
+(`#[subscriber("orders-workers")]`). A handler that names a `PubSubSubscription` descriptor is
+bound to the real broker, since the descriptor resolves a subscription against a topic and the
+stand-in models neither; test those handlers by injecting on the connected stand-in directly, as
+above.
