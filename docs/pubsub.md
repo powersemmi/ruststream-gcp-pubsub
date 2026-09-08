@@ -262,7 +262,9 @@ connected form implements `ruststream::testing::TestableBroker`, so the same bro
 The test broker routes by exact name match and does not simulate product behaviour (deadline
 extension, redelivery timing, ordered delivery, dead-letter policies). Those are verified end to
 end against the emulator, where the integration tests and the framework's conformance lifecycle
-suite run.
+suite run. It does keep the ladder's shutdown contract: a publisher that outlived `shutdown`
+reports `NotConnected` here as it does against Pub/Sub, so a test cannot go green on a publish the
+product would refuse.
 
 A whole routes file mounts on it, written as it ships. On the subscribe side
 `#[subscriber(PubSubSubscription::new("orders-workers").max_outstanding(1_000))]` opens an

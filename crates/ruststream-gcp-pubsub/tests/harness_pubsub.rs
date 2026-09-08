@@ -18,9 +18,9 @@
 
 use std::time::Duration;
 
-use ruststream::runtime::Out;
+use ruststream::runtime::{Out, PublishError};
 use ruststream::testing::TestApp;
-use ruststream::{Outgoing, Serialized, SubscriptionSource as _};
+use ruststream::{ConnectedBroker as _, Outgoing, Serialized, SubscriptionSource as _};
 use ruststream_gcp_pubsub::prelude::*;
 use ruststream_gcp_pubsub::testing::PubSubTestBroker;
 use ruststream_gcp_pubsub::{PARTITION_KEY_HEADER, PubSubError};
@@ -298,6 +298,34 @@ async fn an_empty_descriptor_is_rejected_by_the_stand_in() {
 
     assert!(
         matches!(err, PubSubError::InvalidDescriptor(_)),
+        "got {err}"
+    );
+}
+
+/// The ladder makes owner-side misuse a compile error; a publisher that outlived the shutdown is
+/// what stays checkable at runtime, and the real policy pairs here now, so a service can write
+/// this test against the stand-in. It must answer as Pub/Sub does rather than route into a
+/// transport that is gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn publishing_after_shutdown_errors() {
+    let broker = PubSubTestBroker::new()
+        .connect()
+        .await
+        .expect("the stand-in connects");
+    let publisher = broker.publisher();
+    broker.shutdown().await.expect("graceful shutdown");
+
+    let err = publisher
+        .message(&Order { id: 1 })
+        .to("orders")
+        .publish()
+        .await
+        .expect_err("a publish through the closed transport must error");
+
+    // The broker's own variant, through the builder's wrapper: the same answer the real
+    // publisher gives once its connection cell is closed.
+    assert!(
+        matches!(err, PublishError::Publish(PubSubError::NotConnected)),
         "got {err}"
     );
 }

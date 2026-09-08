@@ -1,6 +1,7 @@
 //! [`PubSubTestBroker`]: the in-process transport and its connected form.
 
 use std::future::{Future, ready};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
@@ -21,11 +22,23 @@ use crate::testing::subscriber::PubSubTestSubscriber;
 pub(crate) struct TestState {
     pub(crate) router: AddressRouter,
     coordinator: OnceLock<Coordinator>,
+    /// Mirrors the real broker, where the connection is gone after `shutdown`: a handle that
+    /// outlived it must say so rather than route into a dead transport.
+    closed: AtomicBool,
 }
 
 impl TestState {
     fn coordinator(&self) -> Option<&Coordinator> {
         self.coordinator.get()
+    }
+
+    /// `Ok` while the transport is live, [`PubSubError::NotConnected`] once it has shut down -
+    /// the same variant the real publisher reports through its connection cell.
+    fn ensure_open(&self) -> Result<(), PubSubError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(PubSubError::NotConnected);
+        }
+        Ok(())
     }
 
     pub(crate) fn publish(&self, name: &str, payload: Bytes, headers: ruststream::HeaderMap) {
@@ -134,6 +147,7 @@ impl ConnectedPubSubTestBroker {
     /// future above exists for call-site parity with the real broker.
     fn open(&self, descriptor: PubSubSubscription) -> Result<PubSubTestSubscriber, PubSubError> {
         descriptor.validate()?;
+        self.state.ensure_open()?;
         let batch_wait = descriptor.batch_wait_value();
         let (id, requeue, rx) = self.state.router.subscribe(descriptor.into_subscription());
         Ok(PubSubTestSubscriber::new(
@@ -151,7 +165,12 @@ impl ConnectedBroker for ConnectedPubSubTestBroker {
     type Error = PubSubError;
     type Closed = ();
 
+    /// Drops every subscription and marks the transport closed, so a handle that outlived the
+    /// shutdown - a clone of this broker, a publisher paired off it - reports
+    /// [`PubSubError::NotConnected`] afterwards instead of routing into a dead transport, as it
+    /// does against Pub/Sub.
     fn shutdown(self) -> impl Future<Output = Result<(), Self::Error>> {
+        self.state.closed.store(true, Ordering::Release);
         self.state.router.clear();
         ready(Ok(()))
     }
@@ -188,21 +207,33 @@ impl TestableBroker for ConnectedPubSubTestBroker {
 ruststream::register_testable_broker!(ConnectedPubSubTestBroker);
 
 /// Publisher for the in-process broker.
+///
+/// Usable from before `connect` until `shutdown`, like the real publisher; afterwards it reports
+/// [`PubSubError::NotConnected`] rather than succeeding against a transport that is gone.
 #[derive(Debug, Clone)]
 pub struct PubSubTestPublisher {
     state: Arc<TestState>,
+}
+
+impl PubSubTestPublisher {
+    /// The synchronous body of the publish: routing in process is a channel send, and the
+    /// future below is what gives the call site its parity with the real publisher.
+    fn route(&self, msg: &OutgoingMessage<'_>) -> Result<(), PubSubError> {
+        self.state.ensure_open()?;
+        self.state.publish(
+            msg.name(),
+            Bytes::copy_from_slice(msg.payload()),
+            msg.headers().clone(),
+        );
+        Ok(())
+    }
 }
 
 impl Publisher for PubSubTestPublisher {
     type Error = PubSubError;
 
     fn publish(&self, msg: OutgoingMessage<'_>) -> impl Future<Output = Result<(), Self::Error>> {
-        self.state.publish(
-            msg.name(),
-            Bytes::copy_from_slice(msg.payload()),
-            msg.headers().clone(),
-        );
-        ready(Ok(()))
+        ready(self.route(&msg))
     }
 }
 
