@@ -11,7 +11,7 @@ use ruststream::{
 };
 
 use crate::error::PubSubError;
-use crate::publisher::PubSubOrdering;
+use crate::publisher::{PubSubOrdering, PubSubPublish};
 use crate::subscription::PubSubSubscription;
 use crate::testing::router::AddressRouter;
 use crate::testing::subscriber::PubSubTestSubscriber;
@@ -91,9 +91,9 @@ impl ConnectedPubSubTestBroker {
         }
     }
 
-    /// Opens the subscription described by `descriptor`, mirroring
-    /// [`ConnectedPubSubBroker::subscribe_descriptor`](crate::ConnectedPubSubBroker::subscribe_descriptor),
-    /// so a service mounts the descriptor it runs in production.
+    /// Opens the subscription described by `descriptor`, so a service mounts the descriptor it
+    /// runs in production. Mirrors the real broker's
+    /// [`subscribe_descriptor`](crate::ConnectedPubSubBroker::subscribe_descriptor).
     ///
     /// The stand-in routes by one address, and that address is the subscription name: it holds
     /// no topics, so it has no topic-to-subscription binding to route through. What the
@@ -209,22 +209,11 @@ impl Publisher for PubSubTestPublisher {
 // Keeps `with_ordering_key` callable in a test exactly as against the real broker.
 impl PubSubOrdering for PubSubTestPublisher {}
 
-/// The publish policy for [`PubSubTestPublisher`], mirroring
-/// [`PubSubPublish`](crate::PubSubPublish) on the real broker.
-///
-/// # Examples
-///
-/// ```
-/// use ruststream_gcp_pubsub::testing::PubSubTestPublish;
-///
-/// let policy = PubSubTestPublish::default();
-/// # let _ = policy;
-/// ```
-#[derive(Debug, Clone, Copy, Default)]
-#[must_use]
-pub struct PubSubTestPublish;
-
-impl PublishPolicy<ConnectedPubSubTestBroker> for PubSubTestPublish {
+/// The stand-in pairs the real [`PubSubPublish`] policy, so a routes file mounts on it with the
+/// spelling it ships: `.out(Reply, Publish)` reads the same either way, and there is no test-only
+/// policy to swap in. The policy holds no settings for the stand-in to honour - the destination
+/// travels on the message and the ordering key on its header - so the pairing loses nothing.
+impl PublishPolicy<ConnectedPubSubTestBroker> for PubSubPublish {
     type Live = PubSubTestPublisher;
 
     fn pair(
@@ -236,5 +225,5 @@ impl PublishPolicy<ConnectedPubSubTestBroker> for PubSubTestPublish {
 }
 
 impl DefaultPublish for ConnectedPubSubTestBroker {
-    type Policy = PubSubTestPublish;
+    type Policy = PubSubPublish;
 }

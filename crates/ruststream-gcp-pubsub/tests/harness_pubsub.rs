@@ -9,9 +9,10 @@
 //! The batch handler is the other half: the stand-in assembles batches the way the real subscriber
 //! does, so a `&[T]` body is unit-testable here rather than only against the emulator.
 //!
-//! The descriptor is what a production routes file writes, and the point of the cases at the end
-//! is that it needs no editing to be mounted here: the same `PubSubSubscription` that opens a
-//! streaming pull opens an in-process subscription.
+//! The routes file is what the cases at the end are about, and the point is that it needs no
+//! editing to be mounted here: the same `PubSubSubscription` that opens a streaming pull opens an
+//! in-process subscription, and the same `Publish` policy that reaches Pub/Sub pairs with the
+//! stand-in.
 
 #![cfg(feature = "testing")]
 
@@ -21,7 +22,7 @@ use ruststream::runtime::Out;
 use ruststream::testing::TestApp;
 use ruststream::{Outgoing, Serialized, SubscriptionSource as _};
 use ruststream_gcp_pubsub::prelude::*;
-use ruststream_gcp_pubsub::testing::{PubSubTestBroker, PubSubTestPublish};
+use ruststream_gcp_pubsub::testing::PubSubTestBroker;
 use ruststream_gcp_pubsub::{PARTITION_KEY_HEADER, PubSubError};
 use serde::{Deserialize, Serialize};
 
@@ -57,9 +58,7 @@ async fn the_ordering_step_on_a_slot_keeps_the_key_and_its_attribution() {
     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         PubSubTestBroker::new(),
         |b| {
-            b.include(forward)
-                .out(DefaultSlot, PubSubTestPublish)
-                .build();
+            b.include(forward).out(DefaultSlot, Publish).build();
         },
     );
     let tb = TestApp::start(app)
@@ -192,6 +191,49 @@ async fn the_production_descriptor_mounts_on_the_stand_in() {
     tb.broker::<PubSubTestBroker>()
         .subscriber("orders-descriptor")
         .assert_called_once();
+
+    tb.shutdown().await.expect("graceful shutdown");
+}
+
+/// What the planner returns; the mount site says where it goes.
+#[derive(Debug, PartialEq, Serialize, Deserialize, Outgoing)]
+struct PlanItem {
+    order_id: u64,
+}
+
+/// The other half of a routes file: a handler whose reply the mount site publishes.
+#[subscriber(PubSubSubscription::new("orders-plan"), publish("plan-items"))]
+async fn plan(order: &Order) -> PlanItem {
+    PlanItem { order_id: order.id }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_routes_file_a_service_ships_mounts_on_the_stand_in() {
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+        PubSubTestBroker::new(),
+        // Character for character what a routes file writes against the real broker: the
+        // descriptor on the subscribe side, the policy under its mount-site name on the publish
+        // side. Neither has a test-only spelling to swap in.
+        |b| {
+            b.include(plan).out(Reply, Publish);
+        },
+    );
+    let tb = TestApp::start(app)
+        .await
+        .expect("the harness starts the app");
+
+    tb.broker::<PubSubTestBroker>()
+        .message(&Order { id: 5 })
+        .to("orders-plan")
+        .publish()
+        .await
+        .expect("the harness accepts the injection");
+    tb.settle().await.expect("the handler settles");
+
+    tb.broker::<PubSubTestBroker>()
+        .published::<PlanItem>("plan-items")
+        .assert_called_once()
+        .with(&PlanItem { order_id: 5 });
 
     tb.shutdown().await.expect("graceful shutdown");
 }
