@@ -304,8 +304,11 @@ async fn an_empty_descriptor_is_rejected_by_the_stand_in() {
 
 /// The ladder makes owner-side misuse a compile error; a publisher that outlived the shutdown is
 /// what stays checkable at runtime, and the real policy pairs here now, so a service can write
-/// this test against the stand-in. It must answer as Pub/Sub does rather than route into a
-/// transport that is gone.
+/// this test against the stand-in.
+///
+/// That the publish fails at all is the framework's contract, pinned by `harness::lifecycle` in
+/// `tests/conformance_pubsub.rs`. What this adds is the answer's shape: the variant a service
+/// matches on is the broker's own, the same one the real publisher reports.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn publishing_after_shutdown_errors() {
     let broker = PubSubTestBroker::new()
