@@ -1,4 +1,4 @@
-//! [`PubSubSubscription`]: the subscription descriptor.
+//! [`GooglePubSub`]: the subscription descriptor.
 //!
 //! Pub/Sub separates the topic from the subscription, and the descriptor keeps both explicit:
 //! by default it names an existing subscription; `create_with_topic` opts into creating the
@@ -25,16 +25,16 @@ const DEFAULT_BATCH_WAIT: Duration = Duration::from_millis(50);
 ///
 /// ```
 /// use std::time::Duration;
-/// use ruststream_gcp_pubsub::PubSubSubscription;
+/// use ruststream_gcp_pubsub::GooglePubSub;
 ///
-/// let source = PubSubSubscription::new("orders-workers")
+/// let source = GooglePubSub::new("orders-workers")
 ///     .max_outstanding(1_000)
 ///     .ack_extension(Duration::from_secs(60));
 /// # let _ = source;
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]
-pub struct PubSubSubscription {
+pub struct GooglePubSub {
     name: String,
     create_with_topic: Option<String>,
     max_outstanding: Option<i64>,
@@ -42,7 +42,7 @@ pub struct PubSubSubscription {
     batch_wait: Duration,
 }
 
-impl PubSubSubscription {
+impl GooglePubSub {
     /// Names an existing subscription (short name or full
     /// `projects/{p}/subscriptions/{s}` resource name).
     pub fn new(name: impl Into<String>) -> Self {
@@ -87,9 +87,9 @@ impl PubSubSubscription {
     ///
     /// ```
     /// use std::time::Duration;
-    /// use ruststream_gcp_pubsub::PubSubSubscription;
+    /// use ruststream_gcp_pubsub::GooglePubSub;
     ///
-    /// let source = PubSubSubscription::new("orders-workers")
+    /// let source = GooglePubSub::new("orders-workers")
     ///     .batch_wait(Duration::from_millis(200));
     /// # let _ = source;
     /// ```
@@ -136,7 +136,7 @@ impl PubSubSubscription {
     }
 }
 
-impl SubscriptionSource<ConnectedPubSubBroker> for PubSubSubscription {
+impl SubscriptionSource<ConnectedPubSubBroker> for GooglePubSub {
     type Subscriber = PubSubSubscriber;
 
     fn name(&self) -> &str {
@@ -158,7 +158,7 @@ mod tests {
     #[test]
     fn empty_subscription_name_is_rejected_before_io() {
         assert!(matches!(
-            PubSubSubscription::new("").validate(),
+            GooglePubSub::new("").validate(),
             Err(PubSubError::InvalidDescriptor(_))
         ));
     }
@@ -166,9 +166,7 @@ mod tests {
     #[test]
     fn empty_topic_name_is_rejected_before_io() {
         assert!(matches!(
-            PubSubSubscription::new("s")
-                .create_with_topic("")
-                .validate(),
+            GooglePubSub::new("s").create_with_topic("").validate(),
             Err(PubSubError::InvalidDescriptor(_))
         ));
     }

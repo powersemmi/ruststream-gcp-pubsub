@@ -8,7 +8,7 @@
 //!   per message, and the client extends ack deadlines in the background while a handler runs.
 //! - A handler taking a slice gets batches: the pull hands over one delivery at a time, so the
 //!   batches are assembled on the client to the size the mount site named, with
-//!   [`PubSubSubscription::batch_wait`] closing a partial one.
+//!   [`GooglePubSub::batch_wait`] closing a partial one.
 //! - Dead-letter topics and delivery-attempt counts are subscription settings, surfaced on
 //!   received messages, not crate machinery.
 //! - Ordering keys map onto the partition key; message attributes carry headers directly, so
@@ -37,4 +37,4 @@ pub use error::PubSubError;
 pub use message::{DELIVERY_ATTEMPT_HEADER, PARTITION_KEY_HEADER, PubSubMessage};
 pub use publisher::{OrderedPublisher, PubSubOrdering, PubSubPublish, PubSubPublisher};
 pub use subscriber::PubSubSubscriber;
-pub use subscription::PubSubSubscription;
+pub use subscription::GooglePubSub;

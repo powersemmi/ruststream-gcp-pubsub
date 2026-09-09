@@ -13,7 +13,7 @@ use ruststream::{
     Serialized, Subscriber,
 };
 use ruststream_gcp_pubsub::{
-    ConnectedPubSubBroker, PARTITION_KEY_HEADER, PubSubBroker, PubSubOrdering, PubSubSubscription,
+    ConnectedPubSubBroker, GooglePubSub, PARTITION_KEY_HEADER, PubSubBroker, PubSubOrdering,
 };
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(15);
@@ -54,7 +54,7 @@ async fn roundtrip_preserves_payload_attributes_and_partition_key() {
 
     let name = unique("roundtrip");
     let mut subscriber = connected
-        .subscribe_descriptor(PubSubSubscription::new(&name).create_with_topic(&name))
+        .subscribe_descriptor(GooglePubSub::new(&name).create_with_topic(&name))
         .await
         .expect("subscription opens");
 
@@ -94,7 +94,7 @@ async fn the_ordering_step_sets_the_key_of_a_built_publish() {
 
     let name = unique("ordering-step");
     let mut subscriber = connected
-        .subscribe_descriptor(PubSubSubscription::new(&name).create_with_topic(&name))
+        .subscribe_descriptor(GooglePubSub::new(&name).create_with_topic(&name))
         .await
         .expect("subscription opens");
 
@@ -128,7 +128,7 @@ async fn nack_with_requeue_redelivers() {
 
     let name = unique("requeue");
     let mut subscriber = connected
-        .subscribe_descriptor(PubSubSubscription::new(&name).create_with_topic(&name))
+        .subscribe_descriptor(GooglePubSub::new(&name).create_with_topic(&name))
         .await
         .expect("subscription opens");
     let publisher = connected.publisher();
@@ -163,7 +163,7 @@ async fn nack_without_requeue_does_not_redeliver() {
 
     let name = unique("drop");
     let mut subscriber = connected
-        .subscribe_descriptor(PubSubSubscription::new(&name).create_with_topic(&name))
+        .subscribe_descriptor(GooglePubSub::new(&name).create_with_topic(&name))
         .await
         .expect("subscription opens");
     let publisher = connected.publisher();

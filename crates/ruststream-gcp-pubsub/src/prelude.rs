@@ -23,7 +23,7 @@
 //!     id: u64,
 //! }
 //!
-//! #[subscriber(PubSubSubscription::new("orders-workers"))]
+//! #[subscriber(GooglePubSub::new("orders-workers"))]
 //! async fn handle(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
 //!     let _ = (order.id, ctx.name());
 //!     HandlerOutcome::ack()
@@ -39,7 +39,7 @@
 //! ```
 
 pub use crate::PubSubPublish as Publish;
-pub use crate::{PubSubBroker, PubSubOrdering, PubSubPublisher, PubSubSubscription};
+pub use crate::{GooglePubSub, PubSubBroker, PubSubOrdering, PubSubPublisher};
 pub use ruststream::prelude::*;
 
 // `Publish` is a policy name, and the framework's prelude exports nothing under it, so this
