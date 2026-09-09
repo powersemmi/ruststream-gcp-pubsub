@@ -210,13 +210,37 @@ impl Broker for PubSubBroker {
     }
 }
 
+/// The host and optional port an endpoint points at, which is what
+/// [`ServerSpec::host`] is defined to carry.
+///
+/// An operator writes whatever the client accepts, and that may carry a scheme, a path, or
+/// credentials. The description goes into a document teams share, so only the address belongs in
+/// it.
+fn host_and_port(endpoint: &str) -> &str {
+    // The scheme goes first and the path second, because either may contain an `@`: cutting on
+    // the last `@` of the whole string would read `scheme://host/a@b` as a host of `b`.
+    let after_scheme = endpoint
+        .split_once("://")
+        .map_or(endpoint, |(_, rest)| rest);
+    let authority = after_scheme
+        .split_once(['/', '?', '#'])
+        .map_or(after_scheme, |(authority, _)| authority);
+    // Credentials may themselves contain an `@`, so the host is what follows the last one.
+    authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host)
+}
+
 impl DescribeServer for PubSubBroker {
     fn describe_server(&self) -> ServerSpec {
         let host = self
             .emulator
-            .clone()
-            .or_else(|| self.endpoint.clone())
-            .unwrap_or_else(|| "pubsub.googleapis.com".to_owned());
+            .as_deref()
+            .or(self.endpoint.as_deref())
+            .map_or_else(
+                || "pubsub.googleapis.com".to_owned(),
+                |endpoint| host_and_port(endpoint).to_owned(),
+            );
         ServerSpec::new(host, "googlepubsub")
     }
 }
@@ -373,4 +397,77 @@ impl Subscribe for ConnectedPubSubBroker {
 
 impl DefaultPublish for ConnectedPubSubBroker {
     type Policy = PubSubPublish;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn described(broker: &PubSubBroker) -> String {
+        broker
+            .describe_server()
+            .host
+            .expect("a Pub/Sub server always has an address")
+    }
+
+    #[test]
+    fn the_default_server_is_the_public_endpoint() {
+        assert_eq!(
+            described(&PubSubBroker::new("p")),
+            "pubsub.googleapis.com".to_owned()
+        );
+    }
+
+    #[test]
+    fn an_emulator_address_is_reported_as_written() {
+        // The form the documentation puts in front of a reader.
+        assert_eq!(
+            described(&PubSubBroker::new("p").emulator("localhost:8085")),
+            "localhost:8085".to_owned()
+        );
+    }
+
+    /// Every endpoint form this crate accepts reduces to the host and port, and nothing an
+    /// operator wrote around it reaches a document teams share.
+    #[test]
+    fn an_endpoint_is_reported_as_host_and_port() {
+        for (written, expected) in [
+            ("localhost:8085", "localhost:8085"),
+            ("http://localhost:8085", "localhost:8085"),
+            (
+                "https://us-east1-pubsub.googleapis.com",
+                "us-east1-pubsub.googleapis.com",
+            ),
+            ("https://pubsub.googleapis.com/v1", "pubsub.googleapis.com"),
+            (
+                "https://pubsub.googleapis.com/v1?alt=json",
+                "pubsub.googleapis.com",
+            ),
+            ("http://user:pass@localhost:8085", "localhost:8085"),
+            // The path holds the only `@`, so cutting on it before the path is removed would
+            // report `b` as the host.
+            ("https://pubsub.googleapis.com/a@b", "pubsub.googleapis.com"),
+            // Credentials carrying an `@` of their own: the host follows the last one.
+            ("http://user:p@ss@localhost:8085", "localhost:8085"),
+            ("http://[::1]:8085", "[::1]:8085"),
+        ] {
+            let host = described(&PubSubBroker::new("p").endpoint(written));
+            assert_eq!(host, expected.to_owned(), "endpoint {written:?}");
+            assert!(
+                !host.contains("://"),
+                "scheme reached the description: {host}"
+            );
+            assert!(
+                !host.contains('@'),
+                "credentials reached the description: {host}"
+            );
+        }
+    }
+
+    /// The emulator takes the same path: it is an endpoint an operator writes too.
+    #[test]
+    fn an_emulator_endpoint_is_stripped_the_same_way() {
+        let host = described(&PubSubBroker::new("p").emulator("http://user:pass@127.0.0.1:8085"));
+        assert_eq!(host, "127.0.0.1:8085".to_owned());
+    }
 }
