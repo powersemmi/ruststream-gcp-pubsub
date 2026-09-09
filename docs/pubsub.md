@@ -221,7 +221,10 @@ just test-brokers  # starts the emulator, runs the integration and conformance s
 ## Testing
 
 The `testing` feature ships `PubSubTestBroker`: an in-process transport that reproduces the crate's
-routing. Mount the service on it and drive it with the framework's `TestApp` harness.
+routing. Mount the service on it and drive it with the framework's `TestApp` harness. A test file
+names both by path, next to the prelude glob:
+`use ruststream_gcp_pubsub::testing::PubSubTestBroker;` and
+`use ruststream::testing::TestApp;`.
 
 `TestApp::start(app)` connects the app and mounts its handlers.
 `tb.broker::<PubSubTestBroker>().message(&order).to("orders-workers").publish()` delivers an order
