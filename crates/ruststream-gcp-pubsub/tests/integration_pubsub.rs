@@ -16,6 +16,8 @@ use ruststream_gcp_pubsub::{
     ConnectedPubSubBroker, PARTITION_KEY_HEADER, PubSubBroker, PubSubOrdering, PubSubSubscription,
 };
 
+mod live;
+
 const RECV_TIMEOUT: Duration = Duration::from_secs(15);
 const TEST_PROJECT: &str = "ruststream-test";
 
@@ -25,13 +27,7 @@ const TEST_PROJECT: &str = "ruststream-test";
 struct Wire(Vec<u8>);
 
 fn test_host() -> Option<String> {
-    match std::env::var("PUBSUB_TEST_HOST") {
-        Ok(host) if !host.is_empty() => Some(host),
-        _ => {
-            eprintln!("PUBSUB_TEST_HOST is not set; skipping the emulator integration test");
-            None
-        }
-    }
+    live::host("PUBSUB_TEST_HOST")
 }
 
 async fn connect(host: &str) -> ConnectedPubSubBroker {
