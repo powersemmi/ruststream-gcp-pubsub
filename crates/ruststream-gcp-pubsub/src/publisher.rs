@@ -6,8 +6,14 @@ use std::future::{Future, ready};
 
 use bytes::Bytes;
 use google_cloud_pubsub::client::Publisher as GcpPublisher;
-use ruststream::runtime::{OutPipeline, OutSlot, Slot};
-use ruststream::{HeaderMap, OutgoingMessage, PairError, PublishPolicy, Publisher};
+use ruststream::codec::Codec;
+use ruststream::runtime::{
+    ContainsMessage, HeadersUnset, MessageBody, OutPipeline, OutSlot, PublishBuilder,
+    PublishedThrough, Slot,
+};
+use ruststream::{
+    HeaderMap, OutgoingDestination, OutgoingMessage, PairError, PublishPolicy, Publisher,
+};
 
 use crate::broker::{ConnectedPubSubBroker, Core, CoreCell};
 use crate::error::{PubSubError, box_err};
@@ -95,9 +101,8 @@ impl Publisher for PubSubPublisher {
 /// own events, so a key named once at a mount site would funnel everything that registration sends
 /// into a single FIFO lane.
 ///
-/// The step yields a plain publisher, so a publish built on it resolves the crate's default codec
-/// rather than the include site's; a slot publish that needs the include site's codec goes through
-/// the slot's own `message(..)` and names the key in its headers.
+/// The key does not change which codec applies: a publish built on an adapted `Out` slot encodes
+/// with the codec the include site named, exactly as an unkeyed one does.
 ///
 /// # Examples
 ///
@@ -165,6 +170,66 @@ impl<'a, P: Publisher + ?Sized> OrderedPublisher<'a, P> {
         let mut base = inner.base_headers().cloned().unwrap_or_default();
         base.insert(PARTITION_KEY_HEADER, key);
         Self { inner, base }
+    }
+}
+
+/// The keyed publish on an adapted `Out` slot.
+///
+/// The publish leaves through the adapter, so it carries the ordering key, and it starts on the
+/// slot, so it encodes with the codec the include site named. Without this the builder would
+/// start on the adapter, which names no codec, and the crate default would apply to keyed
+/// messages alone.
+///
+/// # Examples
+///
+/// ```
+/// use ruststream::runtime::{HandlerOutcome, Out};
+/// use ruststream::{Outgoing, subscriber};
+/// use ruststream_gcp_pubsub::prelude::*;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[derive(Outgoing, Serialize)]
+/// #[outgoing(name = "orders-events")]
+/// struct Shipped {
+///     id: u64,
+/// }
+///
+/// #[subscriber("orders")]
+/// async fn ship(order: &Order, Out(out): Out<impl PubSubOrdering>) -> HandlerOutcome {
+///     let ordered = out.with_ordering_key(format!("order-{}", order.id));
+///     if ordered
+///         .message(&Shipped { id: order.id })
+///         .publish()
+///         .await
+///         .is_err()
+///     {
+///         return HandlerOutcome::retry();
+///     }
+///     HandlerOutcome::ack()
+/// }
+/// ```
+impl<'a, M, W, E, Pipe, Body> OrderedPublisher<'a, Slot<M, W, E, Pipe, Body>>
+where
+    M: OutSlot,
+    W: Publisher,
+    E: Codec + Send + Sync,
+    Pipe: OutPipeline,
+{
+    /// Starts a publish that carries this adapter's ordering key and the include site's codec.
+    pub fn message<T, Index>(
+        &'a self,
+        value: &'a T,
+    ) -> PublishBuilder<&'a Self, MessageBody<'a, T>, &'a E, HeadersUnset, T::Form>
+    where
+        Body: ContainsMessage<T, Index>,
+        T: OutgoingDestination + PublishedThrough<M>,
+    {
+        self.inner.message_through(self, value)
     }
 }
 
