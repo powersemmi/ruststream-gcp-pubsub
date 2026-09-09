@@ -182,9 +182,9 @@ The step is on the publisher and not on the mount chain, where a broker's publis
 normally live, because an ordering key is per message: it is what groups one order's own events, so
 a key named once at a mount site would funnel everything that registration sends into a single FIFO
 lane. `PubSubPublish` carries no settings at all for the same reason, and a mount site writes the
-policy name and nothing else. A `publish("topic")` handler's reply reaches its key through the mount
-chain's `.transform(..)` step, which reads the delivery and writes the reply's `partition-key`
-header per message.
+policy name and nothing else. A handler's reply reaches its key through the mount chain's
+`.transform(..)` step, which reads the delivery and writes the reply's `partition-key` header per
+message.
 
 Ordered delivery needs the subscription to have message ordering enabled, and a regional
 `endpoint` is what keeps a key ordered across publishers in one region. A publish failure on an
@@ -199,8 +199,7 @@ envelope format is invented, so non-Rust peers see plain Pub/Sub messages.
 A publisher is a policy plus the live clients. `PubSubPublish` holds no connection, so it is
 constructed anywhere (in a router, in configuration, at a mount site) and the runtime pairs it with
 the broker at startup to produce a `PubSubPublisher`. It is also the broker's default publish
-policy, so a `#[subscriber(.., publish("topic"))]` handler mounted without an `.out(Reply, ..)` call
-publishes through it.
+policy, so a replying handler mounted without an `.out(Reply, ..)` call publishes through it.
 
 A service writes two vocabularies, and the import says which one a file is in. A file of handler
 bodies imports the framework's prelude alone and bounds a slot with a capability trait -
@@ -208,8 +207,8 @@ bodies imports the framework's prelude alone and bounds a slot with a capability
 crate's ordering step - so it names no broker. A routes file imports
 `ruststream_gcp_pubsub::prelude::*` and attaches policies under their mount-site names, so this
 crate's policy arrives as `Publish` and one verb attaches it wherever it goes:
-`.out(Reply, Publish)` for the value a `publish("topic")` handler returns, `.out(Marker, Publish)`
-for an `Out` slot, and the call reads the same whichever broker it runs on. This policy holds no
+`.out(Reply, Publish)` for the value a replying handler returns, `.out(Marker, Publish)` for an
+`Out` slot, and the call reads the same whichever broker it runs on. This policy holds no
 options, so the name is the whole expression. The prefixed `PubSubPublish` stays at the crate root
 for a file that speaks to two brokers at once and has to say which one it means.
 

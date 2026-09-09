@@ -1,5 +1,5 @@
-//! Two things a service asserts on the stand-in: the ordering step through an `Out` slot, and a
-//! batch handler.
+//! Three things a service asserts on the stand-in: the ordering step through an `Out` slot, a
+//! batch handler, and where a returned reply lands.
 //!
 //! The step adapts a publisher, so it has to resolve on the slot entry a handler body holds.
 //! Resolved anywhere below that entry it still reaches the broker, but the publish leaves through
@@ -8,6 +8,9 @@
 //!
 //! The batch handler is the other half: the stand-in assembles batches the way the real subscriber
 //! does, so a `&[T]` body is unit-testable here rather than only against the emulator.
+//!
+//! A reply destination is resolved from the reply type, and the resolution runs through this
+//! crate's default publish policy, so both spellings are checked against real Pub/Sub wiring.
 
 #![cfg(feature = "testing")]
 
@@ -130,6 +133,93 @@ async fn a_batch_handler_runs_against_the_stand_in() {
         .map(|order| order.id)
         .collect();
     assert_eq!(received, [1, 2, 3, 4]);
+
+    tb.shutdown().await.expect("graceful shutdown");
+}
+
+/// The receipt every accepted order gets. It always goes to the same topic, so the topic is part
+/// of the type and no mount site repeats it.
+#[derive(Debug, PartialEq, Serialize, Deserialize, Outgoing)]
+#[outgoing(name = "receipts")]
+struct Receipt {
+    id: u64,
+}
+
+/// Answers an order with its receipt.
+#[subscriber("orders-receipts", publish)]
+async fn receipt(order: &Order) -> Receipt {
+    Receipt { id: order.id }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reply_type_that_declares_a_topic_is_published_there() {
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+        PubSubTestBroker::new(),
+        |b| {
+            b.include(receipt);
+        },
+    );
+    let tb = TestApp::start(app)
+        .await
+        .expect("the harness starts the app");
+
+    tb.broker::<PubSubTestBroker>()
+        .message(&Order { id: 7 })
+        .to("orders-receipts")
+        .publish()
+        .await
+        .expect("the harness accepts the injection");
+    tb.settle().await.expect("the handler settles");
+
+    let broker = tb.broker::<PubSubTestBroker>();
+    broker.subscriber("orders-receipts").assert_called_once();
+    broker
+        .published::<Receipt>("receipts")
+        .assert_called_once()
+        .with(&Receipt { id: 7 });
+
+    tb.shutdown().await.expect("graceful shutdown");
+}
+
+/// The audit copy of an order. The same shape serves several topics, so each mount site says
+/// which one it feeds.
+#[derive(Debug, PartialEq, Serialize, Deserialize, Outgoing)]
+struct Audited {
+    id: u64,
+}
+
+/// Copies an order to wherever it is mounted.
+#[subscriber("orders-audit", publish("audit-eu"))]
+async fn audit(order: &Order) -> Audited {
+    Audited { id: order.id }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reply_type_without_a_topic_is_published_where_the_mount_site_says() {
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+        PubSubTestBroker::new(),
+        |b| {
+            b.include(audit);
+        },
+    );
+    let tb = TestApp::start(app)
+        .await
+        .expect("the harness starts the app");
+
+    tb.broker::<PubSubTestBroker>()
+        .message(&Order { id: 11 })
+        .to("orders-audit")
+        .publish()
+        .await
+        .expect("the harness accepts the injection");
+    tb.settle().await.expect("the handler settles");
+
+    let broker = tb.broker::<PubSubTestBroker>();
+    broker.subscriber("orders-audit").assert_called_once();
+    broker
+        .published::<Audited>("audit-eu")
+        .assert_called_once()
+        .with(&Audited { id: 11 });
 
     tb.shutdown().await.expect("graceful shutdown");
 }
