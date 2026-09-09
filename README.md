@@ -32,7 +32,7 @@
 - **Ordering keys as the partition key.** A publish names its key with `with_ordering_key`; the key travels as the `partition-key` header, under the publish's own headers, and comes back as the same header (feeding `Partitioned`) on delivery.
 - **Attributes carry headers directly** - no envelope format is invented, and a `#[derive(Serialized)]` payload leaves as its own bytes with no codec in the way, so non-Rust peers see plain Pub/Sub messages.
 - **Emulator as a supported target.** `PubSubBroker::new(p).emulator("localhost:8085")` wires the plaintext endpoint and anonymous credentials (the client does not honour `PUBSUB_EMULATOR_HOST` on its own), and `PubSubSubscription::create_with_topic` creates the resources on subscribe for local development.
-- **In-process test broker** (feature `testing`). `PubSubTestBroker` reproduces this crate's routing with no server, drives the `TestApp` harness, and passes the framework's conformance suite in process.
+- **In-process test broker** (feature `testing`). `PubSubTestBroker` reproduces this crate's routing with no server, a service mounts on it and runs under the `TestApp` harness, and it answers the way Pub/Sub does, which the crate's own tests hold it to.
 
 ## Install
 
@@ -52,12 +52,12 @@ ruststream-gcp-pubsub = { version = "0.7", features = ["testing"] }
 use ruststream_gcp_pubsub::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Outgoing, Serialize)]
 struct Order {
     id: u64,
 }
 
-#[derive(Debug, Serialize, Outgoing)]
+#[derive(Debug, Deserialize, PartialEq, Serialize, Outgoing)]
 struct Confirmation {
     order_id: u64,
 }
@@ -122,7 +122,7 @@ tb.out::<DefaultSlot>()
     .with(&Confirmation { order_id: 42 });
 ```
 
-The harness puts an `Order` on the wire and reads a `Confirmation` back, so each model carries one derive more than the service alone needs: `Outgoing` on the injected type, `Deserialize` on the asserted one.
+The harness puts an `Order` on the wire and reads a `Confirmation` back, so each model carries two derives more than the service alone needs: `Outgoing` and `Serialize` on the injected type, `Deserialize` and `PartialEq` on the asserted one.
 
 The stand-in routes by subscription name, which is why a handler under test names its subscription as a string: a descriptor resolves a subscription against a topic, and the stand-in models neither that nor product behaviour (deadline extension, redelivery, ordered delivery). Those are covered by the env-gated live suite instead: `just test-brokers` starts the emulator and runs the integration tests plus the framework conformance lifecycle against it.
 
