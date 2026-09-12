@@ -1,6 +1,7 @@
 //! [`PubSubTestBroker`]: the in-process transport and its connected form.
 
 use std::future::{Future, ready};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
@@ -11,7 +12,8 @@ use ruststream::{
 };
 
 use crate::error::PubSubError;
-use crate::publisher::PubSubOrdering;
+use crate::publisher::{PubSubOrdering, PubSubPublish};
+use crate::subscription::GooglePubSub;
 use crate::testing::router::AddressRouter;
 use crate::testing::subscriber::PubSubTestSubscriber;
 
@@ -20,11 +22,23 @@ use crate::testing::subscriber::PubSubTestSubscriber;
 pub(crate) struct TestState {
     pub(crate) router: AddressRouter,
     coordinator: OnceLock<Coordinator>,
+    /// Mirrors the real broker, where the connection is gone after `shutdown`: a handle that
+    /// outlived it must say so rather than route into a dead transport.
+    closed: AtomicBool,
 }
 
 impl TestState {
     fn coordinator(&self) -> Option<&Coordinator> {
         self.coordinator.get()
+    }
+
+    /// `Ok` while the transport is live, [`PubSubError::NotConnected`] once it has shut down -
+    /// the same variant the real publisher reports through its connection cell.
+    fn ensure_open(&self) -> Result<(), PubSubError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(PubSubError::NotConnected);
+        }
+        Ok(())
     }
 
     pub(crate) fn publish(&self, name: &str, payload: Bytes, headers: ruststream::HeaderMap) {
@@ -89,13 +103,74 @@ impl ConnectedPubSubTestBroker {
             state: Arc::clone(&self.state),
         }
     }
+
+    /// Opens the subscription described by `descriptor`, so a service mounts the descriptor it
+    /// runs in production. Mirrors the real broker's
+    /// [`subscribe_descriptor`](crate::ConnectedPubSubBroker::subscribe_descriptor).
+    ///
+    /// The stand-in routes by one address, and that address is the subscription name: it holds
+    /// no topics, so it has no topic-to-subscription binding to route through. What the
+    /// descriptor says about the service - the batch deadline - carries over; what it says
+    /// about the product does not. [`GooglePubSub`] carries the full ledger, on its
+    /// `SubscriptionSource` impl for this broker.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PubSubError::InvalidDescriptor`] when the descriptor names no subscription, on
+    /// the same check the real broker runs before any I/O.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream::Broker;
+    /// use ruststream_gcp_pubsub::GooglePubSub;
+    /// use ruststream_gcp_pubsub::testing::PubSubTestBroker;
+    ///
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> Result<(), ruststream_gcp_pubsub::PubSubError> {
+    /// let broker = PubSubTestBroker::new().connect().await?;
+    /// let subscriber = broker
+    ///     .subscribe_descriptor(GooglePubSub::new("orders-workers"))
+    ///     .await?;
+    /// # let _ = subscriber;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn subscribe_descriptor(
+        &self,
+        descriptor: GooglePubSub,
+    ) -> impl Future<Output = Result<PubSubTestSubscriber, PubSubError>> {
+        ready(self.open(descriptor))
+    }
+
+    /// The synchronous body of [`Self::subscribe_descriptor`]: nothing here awaits, and the
+    /// future above exists for call-site parity with the real broker.
+    fn open(&self, descriptor: GooglePubSub) -> Result<PubSubTestSubscriber, PubSubError> {
+        descriptor.validate()?;
+        self.state.ensure_open()?;
+        let batch_wait = descriptor.batch_wait_value();
+        let (id, requeue, rx) = self.state.router.subscribe(descriptor.into_subscription());
+        Ok(PubSubTestSubscriber::new(
+            Arc::clone(&self.state),
+            id,
+            rx,
+            requeue,
+            self.state.coordinator().cloned(),
+            batch_wait,
+        ))
+    }
 }
 
 impl ConnectedBroker for ConnectedPubSubTestBroker {
     type Error = PubSubError;
     type Closed = ();
 
+    /// Drops every subscription and marks the transport closed, so a handle that outlived the
+    /// shutdown - a clone of this broker, a publisher paired off it - reports
+    /// [`PubSubError::NotConnected`] afterwards instead of routing into a dead transport, as it
+    /// does against Pub/Sub.
     fn shutdown(self) -> impl Future<Output = Result<(), Self::Error>> {
+        self.state.closed.store(true, Ordering::Release);
         self.state.router.clear();
         ready(Ok(()))
     }
@@ -104,15 +179,10 @@ impl ConnectedBroker for ConnectedPubSubTestBroker {
 impl Subscribe for ConnectedPubSubTestBroker {
     type Subscriber = PubSubTestSubscriber;
 
+    /// A name alone is the descriptor's own default form, so the two entry points open the same
+    /// subscription here exactly as they do on the real broker.
     fn subscribe(&self, name: &str) -> impl Future<Output = Result<Self::Subscriber, Self::Error>> {
-        let (id, requeue, rx) = self.state.router.subscribe(name.to_owned());
-        ready(Ok(PubSubTestSubscriber::new(
-            Arc::clone(&self.state),
-            id,
-            rx,
-            requeue,
-            self.state.coordinator().cloned(),
-        )))
+        self.subscribe_descriptor(GooglePubSub::new(name))
     }
 }
 
@@ -137,43 +207,44 @@ impl TestableBroker for ConnectedPubSubTestBroker {
 ruststream::register_testable_broker!(ConnectedPubSubTestBroker);
 
 /// Publisher for the in-process broker.
+///
+/// Usable from before `connect` until `shutdown`, like the real publisher; afterwards it reports
+/// [`PubSubError::NotConnected`] rather than succeeding against a transport that is gone.
 #[derive(Debug, Clone)]
 pub struct PubSubTestPublisher {
     state: Arc<TestState>,
+}
+
+impl PubSubTestPublisher {
+    /// The synchronous body of the publish: routing in process is a channel send, and the
+    /// future below is what gives the call site its parity with the real publisher.
+    fn route(&self, msg: &OutgoingMessage<'_>) -> Result<(), PubSubError> {
+        self.state.ensure_open()?;
+        self.state.publish(
+            msg.name(),
+            Bytes::copy_from_slice(msg.payload()),
+            msg.headers().clone(),
+        );
+        Ok(())
+    }
 }
 
 impl Publisher for PubSubTestPublisher {
     type Error = PubSubError;
 
     fn publish(&self, msg: OutgoingMessage<'_>) -> impl Future<Output = Result<(), Self::Error>> {
-        self.state.publish(
-            msg.name(),
-            Bytes::copy_from_slice(msg.payload()),
-            msg.headers().clone(),
-        );
-        ready(Ok(()))
+        ready(self.route(&msg))
     }
 }
 
 // Keeps `with_ordering_key` callable in a test exactly as against the real broker.
 impl PubSubOrdering for PubSubTestPublisher {}
 
-/// The publish policy for [`PubSubTestPublisher`], mirroring
-/// [`PubSubPublish`](crate::PubSubPublish) on the real broker.
-///
-/// # Examples
-///
-/// ```
-/// use ruststream_gcp_pubsub::testing::PubSubTestPublish;
-///
-/// let policy = PubSubTestPublish::default();
-/// # let _ = policy;
-/// ```
-#[derive(Debug, Clone, Copy, Default)]
-#[must_use]
-pub struct PubSubTestPublish;
-
-impl PublishPolicy<ConnectedPubSubTestBroker> for PubSubTestPublish {
+/// The stand-in pairs the real [`PubSubPublish`] policy, so a routes file mounts on it with the
+/// spelling it ships: `.out(Reply, Publish)` reads the same either way, and there is no test-only
+/// policy to swap in. The policy holds no settings for the stand-in to honour - the destination
+/// travels on the message and the ordering key on its header - so the pairing loses nothing.
+impl PublishPolicy<ConnectedPubSubTestBroker> for PubSubPublish {
     type Live = PubSubTestPublisher;
 
     fn pair(
@@ -185,5 +256,5 @@ impl PublishPolicy<ConnectedPubSubTestBroker> for PubSubTestPublish {
 }
 
 impl DefaultPublish for ConnectedPubSubTestBroker {
-    type Policy = PubSubTestPublish;
+    type Policy = PubSubPublish;
 }

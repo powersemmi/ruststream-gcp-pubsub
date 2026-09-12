@@ -20,8 +20,9 @@ const DEFAULT_BATCH_WAIT: Duration = Duration::from_millis(50);
 
 /// A subscription descriptor for one Pub/Sub subscription.
 ///
-/// Implements [`SubscriptionSource`], so it can sit inline in the `#[subscriber(..)]`
-/// decorator:
+/// Implements [`SubscriptionSource`] for the real broker and for the in-process stand-in behind
+/// the `testing` feature, so it sits inline in the `#[subscriber(..)]` decorator and the
+/// declaration a service ships is the one its tests mount:
 ///
 /// ```
 /// use std::time::Duration;
@@ -104,6 +105,12 @@ impl GooglePubSub {
         &self.name
     }
 
+    /// The same name, taken out of a descriptor that has served its purpose.
+    #[cfg(feature = "testing")]
+    pub(crate) fn into_subscription(self) -> String {
+        self.name
+    }
+
     pub(crate) fn create_topic_ref(&self) -> Option<&str> {
         self.create_with_topic.as_deref()
     }
@@ -147,6 +154,71 @@ impl SubscriptionSource<ConnectedPubSubBroker> for GooglePubSub {
         self,
         connected: &ConnectedPubSubBroker,
     ) -> Result<PubSubSubscriber, PubSubError> {
+        connected.subscribe_descriptor(self).await
+    }
+}
+
+/// The same descriptor mounts on the in-process stand-in, so a service is unit-tested as it is
+/// declared rather than through a bare subscription name.
+///
+/// The stand-in routes by one address, and that address is the subscription name - the name this
+/// source reports, the one the harness injects to and asserts on. What the descriptor says about
+/// the service carries over; what it says about the product cannot, because the product is not
+/// there:
+///
+/// * [`batch_wait`](GooglePubSub::batch_wait) is honoured. Batching is on the client either
+///   way, over the framework's own buffer, so the deadline means the same thing here.
+/// * [`create_with_topic`](GooglePubSub::create_with_topic) is ignored. The stand-in holds
+///   no topics and no subscriptions, only addresses, so it has nothing to create and no
+///   topic-to-subscription binding to route through. A test therefore publishes to the
+///   subscription name, which no producer does against Pub/Sub; that a message published to the
+///   *topic* reaches this subscription is the binding's contract, and it is verified against the
+///   emulator instead.
+/// * [`max_outstanding`](GooglePubSub::max_outstanding) is ignored. It is the streaming
+///   pull's flow control, and there is no pull here: the router hands a delivery straight to the
+///   subscription's queue.
+/// * [`ack_extension`](GooglePubSub::ack_extension) is ignored. Nothing leases a message in
+///   process, so nothing expires and nothing needs extending; a handler that outruns its deadline
+///   is a live-broker scenario.
+///
+/// # Examples
+///
+/// ```
+/// use ruststream::runtime::{AppInfo, RustStream};
+/// use ruststream_gcp_pubsub::prelude::*;
+/// use ruststream_gcp_pubsub::testing::PubSubTestBroker;
+/// use serde::Deserialize;
+///
+/// #[derive(Debug, Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[subscriber(GooglePubSub::new("orders-workers").max_outstanding(1_000))]
+/// async fn handle(order: &Order) -> HandlerOutcome {
+///     let _ = order.id;
+///     HandlerOutcome::ack()
+/// }
+///
+/// // The production declaration, mounted on the stand-in a test starts.
+/// let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
+///     .with_broker(PubSubTestBroker::new(), |b| {
+///         b.include(handle);
+///     });
+/// # let _ = app;
+/// ```
+#[cfg(feature = "testing")]
+impl SubscriptionSource<crate::testing::ConnectedPubSubTestBroker> for GooglePubSub {
+    type Subscriber = crate::testing::PubSubTestSubscriber;
+
+    fn name(&self) -> &str {
+        self.subscription()
+    }
+
+    async fn subscribe(
+        self,
+        connected: &crate::testing::ConnectedPubSubTestBroker,
+    ) -> Result<Self::Subscriber, PubSubError> {
         connected.subscribe_descriptor(self).await
     }
 }
