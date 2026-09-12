@@ -1,13 +1,17 @@
-//! [`PubSubSubscription`]: the subscription descriptor.
+//! [`GooglePubSub`]: the subscription descriptor.
 //!
 //! Pub/Sub separates the topic from the subscription, and the descriptor keeps both explicit:
 //! by default it names an existing subscription; `create_with_topic` opts into creating the
 //! subscription (and its topic) on subscribe, which is what local development against the
 //! emulator wants.
 
+use std::borrow::Cow;
+// Only the stand-in's source answers without asking the transport anything.
+#[cfg(feature = "testing")]
+use std::future::{Future, ready};
 use std::time::Duration;
 
-use ruststream::SubscriptionSource;
+use ruststream::{FromName, RedeliveryAddress, SubscriptionSource};
 
 use crate::broker::ConnectedPubSubBroker;
 use crate::error::PubSubError;
@@ -20,21 +24,22 @@ const DEFAULT_BATCH_WAIT: Duration = Duration::from_millis(50);
 
 /// A subscription descriptor for one Pub/Sub subscription.
 ///
-/// Implements [`SubscriptionSource`], so it can sit inline in the `#[subscriber(..)]`
-/// decorator:
+/// Implements [`SubscriptionSource`] for the real broker and for the in-process stand-in behind
+/// the `testing` feature, so it sits inline in the `#[subscriber(..)]` decorator and the
+/// declaration a service ships is the one its tests mount:
 ///
 /// ```
 /// use std::time::Duration;
-/// use ruststream_gcp_pubsub::PubSubSubscription;
+/// use ruststream_gcp_pubsub::GooglePubSub;
 ///
-/// let source = PubSubSubscription::new("orders-workers")
+/// let source = GooglePubSub::new("orders-workers")
 ///     .max_outstanding(1_000)
 ///     .ack_extension(Duration::from_secs(60));
 /// # let _ = source;
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]
-pub struct PubSubSubscription {
+pub struct GooglePubSub {
     name: String,
     create_with_topic: Option<String>,
     max_outstanding: Option<i64>,
@@ -42,7 +47,7 @@ pub struct PubSubSubscription {
     batch_wait: Duration,
 }
 
-impl PubSubSubscription {
+impl GooglePubSub {
     /// Names an existing subscription (short name or full
     /// `projects/{p}/subscriptions/{s}` resource name).
     pub fn new(name: impl Into<String>) -> Self {
@@ -87,9 +92,9 @@ impl PubSubSubscription {
     ///
     /// ```
     /// use std::time::Duration;
-    /// use ruststream_gcp_pubsub::PubSubSubscription;
+    /// use ruststream_gcp_pubsub::GooglePubSub;
     ///
-    /// let source = PubSubSubscription::new("orders-workers")
+    /// let source = GooglePubSub::new("orders-workers")
     ///     .batch_wait(Duration::from_millis(200));
     /// # let _ = source;
     /// ```
@@ -102,6 +107,12 @@ impl PubSubSubscription {
     #[must_use]
     pub fn subscription(&self) -> &str {
         &self.name
+    }
+
+    /// The same name, taken out of a descriptor that has served its purpose.
+    #[cfg(feature = "testing")]
+    pub(crate) fn into_subscription(self) -> String {
+        self.name
     }
 
     pub(crate) fn create_topic_ref(&self) -> Option<&str> {
@@ -136,7 +147,28 @@ impl PubSubSubscription {
     }
 }
 
-impl SubscriptionSource<ConnectedPubSubBroker> for PubSubSubscription {
+/// A subscription is identified by its name and nothing else, every other setting having a
+/// default, so the mount site may supply the name instead of the declaration:
+/// `#[subscriber(GooglePubSub)]` on the handler and `.name("orders-workers")` where it is mounted.
+///
+/// # Examples
+///
+/// ```
+/// use ruststream::FromName;
+/// use ruststream_gcp_pubsub::GooglePubSub;
+///
+/// assert_eq!(
+///     GooglePubSub::from_name("orders-workers"),
+///     GooglePubSub::new("orders-workers"),
+/// );
+/// ```
+impl FromName for GooglePubSub {
+    fn from_name(name: impl Into<Cow<'static, str>>) -> Self {
+        Self::new(name.into().into_owned())
+    }
+}
+
+impl SubscriptionSource<ConnectedPubSubBroker> for GooglePubSub {
     type Subscriber = PubSubSubscriber;
 
     fn name(&self) -> &str {
@@ -149,6 +181,111 @@ impl SubscriptionSource<ConnectedPubSubBroker> for PubSubSubscription {
     ) -> Result<PubSubSubscriber, PubSubError> {
         connected.subscribe_descriptor(self).await
     }
+
+    /// The topic this subscription is bound to, which is where a publisher reaches it again.
+    ///
+    /// A subscription name is not an address on Pub/Sub: a publish goes to a topic, and the
+    /// subscription behind it is what receives. The descriptor therefore answers with the topic -
+    /// the one `create_with_topic` names, or the one the API reports for an existing subscription.
+    /// The runtime asks once, at startup, and publishes the deferred copy of a `retry_after`
+    /// delivery there.
+    ///
+    /// `None` when the subscription's topic has been deleted, because nothing reaches it then.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PubSubError::Admin`] when the subscription has to be looked up and the call
+    /// fails.
+    async fn redelivery_address(
+        &self,
+        connected: &ConnectedPubSubBroker,
+    ) -> Result<Option<RedeliveryAddress>, PubSubError> {
+        if let Some(topic) = self.create_topic_ref() {
+            return Ok(Some(RedeliveryAddress::new(topic.to_owned())));
+        }
+        Ok(connected
+            .topic_of(self.subscription())
+            .await?
+            .map(RedeliveryAddress::new))
+    }
+}
+
+/// The same descriptor mounts on the in-process stand-in, so a service is unit-tested as it is
+/// declared rather than through a bare subscription name.
+///
+/// The stand-in routes by one address, and that address is the subscription name - the name this
+/// source reports, the one the harness injects to and asserts on. What the descriptor says about
+/// the service carries over; what it says about the product cannot, because the product is not
+/// there:
+///
+/// * [`batch_wait`](GooglePubSub::batch_wait) is honoured. Batching is on the client either
+///   way, over the framework's own buffer, so the deadline means the same thing here.
+/// * [`create_with_topic`](GooglePubSub::create_with_topic) is ignored. The stand-in holds
+///   no topics and no subscriptions, only addresses, so it has nothing to create and no
+///   topic-to-subscription binding to route through. A test therefore publishes to the
+///   subscription name, which no producer does against Pub/Sub; that a message published to the
+///   *topic* reaches this subscription is the binding's contract, and it is verified against the
+///   emulator instead.
+/// * [`max_outstanding`](GooglePubSub::max_outstanding) is ignored. It is the streaming
+///   pull's flow control, and there is no pull here: the router hands a delivery straight to the
+///   subscription's queue.
+/// * [`ack_extension`](GooglePubSub::ack_extension) is ignored. Nothing leases a message in
+///   process, so nothing expires and nothing needs extending; a handler that outruns its deadline
+///   is a live-broker scenario.
+///
+/// # Examples
+///
+/// ```
+/// use ruststream::runtime::{AppInfo, RustStream};
+/// use ruststream_gcp_pubsub::prelude::*;
+/// use ruststream_gcp_pubsub::testing::PubSubTestBroker;
+/// use serde::Deserialize;
+///
+/// #[derive(Debug, Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[subscriber(GooglePubSub::new("orders-workers").max_outstanding(1_000))]
+/// async fn handle(order: &Order) -> HandlerOutcome {
+///     let _ = order.id;
+///     HandlerOutcome::ack()
+/// }
+///
+/// // The production declaration, mounted on the stand-in a test starts.
+/// let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
+///     .with_broker(PubSubTestBroker::new(), |b| {
+///         b.include(handle);
+///     });
+/// # let _ = app;
+/// ```
+#[cfg(feature = "testing")]
+impl SubscriptionSource<crate::testing::ConnectedPubSubTestBroker> for GooglePubSub {
+    type Subscriber = crate::testing::PubSubTestSubscriber;
+
+    fn name(&self) -> &str {
+        self.subscription()
+    }
+
+    async fn subscribe(
+        self,
+        connected: &crate::testing::ConnectedPubSubTestBroker,
+    ) -> Result<Self::Subscriber, PubSubError> {
+        connected.subscribe_descriptor(self).await
+    }
+
+    /// The subscription's own name, because that is the one address the stand-in routes by. A
+    /// deferred retry lands where the next delivery comes from, which is the promise the answer
+    /// carries; the topic hop it takes against Pub/Sub is the product's, and is checked there.
+    ///
+    /// Nothing is asked of the transport, so the answer is ready before the future is polled.
+    fn redelivery_address(
+        &self,
+        connected: &crate::testing::ConnectedPubSubTestBroker,
+    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, PubSubError>> {
+        let _ = connected;
+        ready(Ok(Some(RedeliveryAddress::new(self.name.clone()))))
+    }
 }
 
 #[cfg(test)]
@@ -158,7 +295,7 @@ mod tests {
     #[test]
     fn empty_subscription_name_is_rejected_before_io() {
         assert!(matches!(
-            PubSubSubscription::new("").validate(),
+            GooglePubSub::new("").validate(),
             Err(PubSubError::InvalidDescriptor(_))
         ));
     }
@@ -166,9 +303,7 @@ mod tests {
     #[test]
     fn empty_topic_name_is_rejected_before_io() {
         assert!(matches!(
-            PubSubSubscription::new("s")
-                .create_with_topic("")
-                .validate(),
+            GooglePubSub::new("s").create_with_topic("").validate(),
             Err(PubSubError::InvalidDescriptor(_))
         ));
     }

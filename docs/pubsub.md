@@ -1,9 +1,10 @@
 # Google Cloud Pub/Sub
 
-`ruststream-gcp-pubsub` is the Google Cloud Pub/Sub broker, built on the official
-[`google-cloud-pubsub`](https://docs.rs/google-cloud-pubsub) client. For framework concepts
-(writing subscribers, routing, codecs, middleware), see the
-[RustStream documentation](https://powersemmi.github.io/ruststream/).
+`ruststream-gcp-pubsub` runs a RustStream service on Google Cloud Pub/Sub, over the official
+[`google-cloud-pubsub`](https://docs.rs/google-cloud-pubsub) client. Pub/Sub keeps the topic and the
+subscription apart: a service publishes to a topic, and a handler consumes a subscription, which
+queues that topic's messages for it. Framework concepts (writing subscribers, routing, codecs,
+middleware) are in the [RustStream documentation](https://powersemmi.github.io/ruststream/).
 
 ```toml
 ruststream = { version = "0.7", features = ["macros", "json"] }
@@ -13,25 +14,25 @@ serde = { version = "1", features = ["derive"] }
 
 ## Capabilities
 
-The framework's optional capability traits, and what this broker implements natively:
+The framework's optional capabilities on Pub/Sub:
 
 | Capability | Native | Notes |
 | --- | --- | --- |
-| `Subscribe` | yes | [subscribe by subscription name](#subscriptions); the subscription must already exist |
-| `BatchSubscriber` | client-side | the streaming pull yields one message at a time, so [batches are assembled on the client](#batches) to the size the mount site names |
-| `TransactionalPublisher` | no | the product has no publish transaction; ordering keys, not atomic batches, are its grouping mechanism |
-| `OwnedTransactions` | no | the product has no publish transaction |
-| `RequestReply` | no | there is no native request/reply; a reply topic and a correlation attribute are an application-level pattern |
-| `Partitioned` | yes | [the partition key is the message's ordering key](#ordering-keys-and-the-partition-key) |
-| `Seekable` and `Positioned` | no | repositioning is a subscription-level admin `seek` to a timestamp or a snapshot, not an offset the subscriber addresses per stream |
-| `DescribeServer` | yes | reports the endpoint in use (emulator host, custom endpoint, or `pubsub.googleapis.com`) with the `googlepubsub` protocol |
+| `Subscribe` | yes | you subscribe by [subscription name](#subscriptions) |
+| `BatchSubscriber` | client-side | a slice handler gets [batches assembled on the client](#batches) |
+| `TransactionalPublisher` | no | [an ordering key](#ordering-keys) is what groups a run of messages |
+| `OwnedTransactions` | no | there is no publish transaction to own |
+| `RequestReply` | no | you build it yourself from a reply topic and a correlation attribute |
+| `Partitioned` | yes | [the partition key is the message's ordering key](#ordering-keys) |
+| `Seekable` and `Positioned` | no | you reposition a whole subscription with the admin `seek`, to a timestamp or a snapshot |
+| `DescribeServer` | yes | reports the host and port in use (emulator, custom endpoint, or `pubsub.googleapis.com`) under the `googlepubsub` protocol; a scheme, a path or credentials written into the endpoint stay out of the document |
 
-A handler reads the ordering key off the delivery it is handed, with `message.partition_key()`
-and no broker-specific import.
+A handler reads the ordering key off a delivery with `message.partition_key()`, and imports nothing
+from this crate for it.
 
 ## The lifecycle
 
-The broker is a ladder of consuming transitions, so each state is a distinct type:
+Each state of the broker is a distinct type, reached by a consuming transition:
 
 ```text
 PubSubBroker::new(project)   configuration only, synchronous, no I/O
@@ -39,97 +40,87 @@ PubSubBroker::new(project)   configuration only, synchronous, no I/O
   .shutdown()  ->  ()                       flushes every buffered publish batch
 ```
 
-`new` performs no I/O, so a Pub/Sub service is assembled with the same `#[ruststream::app]` macro
-as any other broker: the runtime authenticates and builds the clients once at startup, before
-opening subscriptions, and flushes buffered batches at the end. Because `shutdown` consumes the
-connected broker, publishing or subscribing after it does not compile. A publisher handed out
-earlier still aliases the clients, and reports `PubSubError::NotConnected` once they are gone
-rather than accepting a message that would never be sent.
+`shutdown` consumes the connected broker, so a publish or a subscribe after it does not compile. A
+publisher handed out earlier is outside that guarantee: once the connection is gone it returns
+`PubSubError::NotConnected` instead of accepting a message that nothing will send.
 
-Credentials are Application Default Credentials unless the synchronous form says otherwise:
-`credentials(..)` supplies an explicit `google_cloud_auth::credentials::Credentials`, `endpoint(..)`
-targets a specific service endpoint (a regional endpoint is what keeps ordering keys ordered across
-publishers in one region), and `emulator(host)` points the whole client set at a local emulator.
+By default the broker authenticates with Application Default Credentials. `credentials(..)` takes
+your own `google_cloud_auth::credentials::Credentials` instead. `endpoint(..)` names another
+service endpoint, a regional one among them. `emulator(host)` points every client at a local
+[emulator](#the-emulator).
 
 ## Subscriptions
 
-Pub/Sub separates the topic from the subscription, and `PubSubSubscription` keeps both explicit. By
-default the descriptor names an existing subscription, by short id or by full
-`projects/{project}/subscriptions/{name}` resource name. It implements `SubscriptionSource`, so it
-sits inline in the decorator:
+`GooglePubSub` names the subscription a handler consumes, by short id or by full
+`projects/{project}/subscriptions/{name}` resource name. It goes inside the `#[subscriber(..)]`
+decorator:
 
 ```rust
 --8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_service.rs:handler"
 ```
 
-Wiring it onto the broker is the framework's `with_broker` / `include` pair, identical to every
-other broker:
+A mount site pairs the handler with the broker:
 
 ```rust
 --8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_service.rs:app"
 ```
 
-Four options ride the descriptor:
+The descriptor takes four options:
 
 - `create_with_topic(topic)` creates the subscription and its topic on subscribe when they do not
-  exist. It is meant for local development and tests against the emulator; production subscriptions
-  are usually managed as infrastructure, and the plain `new(name)` form expects them to exist.
-- `max_outstanding(n)` is flow control: how many received messages may be unacknowledged at once.
+  exist yet. It is meant for local development and tests against the [emulator](#the-emulator); a
+  production subscription is usually managed as infrastructure.
+- `max_outstanding(n)` is flow control: how many delivered messages may be unacknowledged at once.
   This is the real prefetch, and it defaults to the client's 1000.
-- `ack_extension(duration)` sets how far each background ack-deadline extension reaches while a
+- `ack_extension(duration)` is how far each background extension of the ack deadline reaches while a
   handler runs. The client clamps it to the protocol's 10s to 600s range and defaults to 60s.
-- `batch_wait(duration)` sets how long a partial [batch](#batches) waits for the rest of itself.
-  It defaults to 50ms and matters only for a handler that takes a slice.
+- `batch_wait(duration)` is how long a partial [batch](#batches) waits for more deliveries. It
+  defaults to 50ms.
 
-A descriptor that cannot form a subscription (an empty subscription or topic name) is rejected with
-`PubSubError::InvalidDescriptor` before any I/O.
+A descriptor with an empty subscription or topic name returns `PubSubError::InvalidDescriptor`
+before any I/O.
 
-Each subscription is a streaming pull rendered as the framework's message `Stream`. The client
-extends ack deadlines in the background for as long as a handler runs, so a slow handler does not
-by itself cause redelivery. Dropping the subscriber signals the client's shutdown token, which
-drains the stream.
+A subscription is consumed with a streaming pull. The client extends the ack deadline in the
+background while a handler runs, so a slow handler does not cause a redelivery by itself. Dropping
+the subscriber drains the stream.
 
-The plain string form `#[subscriber("orders-workers")]` also works: a by-name source resolves to
-`PubSubSubscription::new`, which requires the subscription to exist already.
+`#[subscriber("orders-workers")]` with a plain string names the same descriptor with its defaults,
+so the subscription has to exist already.
+
+A subscription is identified by its name and nothing else, so the mount site may supply it:
+`#[subscriber(GooglePubSub)]` on the handler and `.name("orders-workers")` where it is mounted. That
+is how one handler serves two deployments that differ only in subscription name.
 
 ## Batches
 
-A handler that takes a slice consumes a whole batch - one database round-trip, one bulk API call,
-per batch instead of per order:
+A handler that takes a slice is handed a whole batch: one database round-trip, one bulk API call,
+per batch instead of per order.
 
 ```rust
 --8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_batches.rs:handler"
 ```
 
-Mounting it is what every broker does the same way: the batch size is the mount site's one word,
-and it is mandatory, because there is no size the framework could invent.
+The mount site names the batch size, and a batch handler does not mount without one:
 
 ```rust
 --8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_batches.rs:app"
 ```
 
-Pub/Sub's streaming pull hands over one delivery at a time, so the batches are assembled on the
-client rather than asked for on the wire. That is invisible at the mount site, which is the
-point: the size is the framework's one word either way, and a batch never carries more than it,
-though it may carry fewer.
+The streaming pull hands over one delivery at a time, so batches are assembled on the client. A
+batch never holds more than the size the mount named, and may hold fewer.
 
-What is Pub/Sub's own is the other half - how long a batch that is not yet full waits for the rest
-of itself. `batch_wait` on the descriptor sets that, and defaults to 50ms, roughly one
-streaming-pull burst: shorter and most batches close on their first delivery, longer and a quiet
-subscription holds a batch back for nothing. Raise it for a workload whose batches earn their
-round trip; leave it alone otherwise.
+The size is one half of a batch; `batch_wait` on the descriptor is the other, and its 50ms default
+is about one streaming-pull burst. Shorter, and most batches close on their first delivery; longer,
+and a quiet subscription holds a batch back for nothing. Raise it when a batch earns its round trip.
 
-The other subscription settings are unaffected. `max_outstanding` is still flow control - how many
-deliveries may be unacknowledged at once - and it bounds the pull, not the batch: it is the
-prefetch a batch is assembled out of, not the size of the batch.
+`max_outstanding` bounds the pull, not the batch.
 
-The in-process test broker batches the same way, so a `&[T]` handler is unit-testable under
-`TestApp` and not only against the emulator.
+`PubSubTestBroker` assembles batches the same way, so a slice handler can be
+[tested in process](#testing) and not only against the emulator.
 
 ## Acknowledgement
 
-Settlement is native per message, and it is the confirmed variant on a subscription with
-exactly-once delivery enabled:
+Acknowledgement is native and per message:
 
 | Handler outcome | Pub/Sub call | Effect |
 | --- | --- | --- |
@@ -137,100 +128,109 @@ exactly-once delivery enabled:
 | `HandlerOutcome::retry()` | nack | the message becomes available again and is redelivered |
 | `HandlerOutcome::drop()` | acknowledge | the message is not redelivered |
 
-`drop()` acknowledging is the product's model: Pub/Sub has no drop-without-redelivery verb, so
-poison-message routing belongs to the subscription's dead-letter policy, which the service
-configures on the subscription resource rather than per message. When a dead-letter policy is set,
-the delivery-attempt count arrives as the `pubsub-delivery-attempt` header (exported as
-`DELIVERY_ATTEMPT_HEADER`), so a handler can branch on how many times a message has come back.
+Pub/Sub has no drop-without-redelivery verb, which is why `drop()` acknowledges. Poison messages are
+routed by the subscription's dead-letter policy, set on the subscription resource. Under such a
+policy the delivery-attempt count is delivered as the `pubsub-delivery-attempt` header (exported as
+`DELIVERY_ATTEMPT_HEADER`), and a handler can branch on how many times a message has come back.
 
-There is no native delayed nack here, so `HandlerOutcome::retry_after(delay)` falls back to the
-runtime's broker-agnostic deferred re-publish rather than a broker-side timer.
+Pub/Sub has no delayed nack, so `HandlerOutcome::retry_after(delay)` runs on the runtime's
+[deferred re-publish](https://powersemmi.github.io/ruststream/latest/guides/subscribers/#delayed-redelivery):
+wire a publisher on the scope with `retry_via`, taking it from `b.broker().publisher()`. The runtime
+then acknowledges the delivery and publishes a copy of the message after the delay. Without that
+publisher the delay is dropped, the message is requeued at once, and the runtime warns.
+
+The copy goes to the topic the subscription is bound to, never to the subscription name: a publish
+on Pub/Sub addresses a topic. `GooglePubSub` reports that topic - the one `create_with_topic` names,
+or the one the API reports for a subscription managed as infrastructure, asked once at startup.
+A handler declared with a plain string cannot report one, because a subscription name reaches
+nothing, so a scope that wires `retry_via` over `#[subscriber("orders-workers")]` refuses to start
+and names the subscription. Declaring that handler with `GooglePubSub::new("orders-workers")` is the
+fix.
 
 ### Exactly-once acknowledgement
 
-Exactly-once delivery is a subscription setting, enabled on the subscription resource. When it is
-on, the client hands over an exactly-once handler, and this crate settles through the confirmed
-forms: `Ok` from `ack` means the service accepted the acknowledgement and the message will not be
-redelivered. A refused acknowledgement (an expired ack id, a lost deadline race) surfaces as
-`AckError::Broker` instead of passing as success. On an ordinary subscription the plain
-fire-and-forget forms are used, and `ack` reports success once the acknowledgement is queued.
+Exactly-once delivery is a setting on the subscription resource, so the same handler code runs
+against both kinds of subscription. On an exactly-once subscription `ack` returns `Ok` only once the
+service has confirmed it, and the message is then not redelivered. A refused acknowledgement (an
+expired ack id, a lost deadline race) returns `AckError::Broker` instead of passing as success. On
+an ordinary subscription `ack` returns `Ok` as soon as the acknowledgement is queued.
 
-The distinction is per delivery, not per configuration flag in this crate: the same handler code
-runs against both kinds of subscription, and turning exactly-once on server side is what upgrades
-the settlement path.
+## Ordering keys
 
-## Ordering keys and the partition key
+Messages sharing an ordering key are delivered to one subscriber in publish order. The key is a
+field of the message, not a header, and it is the one setting a Pub/Sub publish carries beyond its
+payload and attributes. `PubSubPublishOptions` is that setting as a type, with `ordering_key` its
+only field.
 
-Pub/Sub keeps per-key FIFO order through ordering keys, and the framework's partition key is the
-same idea, so the two are one header. A `partition-key` header (exported as `PARTITION_KEY_HEADER`)
-on an outgoing message becomes the message's ordering key, and a delivered message carries its
-ordering key back under the same header, feeding the `Partitioned` capability.
-
-A publish names its key with `with_ordering_key`, which adapts the publisher: one adapter serves a
-run of publishes, and the rest of the chain (codec, headers, destination) is written as usual. The
-key rides under the publish's own headers, so other headers named at the call travel with it and a
-`partition-key` named there wins.
+The key reaches a publish from two places. The mount site fixes it for a whole slot, which is what
+a slot belonging to one entity wants:
 
 ```rust
 --8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_ordered_publish.rs:ordered"
 ```
 
-On an `Out` slot the step resolves on the slot itself, so a publish made through it keeps its slot
-attribution and `tb.out::<Marker>()` sees it under the test harness.
+A single publish names its own with the `ordering_key` step, between `message(..)` and `publish()`.
+The step is a position on the framework's publish builder, so the publish it finishes keeps
+everything else the mount site decided: the codec that entry named, its transforms, and the slot a
+test asserts on.
 
-The step is on the publisher and not on the mount chain, where a broker's publisher settings
-normally live, because an ordering key is per message: it is what groups one order's own events, so
-a key named once at a mount site would funnel everything that registration sends into a single FIFO
-lane. `PubSubPublish` carries no settings at all for the same reason, and a mount site writes the
-policy name and nothing else. A `publish("topic")` handler's reply reaches its key through the mount
-chain's `.transform(..)` step, which reads the delivery and writes the reply's `partition-key`
-header per message.
+A handler body that names the step imports this crate's prelude and says so in its signature, which
+is the one place a body names the broker it runs on:
 
-Ordered delivery needs the subscription to have message ordering enabled, and a regional
-`endpoint` is what keeps a key ordered across publishers in one region. A publish failure on an
-ordered key pauses that key in the client; this crate resumes it and returns the failure, so one
-error cannot silently wedge every later publish on the key.
+```rust
+--8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_ordered_publish.rs:handler"
+```
 
-Every other header rides the message's attributes directly, and attributes come back as headers. No
-envelope format is invented, so non-Rust peers see plain Pub/Sub messages.
+A body that names no key needs neither, and sends under whatever the mount site fixed.
+
+A reply carries no call site, so its key is the policy's: `.out(Reply, Publish::default().ordering_key("receipts"))`.
+A key that differs per reply is a mount-chain `.transform(..)`, which reads the delivery and writes
+the reply's `partition-key` header.
+
+On the delivery side the framework's partition key *is* the ordering key: a delivery reports it with
+`message.partition_key()` and under the `partition-key` header (exported as `PARTITION_KEY_HEADER`),
+so a handler that reads keys imports nothing from this crate. That header is the same key on the way
+out too, for a service written against no particular broker: writing it on an outgoing message
+orders that message, and a call that names the step wins over it. It never travels as an attribute.
+
+Ordered delivery needs message ordering enabled on the subscription. A regional `endpoint` is what
+keeps one key in order across publishers in a region. A publish that returns an error on an ordered
+key pauses that key in the client; this crate resumes the key and returns the error, so one failure
+does not block every later publish on that key.
+
+Every other header is a message attribute, in both directions, with no envelope around it, so a
+non-Rust peer sees an ordinary Pub/Sub message.
 
 ## Publishing
 
-A publisher is a policy plus the live clients. `PubSubPublish` holds no connection, so it is
-constructed anywhere (in a router, in configuration, at a mount site) and the runtime pairs it with
-the broker at startup to produce a `PubSubPublisher`. It is also the broker's default publish
-policy, so a `#[subscriber(.., publish("topic"))]` handler mounted without an `.out(Reply, ..)` call
-publishes through it.
+`PubSubPublish` is the policy that constructs the publisher `PubSubPublisher`, and the runtime
+instantiates it at startup on the connected broker. It is also the broker's default policy, so a
+replying handler mounted without an `.out(Reply, ..)` call publishes through it.
 
-A service writes two vocabularies, and the import says which one a file is in. A file of handler
-bodies imports the framework's prelude alone and bounds a slot with a capability trait -
-`Out(out): Out<impl Publisher>`, or `Out<impl PubSubOrdering>` for a body that also wants this
-crate's ordering step - so it names no broker. A routes file imports
-`ruststream_gcp_pubsub::prelude::*` and attaches policies under their mount-site names, so this
-crate's policy arrives as `Publish` and one verb attaches it wherever it goes:
-`.out(Reply, Publish)` for the value a `publish("topic")` handler returns, `.out(Marker, Publish)`
-for an `Out` slot, and the call reads the same whichever broker it runs on. This policy holds no
-options, so the name is the whole expression. The prefixed `PubSubPublish` stays at the crate root
-for a file that speaks to two brokers at once and has to say which one it means.
+A file of handler bodies imports the framework's prelude alone and bounds its slot with a
+capability: `Out(out): Out<impl Publisher>`. Such a file names no broker. The exception is a body
+that names an [ordering key](#ordering-keys) per message.
 
-The destination name is the topic id, short or a full resource name. Per-topic client publishers
-are created on first use and cached on the broker, which is what lets `shutdown` flush every
-buffered batch instead of dropping it.
+A routes file imports `ruststream_gcp_pubsub::prelude::*`, where the policy arrives under the
+mount-site name `Publish`: `.out(Reply, Publish::default())` for the value a replying handler
+returns, `.out(Marker, Publish::default())` for an `Out` slot, and `.ordering_key(..)` on the policy
+where the whole slot is ordered. `PubSubPublish` stays at the crate root for a file that speaks to
+two brokers at once and has to say which one it means.
 
-Every publish starts at `message(&value)` and ends at `publish()`, on an `Out` slot, on a publisher
-held in state, and in a startup hook alike; the value's type picks the wire, so a `Serialize` model
-encodes through the codec and a `#[derive(Serialized)]` type's bytes leave as they are.
-`with_ordering_key` is this crate's one addition to that chain; message attributes are headers, and
-everything else Pub/Sub takes per publish is a subscription-level setting.
+A publish addresses a topic, by id or by full resource name. The client publisher for a topic is
+created on first use and cached on the broker, so `shutdown` flushes every batch it has buffered.
 
-A message built by hand and handed to `Publisher::publish` is sent as it is - the path to take
-when the header map is what you want to control.
+`ordering_key` is this crate's only addition to the framework's publish chain. A Pub/Sub message is
+a payload, its attributes and an ordering key, so the chain covers all three: the value, its
+headers, and the key.
+
+A message built by hand and handed to `Publisher::publish` is sent as it was built, which is the way
+to control the header map yourself.
 
 ## The emulator
 
-The Pub/Sub emulator is a supported target for local development and tests. `emulator(host)` wires
-the plaintext endpoint and anonymous credentials in one call; the client does not read
-`PUBSUB_EMULATOR_HOST` on its own, so the host is named explicitly.
+`emulator(host)` points the broker at a local Pub/Sub emulator: the plaintext endpoint and anonymous
+credentials in one call. The client does not read `PUBSUB_EMULATOR_HOST`, so name the host yourself.
 
 ```bash
 just brokers-up    # docker compose up: gcloud beta emulators pubsub start on 8085
@@ -238,10 +238,9 @@ cargo run --example pubsub_service
 just brokers-down
 ```
 
-Against the emulator the resources usually do not exist yet, which is what
-`create_with_topic` is for: the subscription and its topic are created on subscribe. Resource
-creation is get-then-create, so two services racing on the same names both end up connected rather
-than one failing.
+The emulator starts empty, which is what `create_with_topic` is for: the subscription and its topic
+are created on subscribe. Two services racing on the same names both end up connected, because
+creation is a get, then a create, then a get.
 
 The live test suite runs the same way, gated behind `PUBSUB_TEST_HOST`:
 
@@ -252,20 +251,38 @@ just test-brokers  # starts the emulator, runs the integration and conformance s
 ## Testing
 
 The `testing` feature ships `PubSubTestBroker`: an in-process transport that reproduces the crate's
-core routing with no server and no network. It follows the same ladder as the real broker, and its
-connected form implements `ruststream::testing::TestableBroker`, so the same broker drives the
-`TestApp` harness and the framework's conformance suite. Inject traffic with
-`broker.inject(OutgoingMessage::new(..))` and assert on published output with the free
-`ruststream::testing::expect_published`. See
+routing. Mount the service on it and drive it with the framework's `TestApp` harness. A test file
+names both by path, next to the prelude glob:
+`use ruststream_gcp_pubsub::testing::PubSubTestBroker;` and
+`use ruststream::testing::TestApp;`.
+
+`TestApp::start(app)` connects the app and mounts its handlers.
+`tb.broker::<PubSubTestBroker>().message(&order).to("orders-workers").publish()` delivers an order
+to the handler's subscription, and `tb.settle()` waits for the reaction to finish.
+
+`tb.broker::<PubSubTestBroker>().subscriber("orders-workers").assert_called_once()` then asserts
+that the handler ran, and
+`tb.broker::<PubSubTestBroker>().published::<Receipt>("receipts").assert_called_once().with(&expected)`
+asserts what it published to the topic. See
 [Unit-testing a service with TestApp](https://powersemmi.github.io/ruststream/latest/guides/testing/#unit-testing-a-service-with-testapp).
 
-The test broker routes by exact name match and does not simulate product behaviour (deadline
-extension, redelivery timing, ordered delivery, dead-letter policies). Those are verified end to
-end against the emulator, where the integration tests and the framework's conformance lifecycle
-suite run.
+A routes file mounts on the stand-in as it ships. `#[subscriber(GooglePubSub::new("orders-workers"))]`
+opens an in-process subscription as readily as it opens a streaming pull, and `Publish` pairs with
+the stand-in as it pairs with the broker. Neither side has a test-only spelling to swap in.
 
-Because it routes by name, the stand-in serves the by-name subscriber form
-(`#[subscriber("orders-workers")]`). A handler that names a `PubSubSubscription` descriptor is
-bound to the real broker, since the descriptor resolves a subscription against a topic and the
-stand-in models neither; test those handlers by injecting on the connected stand-in directly, as
-above.
+`tb.out::<Marker>().with_options(&PubSubPublishOptions { ordering_key: Some("order-7".to_owned()) })`
+reads back the key one publish through a slot asked for, and `assert_options_default()` states that
+a publish named none and took the mount site's. The key also reaches the published message, under
+the `partition-key` header a delivery reports it by, so either assertion works.
+
+The stand-in routes by one address, the subscription name, because it holds no topics. A test
+therefore injects to the subscription, not to the topic. `batch_wait` is honoured, since batching is
+on the client either way. `create_with_topic` has nothing to create, and `max_outstanding` and
+`ack_extension` name machinery that is not there, so all three are ignored.
+
+A publisher that outlived `shutdown` reports `NotConnected` here as it does against Pub/Sub, so a
+test cannot go green on a publish the product would refuse.
+
+What the server itself decides - deadline extension, redelivery timing, ordered delivery,
+dead-letter policies - is checked against the [emulator](#the-emulator), where the integration suite
+and the framework's conformance lifecycle run.

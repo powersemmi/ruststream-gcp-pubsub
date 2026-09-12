@@ -8,12 +8,13 @@
 //!   per message, and the client extends ack deadlines in the background while a handler runs.
 //! - A handler taking a slice gets batches: the pull hands over one delivery at a time, so the
 //!   batches are assembled on the client to the size the mount site named, with
-//!   [`PubSubSubscription::batch_wait`] closing a partial one.
+//!   [`GooglePubSub::batch_wait`] closing a partial one.
 //! - Dead-letter topics and delivery-attempt counts are subscription settings, surfaced on
 //!   received messages, not crate machinery.
-//! - Ordering keys map onto the partition key; message attributes carry headers directly, so
-//!   no envelope format is invented. A publish names its key with
-//!   [`PubSubOrdering::with_ordering_key`], the crate's step on the framework's publish builder.
+//! - An ordering key is a per-message setting, named by [`PubSubOrdering::ordering_key`] on the
+//!   framework's publish builder or fixed for a whole mount site by
+//!   [`PubSubPublish::ordering_key`]; a delivery reports it back as its partition key. Message
+//!   attributes carry headers directly, so no envelope format is invented.
 //! - The Pub/Sub emulator is a supported target ([`PubSubBroker::emulator`]) for local
 //!   development and tests.
 //!
@@ -35,6 +36,6 @@ pub mod testing;
 pub use broker::{ConnectedPubSubBroker, PubSubBroker};
 pub use error::PubSubError;
 pub use message::{DELIVERY_ATTEMPT_HEADER, PARTITION_KEY_HEADER, PubSubMessage};
-pub use publisher::{OrderedPublisher, PubSubOrdering, PubSubPublish, PubSubPublisher};
+pub use publisher::{PubSubOrdering, PubSubPublish, PubSubPublishOptions, PubSubPublisher};
 pub use subscriber::PubSubSubscriber;
-pub use subscription::PubSubSubscription;
+pub use subscription::GooglePubSub;

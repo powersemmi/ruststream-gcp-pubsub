@@ -1,13 +1,12 @@
 # ruststream-gcp-pubsub
 
-**`ruststream-gcp-pubsub`** is the Google Cloud Pub/Sub broker for the
-[RustStream](https://powersemmi.github.io/ruststream/) messaging framework, built on the official
-[`google-cloud-pubsub`](https://docs.rs/google-cloud-pubsub) client. A streaming pull subscription
-becomes the framework's message stream, acknowledgement is native per message (with the confirmed
-forms on exactly-once subscriptions), and ordering keys map onto the framework's partition key.
+**`ruststream-gcp-pubsub`** runs a [RustStream](https://powersemmi.github.io/ruststream/) service on
+Google Cloud Pub/Sub, over the official
+[`google-cloud-pubsub`](https://docs.rs/google-cloud-pubsub) client.
 
-Handlers, routers, codecs, and middleware come from the framework; this crate supplies the
-transport, and nothing broker-specific leaks back into the framework.
+A streaming pull subscription is the message stream a handler reads. Acknowledgement is native and
+per message. On an exactly-once subscription acknowledgement takes the confirmed form. An ordering
+key is the framework's partition key.
 
 ```toml
 ruststream = { version = "0.7", features = ["macros", "json"] }
@@ -15,8 +14,10 @@ ruststream-gcp-pubsub = "0.7"
 serde = { version = "1", features = ["derive"] }
 ```
 
-The crate is published on crates.io and tracks the `ruststream` 0.7 line. Its MSRV is 1.88,
-tracking the official client; the framework core stays at 1.85.
+The crate is published on crates.io and tracks the `ruststream` 0.7 line. Its MSRV is 1.88, set by
+the official client.
+
+You assemble a Pub/Sub service in the app function:
 
 ```rust
 --8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_service.rs:app"
@@ -34,7 +35,6 @@ tracking the official client; the framework core stays at 1.85.
 
 ## How this site relates to the RustStream docs
 
-This site documents the Pub/Sub broker only. Framework concepts that apply to every broker (writing
-subscribers, publishing, routing, codecs, middleware, observability, the CLI) live in the
-[RustStream documentation](https://powersemmi.github.io/ruststream/). The pages here cover what is
-specific to Pub/Sub and link back to the framework docs where the two meet.
+This site documents the Pub/Sub broker only. Writing subscribers, publishing, routing, codecs,
+middleware, observability and the CLI live in the
+[RustStream documentation](https://powersemmi.github.io/ruststream/).

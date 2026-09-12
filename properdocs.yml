@@ -72,8 +72,8 @@ plugins:
   #
   # English is normative; a page with no translation yet falls back to the English text inside
   # the localized site rather than disappearing from it, which is what lets translations land
-  # page by page. The structure is what ships here - no page is translated yet, so every locale
-  # currently renders the English text.
+  # page by page. Every page currently has a Russian and a Chinese translation, so the fallback
+  # is what a newly added English page relies on until its translations follow.
   #
   # The plugin targets MkDocs, and properdocs aliases the `mkdocs` package and reads the
   # `mkdocs.plugins` entry-point group, so it loads unchanged under `properdocs build`.

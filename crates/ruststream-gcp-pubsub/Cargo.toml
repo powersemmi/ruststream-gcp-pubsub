@@ -31,6 +31,14 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-ruststream = { workspace = true, features = ["conformance", "testing", "macros", "json"] }
+# `cbor` is a second codec and nothing else: a test that names it proves a publish carries the
+# codec its mount site chose rather than the crate default, which json alone cannot tell apart.
+ruststream = { workspace = true, features = [
+    "conformance",
+    "testing",
+    "macros",
+    "json",
+    "cbor",
+] }
 serde = { version = "1", features = ["derive"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

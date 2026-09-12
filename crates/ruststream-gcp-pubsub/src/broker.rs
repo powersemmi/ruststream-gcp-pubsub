@@ -18,7 +18,10 @@ use tokio::sync::OnceCell;
 use crate::error::{PubSubError, box_err};
 use crate::publisher::{PubSubPublish, PubSubPublisher};
 use crate::subscriber::PubSubSubscriber;
-use crate::subscription::PubSubSubscription;
+use crate::subscription::GooglePubSub;
+
+/// What the API puts in a subscription's `topic` field once that topic has been deleted.
+const DELETED_TOPIC: &str = "_deleted-topic_";
 
 /// The live client state shared by the connected form and every handle derived from it.
 ///
@@ -211,12 +214,19 @@ impl Broker for PubSubBroker {
 }
 
 impl DescribeServer for PubSubBroker {
+    /// The address clients connect to, and nothing else. An operator writes whatever the client
+    /// accepts, so an endpoint may carry a scheme, a path or credentials; the description goes
+    /// into a document teams share, and `ServerSpec::host_from_url` is what keeps the rest of it
+    /// out.
     fn describe_server(&self) -> ServerSpec {
         let host = self
             .emulator
-            .clone()
-            .or_else(|| self.endpoint.clone())
-            .unwrap_or_else(|| "pubsub.googleapis.com".to_owned());
+            .as_deref()
+            .or(self.endpoint.as_deref())
+            .map_or_else(
+                || "pubsub.googleapis.com".to_owned(),
+                ServerSpec::host_from_url,
+            );
         ServerSpec::new(host, "googlepubsub")
     }
 }
@@ -245,7 +255,7 @@ impl ConnectedPubSubBroker {
     /// in) fails, or the broker is shut down.
     pub async fn subscribe_descriptor(
         &self,
-        descriptor: PubSubSubscription,
+        descriptor: GooglePubSub,
     ) -> Result<PubSubSubscriber, PubSubError> {
         descriptor.validate()?;
         self.core.ensure_open()?;
@@ -257,6 +267,32 @@ impl ConnectedPubSubBroker {
         }
 
         Ok(PubSubSubscriber::open(&self.core, &descriptor))
+    }
+
+    /// The topic `subscription` is bound to, as the API reports it, or `None` when that topic has
+    /// been deleted out from under the subscription.
+    ///
+    /// This is the address a publisher reaches the subscription by, which is what the runtime's
+    /// deferred `retry_after` fallback needs. Asked once per subscription at startup.
+    pub(crate) async fn topic_of(&self, subscription: &str) -> Result<Option<String>, PubSubError> {
+        let name = self.core.subscription_name(subscription);
+        let found = self
+            .core
+            .subscription_admin
+            .get_subscription()
+            .set_subscription(name.clone())
+            .send()
+            .await
+            .map_err(|err| PubSubError::Admin {
+                name,
+                source: box_err(err),
+            })?;
+        // The API's own placeholder for a subscription whose topic is gone. Answering with it
+        // would name a topic no publish can reach.
+        if found.topic == DELETED_TOPIC {
+            return Ok(None);
+        }
+        Ok(Some(found.topic))
     }
 
     /// Creates `topic` when it does not exist. Get-then-create: a lost race means the create
@@ -366,11 +402,83 @@ impl Subscribe for ConnectedPubSubBroker {
     type Subscriber = PubSubSubscriber;
 
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
-        self.subscribe_descriptor(PubSubSubscription::new(name))
-            .await
+        self.subscribe_descriptor(GooglePubSub::new(name)).await
     }
 }
 
 impl DefaultPublish for ConnectedPubSubBroker {
     type Policy = PubSubPublish;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn described(broker: &PubSubBroker) -> String {
+        broker
+            .describe_server()
+            .host
+            .expect("a Pub/Sub server always has an address")
+    }
+
+    #[test]
+    fn the_default_server_is_the_public_endpoint() {
+        assert_eq!(
+            described(&PubSubBroker::new("p")),
+            "pubsub.googleapis.com".to_owned()
+        );
+    }
+
+    #[test]
+    fn an_emulator_address_is_reported_as_written() {
+        // The form the documentation puts in front of a reader.
+        assert_eq!(
+            described(&PubSubBroker::new("p").emulator("localhost:8085")),
+            "localhost:8085".to_owned()
+        );
+    }
+
+    /// Every endpoint form this crate accepts reduces to the host and port, and nothing an
+    /// operator wrote around it reaches a document teams share.
+    #[test]
+    fn an_endpoint_is_reported_as_host_and_port() {
+        for (written, expected) in [
+            ("localhost:8085", "localhost:8085"),
+            ("http://localhost:8085", "localhost:8085"),
+            (
+                "https://us-east1-pubsub.googleapis.com",
+                "us-east1-pubsub.googleapis.com",
+            ),
+            ("https://pubsub.googleapis.com/v1", "pubsub.googleapis.com"),
+            (
+                "https://pubsub.googleapis.com/v1?alt=json",
+                "pubsub.googleapis.com",
+            ),
+            ("http://user:pass@localhost:8085", "localhost:8085"),
+            // The path holds the only `@`, so cutting on it before the path is removed would
+            // report `b` as the host.
+            ("https://pubsub.googleapis.com/a@b", "pubsub.googleapis.com"),
+            // Credentials carrying an `@` of their own: the host follows the last one.
+            ("http://user:p@ss@localhost:8085", "localhost:8085"),
+            ("http://[::1]:8085", "[::1]:8085"),
+        ] {
+            let host = described(&PubSubBroker::new("p").endpoint(written));
+            assert_eq!(host, expected.to_owned(), "endpoint {written:?}");
+            assert!(
+                !host.contains("://"),
+                "scheme reached the description: {host}"
+            );
+            assert!(
+                !host.contains('@'),
+                "credentials reached the description: {host}"
+            );
+        }
+    }
+
+    /// The emulator takes the same path: it is an endpoint an operator writes too.
+    #[test]
+    fn an_emulator_endpoint_is_stripped_the_same_way() {
+        let host = described(&PubSubBroker::new("p").emulator("http://user:pass@127.0.0.1:8085"));
+        assert_eq!(host, "127.0.0.1:8085".to_owned());
+    }
 }

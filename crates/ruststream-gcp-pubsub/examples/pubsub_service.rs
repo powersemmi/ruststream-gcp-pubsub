@@ -12,7 +12,7 @@ struct Order {
     id: u64,
 }
 
-#[subscriber(PubSubSubscription::new("orders-workers").create_with_topic("orders"))]
+#[subscriber(GooglePubSub::new("orders-workers").create_with_topic("orders"))]
 async fn handle(order: &Order) -> HandlerOutcome {
     println!("got order {}", order.id);
     HandlerOutcome::ack()

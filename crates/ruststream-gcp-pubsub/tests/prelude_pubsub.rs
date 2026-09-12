@@ -12,13 +12,22 @@ use ruststream_gcp_pubsub::prelude::*;
 /// slot with survives this glob.
 fn _p<T: Publisher>() {}
 
-/// The same for the step this crate adds to that vocabulary.
-fn _o<T: PubSubOrdering>() {}
+/// The bound a body writes when it adjusts a per-message setting, naming this crate's settings
+/// type. That is the one thing such a body takes from here rather than from the framework.
+fn _s<T: Publisher<Options = PubSubPublishOptions>>() {}
 
-/// The mount-site vocabulary: the publish policy, under the name every broker's prelude gives it.
-/// This one holds no options, so the name is the whole expression a mount site writes.
+/// The step itself, on the framework's publish builder, reached through the same glob.
+fn _o<T: PubSubOrdering>(builder: T) -> T {
+    builder.ordering_key("order-42")
+}
+
+/// The mount-site vocabulary: the publish policy, under the name every broker's prelude gives it,
+/// carrying the default of the one setting a call site may override.
 #[test]
 fn the_policy_arrives_under_its_mount_site_name() {
-    let policy: Publish = Publish;
-    assert_eq!(format!("{policy:?}"), "PubSubPublish");
+    let policy: Publish = Publish::default().ordering_key("order-42");
+    assert_eq!(
+        format!("{policy:?}"),
+        r#"PubSubPublish { ordering_key: Some("order-42") }"#
+    );
 }
