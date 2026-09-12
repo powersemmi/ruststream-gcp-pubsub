@@ -114,10 +114,10 @@ Broker 默认用 Application Default Credentials 认证。`credentials(..)` 改�
 | 处理器结果 | Pub/Sub 调用 | 效果 |
 | --- | --- | --- |
 | `HandlerOutcome::ack()` | acknowledge | 这次投递完成 |
-| `HandlerOutcome::retry()` | nack | 消息重新变为可取，会再投递一次 |
+| `HandlerOutcome::retry()` | nack | 消息重新变为可取，会重新投递 |
 | `HandlerOutcome::drop()` | acknowledge | 消息不会重新投递 |
 
-Pub/Sub 没有“丢弃且不重新投递”这个动作，所以 `drop()` 走的是确认。poison 消息由订阅的死信策略
+Pub/Sub 没有“丢弃且不重新投递”这个动作，所以 `drop()` 走的是确认。毒消息由订阅的死信策略
 分流，该策略设在订阅资源上。在这样的策略下，投递尝试次数会以 `pubsub-delivery-attempt` 消息头送
 达（导出为 `DELIVERY_ATTEMPT_HEADER`），处理器可以按一条消息回来过几次来分支。
 
@@ -216,7 +216,7 @@ just brokers-down
 模拟器起来时是空的，`create_with_topic` 就是为此而设：订阅和它的主题在订阅时创建。两个服务抢同样
 的名字，最后都能连上，因为创建是一次读取、再一次创建、再一次读取。
 
-实时测试套件用同样的方式跑，由 `PUBSUB_TEST_HOST` 开关控制：
+针对真实 Broker 的测试集用同样的方式跑，由 `PUBSUB_TEST_HOST` 开关控制：
 
 ```bash
 just test-brokers  # 启动模拟器，跑集成套件和 conformance 套件
