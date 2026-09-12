@@ -10,7 +10,7 @@
 //! time, so the subscriber wraps itself in the core's [`BufferedSubscriber`]: the batch size
 //! arrives per subscription from the mount site's `batch(n)`, and the deadline that closes a
 //! partial batch is this crate's, tunable with
-//! [`PubSubSubscription::batch_wait`](crate::PubSubSubscription::batch_wait).
+//! [`GooglePubSub::batch_wait`](crate::GooglePubSub::batch_wait).
 
 use std::num::NonZeroUsize;
 
@@ -23,7 +23,7 @@ use tokio::sync::mpsc;
 use crate::broker::Core;
 use crate::error::{PubSubError, box_err};
 use crate::message::PubSubMessage;
-use crate::subscription::PubSubSubscription;
+use crate::subscription::GooglePubSub;
 
 /// How many converted deliveries may sit between the pump and the consumer. Real prefetch is
 /// the client's own flow control (`max_outstanding`); this only decouples the two loops.
@@ -58,7 +58,7 @@ impl PubSubSubscriber {
     }
 
     /// Opens the stream synchronously (the client connects lazily) and spawns the pump.
-    pub(crate) fn open(core: &Core, descriptor: &PubSubSubscription) -> Self {
+    pub(crate) fn open(core: &Core, descriptor: &GooglePubSub) -> Self {
         let name = core.subscription_name(descriptor.subscription());
         let mut builder = core.subscriber.subscribe(name.clone());
         if let Some(messages) = descriptor.max_outstanding_value() {
@@ -106,7 +106,7 @@ impl Subscriber for PubSubSubscriber {
 }
 
 /// Batches come off the same channel the single-message stream reads, closed by the size the
-/// registration named or by the descriptor's [`batch_wait`](PubSubSubscription::batch_wait),
+/// registration named or by the descriptor's [`batch_wait`](GooglePubSub::batch_wait),
 /// whichever comes first. Nothing at the mount site says the batches are assembled here rather
 /// than on the wire.
 impl BatchSubscriber for PubSubSubscriber {

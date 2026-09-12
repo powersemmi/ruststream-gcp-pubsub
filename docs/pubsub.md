@@ -53,7 +53,7 @@ publishers in one region), and `emulator(host)` points the whole client set at a
 
 ## Subscriptions
 
-Pub/Sub separates the topic from the subscription, and `PubSubSubscription` keeps both explicit. By
+Pub/Sub separates the topic from the subscription, and `GooglePubSub` keeps both explicit. By
 default the descriptor names an existing subscription, by short id or by full
 `projects/{project}/subscriptions/{name}` resource name. It implements `SubscriptionSource`, so it
 sits inline in the decorator:
@@ -90,7 +90,7 @@ by itself cause redelivery. Dropping the subscriber signals the client's shutdow
 drains the stream.
 
 The plain string form `#[subscriber("orders-workers")]` also works: a by-name source resolves to
-`PubSubSubscription::new`, which requires the subscription to exist already.
+`GooglePubSub::new`, which requires the subscription to exist already.
 
 ## Batches
 
@@ -264,7 +264,7 @@ end against the emulator, where the integration tests and the framework's confor
 suite run.
 
 Because it routes by name, the stand-in serves the by-name subscriber form
-(`#[subscriber("orders-workers")]`). A handler that names a `PubSubSubscription` descriptor is
+(`#[subscriber("orders-workers")]`). A handler that names a `GooglePubSub` descriptor is
 bound to the real broker, since the descriptor resolves a subscription against a topic and the
 stand-in models neither; test those handlers by injecting on the connected stand-in directly, as
 above.

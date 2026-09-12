@@ -18,7 +18,7 @@ use tokio::sync::OnceCell;
 use crate::error::{PubSubError, box_err};
 use crate::publisher::{PubSubPublish, PubSubPublisher};
 use crate::subscriber::PubSubSubscriber;
-use crate::subscription::PubSubSubscription;
+use crate::subscription::GooglePubSub;
 
 /// The live client state shared by the connected form and every handle derived from it.
 ///
@@ -269,7 +269,7 @@ impl ConnectedPubSubBroker {
     /// in) fails, or the broker is shut down.
     pub async fn subscribe_descriptor(
         &self,
-        descriptor: PubSubSubscription,
+        descriptor: GooglePubSub,
     ) -> Result<PubSubSubscriber, PubSubError> {
         descriptor.validate()?;
         self.core.ensure_open()?;
@@ -390,8 +390,7 @@ impl Subscribe for ConnectedPubSubBroker {
     type Subscriber = PubSubSubscriber;
 
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
-        self.subscribe_descriptor(PubSubSubscription::new(name))
-            .await
+        self.subscribe_descriptor(GooglePubSub::new(name)).await
     }
 }
 

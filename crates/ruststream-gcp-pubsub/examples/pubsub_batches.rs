@@ -17,7 +17,7 @@ struct Order {
 /// The slice parameter is what makes this a batch handler; `batch_wait` says how long a batch
 /// that is not yet full may wait for the rest of it.
 #[subscriber(
-    PubSubSubscription::new("orders-workers")
+    GooglePubSub::new("orders-workers")
         .create_with_topic("orders")
         .batch_wait(Duration::from_millis(200))
 )]

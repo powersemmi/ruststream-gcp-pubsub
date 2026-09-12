@@ -9,7 +9,7 @@
 use ruststream::Name;
 use ruststream::conformance::{capabilities, harness};
 use ruststream_gcp_pubsub::testing::PubSubTestBroker;
-use ruststream_gcp_pubsub::{PubSubBroker, PubSubSubscription};
+use ruststream_gcp_pubsub::{GooglePubSub, PubSubBroker};
 
 mod live;
 
@@ -47,7 +47,7 @@ async fn pubsub_broker_passes_lifecycle() {
     let Some(host) = test_host() else { return };
     harness::lifecycle(
         || PubSubBroker::new(TEST_PROJECT).emulator(host.clone()),
-        |name| PubSubSubscription::new(name).create_with_topic(name),
+        |name| GooglePubSub::new(name).create_with_topic(name),
         |connected| connected.publisher(),
     )
     .await;
@@ -61,7 +61,7 @@ async fn pubsub_broker_honours_the_batch_size() {
     let Some(host) = test_host() else { return };
     capabilities::batches(
         || PubSubBroker::new(TEST_PROJECT).emulator(host.clone()),
-        |name| PubSubSubscription::new(name).create_with_topic(name),
+        |name| GooglePubSub::new(name).create_with_topic(name),
         |connected| connected.publisher(),
     )
     .await;
