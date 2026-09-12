@@ -2,10 +2,9 @@
 //! batch handler, where a returned reply lands, and the subscription descriptor it declares its
 //! handlers with.
 //!
-//! The step adapts a publisher, so it has to resolve on the slot entry a handler body holds.
-//! Resolved anywhere below that entry it still reaches the broker, but the publish leaves through
-//! the unwrapped publisher and the harness's per-slot capture misses it - a silent hole this test
-//! closes from the outside.
+//! The step is a position on the publish builder, so a keyed publish is still the slot's: it keeps
+//! the slot's attribution, the codec the mount site named, and the key the call asked for. A step
+//! that wrapped the publisher instead would lose all three, which is what the codec case pins.
 //!
 //! The batch handler is the other half: the stand-in assembles batches the way the real subscriber
 //! does, so a `&[T]` body is unit-testable here rather than only against the emulator.
@@ -22,9 +21,10 @@
 
 use std::time::Duration;
 
+use ruststream::codec::CborCodec;
 use ruststream::runtime::{Out, PublishError};
 use ruststream::testing::TestApp;
-use ruststream::{ConnectedBroker as _, Outgoing, Serialized, SubscriptionSource as _};
+use ruststream::{ConnectedBroker as _, Outgoing, SubscriptionSource as _};
 use ruststream_gcp_pubsub::prelude::*;
 use ruststream_gcp_pubsub::testing::PubSubTestBroker;
 use ruststream_gcp_pubsub::{PARTITION_KEY_HEADER, PubSubError};
@@ -36,18 +36,17 @@ struct Order {
     id: u64,
 }
 
-/// What the handler forwards. The subject is the ordering key, so the payload takes the lane that
-/// leaves it alone.
-#[derive(Outgoing, Serialized)]
-struct Wire(Vec<u8>);
-
-/// Forwards every order under its own ordering key.
+/// Forwards every order under its own ordering key. The body names a per-message setting, so it
+/// imports this crate's prelude and bounds its slot on this broker's settings type.
 #[subscriber("orders-workers")]
-async fn forward(order: &Order, Out(out): Out<impl PubSubOrdering>) -> HandlerOutcome {
-    let keyed = out.with_ordering_key(format!("order-{}", order.id));
-    if keyed
-        .message(&Wire(b"forwarded".to_vec()))
+async fn forward(
+    order: &Order,
+    Out(out): Out<impl Publisher<Options = PubSubPublishOptions>>,
+) -> HandlerOutcome {
+    if out
+        .message(order)
         .to("confirmations")
+        .ordering_key(format!("order-{}", order.id))
         .publish()
         .await
         .is_err()
@@ -62,7 +61,9 @@ async fn the_ordering_step_on_a_slot_keeps_the_key_and_its_attribution() {
     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         PubSubTestBroker::new(),
         |b| {
-            b.include(forward).out(DefaultSlot, Publish).build();
+            b.include(forward)
+                .out(DefaultSlot, Publish::default())
+                .build();
         },
     );
     let tb = TestApp::start(app)
@@ -77,23 +78,104 @@ async fn the_ordering_step_on_a_slot_keeps_the_key_and_its_attribution() {
         .expect("the harness accepts the injection");
     tb.settle().await.expect("the handler settles");
 
-    // The key reached the wire, under the header this crate maps onto the ordering key.
-    let broker = tb.broker::<PubSubTestBroker>();
-    let published = broker
-        .published::<Vec<u8>>("confirmations")
+    // The key reached the wire: the stand-in reports it where a delivery off Pub/Sub does.
+    tb.broker::<PubSubTestBroker>()
+        .published::<Order>("confirmations")
         .assert_called_once()
-        .with_raw(b"forwarded");
-    assert_eq!(
-        published.messages()[0]
-            .headers()
-            .get_str(PARTITION_KEY_HEADER),
-        Some("order-7")
-    );
+        .with(&Order { id: 7 })
+        .with_header(PARTITION_KEY_HEADER, "order-7");
 
-    // And the publish is still the slot's, which is what a service asserts on.
+    // And the publish is still the slot's, carrying the setting the call asked for.
     tb.out::<DefaultSlot>()
         .assert_called_once()
-        .with_raw(b"forwarded");
+        .with_options(&PubSubPublishOptions {
+            ordering_key: Some("order-7".to_owned()),
+        });
+
+    tb.shutdown().await.expect("graceful shutdown");
+}
+
+/// The defect the typed settings close: a step is a position on the builder, not a wrapper around
+/// the publisher, so a keyed publish still encodes with the codec the mount site named. Under the
+/// adapter this crate shipped before, this message left as JSON.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_keyed_publish_keeps_the_codec_the_mount_site_named() {
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+        PubSubTestBroker::new(),
+        |b| {
+            b.include(forward)
+                .out(DefaultSlot, Publish::default())
+                .codec(CborCodec)
+                .build();
+        },
+    );
+    let tb = TestApp::start(app)
+        .await
+        .expect("the harness starts the app");
+
+    tb.broker::<PubSubTestBroker>()
+        .message(&Order { id: 7 })
+        .to("orders-workers")
+        .publish()
+        .await
+        .expect("the harness accepts the injection");
+    tb.settle().await.expect("the handler settles");
+
+    tb.out::<DefaultSlot>()
+        .assert_called_once()
+        .decoded_as::<Order>()
+        .with_codec(&CborCodec, &Order { id: 7 });
+
+    tb.shutdown().await.expect("graceful shutdown");
+}
+
+/// The other half of the pair: the mount site fixes one key for a whole slot, and a body that
+/// names no step sends under it. That is where a slot belongs to one entity end to end.
+#[subscriber("orders-audit")]
+async fn audit_trail(order: &Order, Out(out): Out<impl Publisher>) -> HandlerOutcome {
+    if out
+        .message(order)
+        .to("audit-trail")
+        .publish()
+        .await
+        .is_err()
+    {
+        return HandlerOutcome::retry();
+    }
+    HandlerOutcome::ack()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_mount_sites_key_applies_where_the_call_names_none() {
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+        PubSubTestBroker::new(),
+        |b| {
+            b.include(audit_trail)
+                .out(DefaultSlot, Publish::default().ordering_key("audit"))
+                .build();
+        },
+    );
+    let tb = TestApp::start(app)
+        .await
+        .expect("the harness starts the app");
+
+    tb.broker::<PubSubTestBroker>()
+        .message(&Order { id: 7 })
+        .to("orders-audit")
+        .publish()
+        .await
+        .expect("the harness accepts the injection");
+    tb.settle().await.expect("the handler settles");
+
+    tb.broker::<PubSubTestBroker>()
+        .published::<Order>("audit-trail")
+        .assert_called_once()
+        .with_header(PARTITION_KEY_HEADER, "audit");
+
+    // Nothing on the call touched a setting, which is what makes the mount site the whole answer.
+    tb.out::<DefaultSlot>()
+        .assert_called_once()
+        .assert_options_default();
 
     tb.shutdown().await.expect("graceful shutdown");
 }
@@ -306,7 +388,7 @@ async fn the_routes_file_a_service_ships_mounts_on_the_stand_in() {
         // descriptor on the subscribe side, the policy under its mount-site name on the publish
         // side. Neither has a test-only spelling to swap in.
         |b| {
-            b.include(plan).out(Reply, Publish);
+            b.include(plan).out(Reply, Publish::default());
         },
     );
     let tb = TestApp::start(app)

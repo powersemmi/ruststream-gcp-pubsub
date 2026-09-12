@@ -12,7 +12,8 @@ use ruststream::{
 };
 
 use crate::error::PubSubError;
-use crate::publisher::{PubSubOrdering, PubSubPublish};
+use crate::message::PARTITION_KEY_HEADER;
+use crate::publisher::{PubSubPublish, PubSubPublishOptions, resolve_ordering_key};
 use crate::subscription::GooglePubSub;
 use crate::testing::router::AddressRouter;
 use crate::testing::subscriber::PubSubTestSubscriber;
@@ -72,9 +73,7 @@ impl PubSubTestBroker {
     /// A publisher usable before `connect`, mirroring the real broker's early-publisher path.
     #[must_use]
     pub fn publisher(&self) -> PubSubTestPublisher {
-        PubSubTestPublisher {
-            state: Arc::clone(&self.state),
-        }
+        PubSubTestPublisher::new(Arc::clone(&self.state))
     }
 }
 
@@ -99,9 +98,7 @@ impl ConnectedPubSubTestBroker {
     /// A publisher from the connected form.
     #[must_use]
     pub fn publisher(&self) -> PubSubTestPublisher {
-        PubSubTestPublisher {
-            state: Arc::clone(&self.state),
-        }
+        PubSubTestPublisher::new(Arc::clone(&self.state))
     }
 
     /// Opens the subscription described by `descriptor`, so a service mounts the descriptor it
@@ -213,37 +210,56 @@ ruststream::register_testable_broker!(ConnectedPubSubTestBroker);
 #[derive(Debug, Clone)]
 pub struct PubSubTestPublisher {
     state: Arc<TestState>,
+    default_ordering_key: Option<Arc<str>>,
 }
 
 impl PubSubTestPublisher {
+    pub(crate) fn new(state: Arc<TestState>) -> Self {
+        Self {
+            state,
+            default_ordering_key: None,
+        }
+    }
+
     /// The synchronous body of the publish: routing in process is a channel send, and the
     /// future below is what gives the call site its parity with the real publisher.
-    fn route(&self, msg: &OutgoingMessage<'_>) -> Result<(), PubSubError> {
+    fn route(
+        &self,
+        msg: &OutgoingMessage<'_>,
+        options: Option<&PubSubPublishOptions>,
+    ) -> Result<(), PubSubError> {
         self.state.ensure_open()?;
-        self.state.publish(
-            msg.name(),
-            Bytes::copy_from_slice(msg.payload()),
-            msg.headers().clone(),
-        );
+        let mut headers = msg.headers().clone();
+        // The stand-in has no protocol field to put the key in, so it puts the resolved key where
+        // a delivery off Pub/Sub reports it: the `partition-key` header. A test then reads the
+        // same answer either way.
+        match resolve_ordering_key(msg, options, self.default_ordering_key.as_deref()) {
+            Some(key) => headers.insert(PARTITION_KEY_HEADER, key.into_owned()),
+            None => headers.remove(PARTITION_KEY_HEADER),
+        };
+        self.state
+            .publish(msg.name(), Bytes::copy_from_slice(msg.payload()), headers);
         Ok(())
     }
 }
 
 impl Publisher for PubSubTestPublisher {
     type Error = PubSubError;
+    type Options = PubSubPublishOptions;
 
-    fn publish(&self, msg: OutgoingMessage<'_>) -> impl Future<Output = Result<(), Self::Error>> {
-        ready(self.route(&msg))
+    fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
+    ) -> impl Future<Output = Result<(), Self::Error>> {
+        ready(self.route(&msg, options))
     }
 }
 
-// Keeps `with_ordering_key` callable in a test exactly as against the real broker.
-impl PubSubOrdering for PubSubTestPublisher {}
-
 /// The stand-in pairs the real [`PubSubPublish`] policy, so a routes file mounts on it with the
-/// spelling it ships: `.out(Reply, Publish)` reads the same either way, and there is no test-only
-/// policy to swap in. The policy holds no settings for the stand-in to honour - the destination
-/// travels on the message and the ordering key on its header - so the pairing loses nothing.
+/// spelling it ships: `.out(Reply, Publish::default())` reads the same either way, and there is no
+/// test-only policy to swap in. The policy's ordering key is honoured here as it is against the
+/// product, so a mount site's default reaches the assertions.
 impl PublishPolicy<ConnectedPubSubTestBroker> for PubSubPublish {
     type Live = PubSubTestPublisher;
 
@@ -251,7 +267,9 @@ impl PublishPolicy<ConnectedPubSubTestBroker> for PubSubPublish {
         self,
         connected: &ConnectedPubSubTestBroker,
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
-        ready(Ok(connected.publisher()))
+        let mut publisher = connected.publisher();
+        publisher.default_ordering_key = self.default_key();
+        ready(Ok(publisher))
     }
 }
 

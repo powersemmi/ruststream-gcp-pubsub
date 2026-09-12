@@ -1,39 +1,80 @@
-//! [`PubSubPublisher`], its [`PubSubPublish`] policy, and the [`PubSubOrdering`] publish step.
+//! [`PubSubPublisher`], its [`PubSubPublish`] policy, the [`PubSubPublishOptions`] a single
+//! message may differ by, and the [`PubSubOrdering`] step that names one.
 
 use std::borrow::Cow;
 use std::fmt;
 use std::future::{Future, ready};
+use std::sync::Arc;
 
-use bytes::Bytes;
 use google_cloud_pubsub::client::Publisher as GcpPublisher;
-use ruststream::runtime::{OutPipeline, OutSlot, Slot};
-use ruststream::{HeaderMap, OutgoingMessage, PairError, PublishPolicy, Publisher};
+use ruststream::runtime::{PublishBuilder, PublishSink};
+use ruststream::{OutgoingMessage, PairError, PublishPolicy, Publisher};
 
 use crate::broker::{ConnectedPubSubBroker, Core, CoreCell};
 use crate::error::{PubSubError, box_err};
 use crate::message::{PARTITION_KEY_HEADER, to_gcp_message};
 
+/// The settings one Pub/Sub message may differ from the next by.
+///
+/// Pub/Sub gives a message exactly one such field, its ordering key, so that is the whole type.
+/// The field is optional, because a publish carries only what its call site adjusted: what a call
+/// leaves unset keeps what the [`PubSubPublish`] policy fixed at the mount site.
+///
+/// A handler body that names the [`ordering_key`](PubSubOrdering::ordering_key) step bounds its
+/// slot on this type, and a test reads the value back with
+/// `tb.out::<Marker>().with_options(..)`.
+///
+/// # Examples
+///
+/// ```
+/// use ruststream_gcp_pubsub::PubSubPublishOptions;
+///
+/// let options = PubSubPublishOptions {
+///     ordering_key: Some("order-42".to_owned()),
+/// };
+/// assert_eq!(options.ordering_key.as_deref(), Some("order-42"));
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PubSubPublishOptions {
+    /// The message's ordering key. Messages sharing a key are delivered to one subscriber in
+    /// publish order; `None` leaves the publish unordered unless the policy fixed a key.
+    pub ordering_key: Option<String>,
+}
+
 /// Publishes messages to Pub/Sub topics, one client publisher per topic, created lazily and
 /// shared through the broker core (so `shutdown` can flush buffered batches).
 ///
-/// The destination name is the topic id (short or full resource name). A `partition-key`
-/// header becomes the message's ordering key; per-key FIFO is the client's ordered path.
+/// The destination name is the topic id (short or full resource name). Message attributes carry
+/// headers directly, and the ordering key reaches the client as the message's own field.
 /// Buildable before `connect` and usable until `shutdown`; afterwards every publish reports
 /// [`PubSubError::NotConnected`] instead of silently succeeding.
 #[derive(Clone)]
 pub struct PubSubPublisher {
     cell: CoreCell,
+    /// The key the mount site fixed for this handle, applied to every publish that names none.
+    default_ordering_key: Option<Arc<str>>,
 }
 
 impl fmt::Debug for PubSubPublisher {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PubSubPublisher").finish_non_exhaustive()
+        f.debug_struct("PubSubPublisher")
+            .field("default_ordering_key", &self.default_ordering_key)
+            .finish_non_exhaustive()
     }
 }
 
 impl PubSubPublisher {
     pub(crate) fn new(cell: CoreCell) -> Self {
-        Self { cell }
+        Self {
+            cell,
+            default_ordering_key: None,
+        }
+    }
+
+    /// The handle a policy pairs into: the same connection cell, carrying the policy's key.
+    pub(crate) fn with_default_ordering_key(mut self, key: Option<Arc<str>>) -> Self {
+        self.default_ordering_key = key;
+        self
     }
 
     fn core(&self) -> Result<&Core, PubSubError> {
@@ -57,20 +98,45 @@ impl PubSubPublisher {
     }
 }
 
+/// The ordering key one publish carries, resolved over the three places it can come from.
+///
+/// The call site wins in either spelling - the [`ordering_key`](PubSubOrdering::ordering_key)
+/// step, or the broker-agnostic `partition-key` header a handler writes - and the key the policy
+/// fixed applies when the call names neither.
+pub(crate) fn resolve_ordering_key<'a>(
+    msg: &'a OutgoingMessage<'_>,
+    options: Option<&'a PubSubPublishOptions>,
+    policy: Option<&'a str>,
+) -> Option<Cow<'a, str>> {
+    if let Some(key) = options.and_then(|options| options.ordering_key.as_deref()) {
+        return Some(Cow::Borrowed(key));
+    }
+    if let Some(value) = msg.headers().get(PARTITION_KEY_HEADER) {
+        return Some(String::from_utf8_lossy(value));
+    }
+    policy.map(Cow::Borrowed)
+}
+
 impl Publisher for PubSubPublisher {
     type Error = PubSubError;
+    type Options = PubSubPublishOptions;
 
-    async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
+    async fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
+    ) -> Result<(), Self::Error> {
         let core = self.core()?;
         let publisher = self.publisher_for(core, msg.name()).await;
-        let (message, ordering_key) = to_gcp_message(&msg);
+        let key = resolve_ordering_key(&msg, options, self.default_ordering_key.as_deref());
+        let message = to_gcp_message(&msg, key.as_deref());
         match publisher.publish(message).await {
             Ok(_message_id) => Ok(()),
             Err(err) => {
                 // An error on an ordered key pauses the key; resume so the pause cannot wedge
                 // every later publish on this key, and let the caller see this failure.
-                if !ordering_key.is_empty() {
-                    publisher.resume_publish(ordering_key);
+                if let Some(key) = key {
+                    publisher.resume_publish(key.into_owned());
                 }
                 Err(PubSubError::Publish {
                     topic: core.topic_name(msg.name()),
@@ -81,23 +147,19 @@ impl Publisher for PubSubPublisher {
     }
 }
 
-/// Names the ordering key of a publish.
+/// Names the ordering key of one publish.
 ///
-/// `with_ordering_key` adapts the publisher: every publish built on the returned
-/// [`OrderedPublisher`] carries the key, and the rest of the chain (codec, headers, destination)
-/// is written as usual.
+/// The step sits on the framework's publish builder, between `message(..)` and `publish()`, so
+/// the publish it finishes is still the mount site's: the codec that entry named, its transforms
+/// and its slot attribution all hold. The key reaches the client as the message's own ordering
+/// key and never as an attribute.
 ///
-/// Implemented for the live publisher, the in-process test publisher and the `Out` slot entry, so
-/// the same call works in a handler, in a startup hook and under the test harness.
+/// It resolves only on a builder over a Pub/Sub publisher, which is what the bound on the sink's
+/// options type buys: on any other broker's builder the method does not exist.
 ///
-/// The key is per message, which is why it is a step on the publisher rather than a setting on
-/// [`PubSubPublish`] reached through the mount chain's `map_publisher` hook: it groups one order's
-/// own events, so a key named once at a mount site would funnel everything that registration sends
-/// into a single FIFO lane.
-///
-/// The step yields a plain publisher, so a publish built on it resolves the crate's default codec
-/// rather than the include site's; a slot publish that needs the include site's codec goes through
-/// the slot's own `message(..)` and names the key in its headers.
+/// A handler body that names it imports this crate's prelude and bounds its slot
+/// `Out<impl Publisher<Options = PubSubPublishOptions>, Marker>`. Where a whole slot orders under
+/// one key, the mount site says so once instead - [`PubSubPublish::ordering_key`].
 ///
 /// # Examples
 ///
@@ -111,97 +173,71 @@ impl Publisher for PubSubPublisher {
 ///
 /// async fn seed(publisher: &PubSubPublisher) -> Result<(), Box<dyn std::error::Error>> {
 ///     publisher
-///         .with_ordering_key("order-42")
 ///         .message(&OrderEvent(b"created".to_vec()))
 ///         .to("orders")
+///         .ordering_key("order-42")
 ///         .publish()
 ///         .await?;
 ///     Ok(())
 /// }
 /// ```
-pub trait PubSubOrdering: Publisher {
-    /// Adapts this publisher so every message it sends carries `key` as its ordering key.
+pub trait PubSubOrdering {
+    /// Sends this one message under `key`, whatever the mount site's default is.
     ///
-    /// Pass a `&str` (the borrowed case) or a `String` (a computed key). The adapter borrows
-    /// the publisher, so one key can serve a run of publishes.
+    /// Pass a `&str` or an owned `String`; the key is copied into the message's settings.
     #[must_use]
-    fn with_ordering_key<'a>(&'a self, key: impl Into<Cow<'a, str>>) -> OrderedPublisher<'a, Self> {
-        OrderedPublisher::new(self, key.into())
-    }
+    fn ordering_key(self, key: impl Into<String>) -> Self;
 }
 
-impl PubSubOrdering for PubSubPublisher {}
-
-// Grafted onto the slot entry a handler body actually holds, next to the core's own capability
-// delegations on it. Resolving the step there keeps the publish attributed to its slot; an impl
-// one layer down is reached by autoderef past the entry instead, and a publish built on it leaves
-// through the unwrapped publisher, where the harness's per-slot capture never sees it.
-impl<M: OutSlot, W: PubSubOrdering, E: Send + Sync, Pipe: OutPipeline, Body> PubSubOrdering
-    for Slot<M, W, E, Pipe, Body>
+impl<Sink, Body, Enc, Hdrs, Dest> PubSubOrdering for PublishBuilder<Sink, Body, Enc, Hdrs, Dest>
+where
+    Sink: PublishSink<Options = PubSubPublishOptions>,
 {
+    fn ordering_key(mut self, key: impl Into<String>) -> Self {
+        self.options_mut()
+            .get_or_insert_with(PubSubPublishOptions::default)
+            .ordering_key = Some(key.into());
+        self
+    }
 }
 
-/// A publisher that carries one ordering key into every publish built on it, returned by
-/// [`PubSubOrdering::with_ordering_key`].
+/// The publish policy for [`PubSubPublisher`]: pure declaration, constructible anywhere, paired
+/// with the connected broker by the runtime after `connect`.
 ///
-/// The key travels as the `partition-key` header, which this crate maps onto the message's
-/// ordering key and a delivery reports back. It rides as the adapter's
-/// [base headers](Publisher::base_headers), so the publish's own headers are written over it:
-/// other headers named at the call travel with the key, and a `partition-key` named there wins.
-/// A message handed to [`Publisher::publish`] directly is sent as it was built.
-pub struct OrderedPublisher<'a, P: ?Sized> {
-    inner: &'a P,
-    base: HeaderMap,
-}
-
-impl<'a, P: Publisher + ?Sized> OrderedPublisher<'a, P> {
-    fn new(inner: &'a P, key: Cow<'a, str>) -> Self {
-        // Converted once per adapter rather than once per publish; an owned key moves in.
-        let key = match key {
-            Cow::Borrowed(key) => Bytes::copy_from_slice(key.as_bytes()),
-            Cow::Owned(key) => Bytes::from(key),
-        };
-        // Seeded from the wrapped handle so its own base survives the adapter.
-        let mut base = inner.base_headers().cloned().unwrap_or_default();
-        base.insert(PARTITION_KEY_HEADER, key);
-        Self { inner, base }
-    }
-}
-
-impl<P: ?Sized> fmt::Debug for OrderedPublisher<'_, P> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OrderedPublisher")
-            .field("base_headers", &self.base)
-            .finish_non_exhaustive()
-    }
-}
-
-impl<P: Publisher + ?Sized> Publisher for OrderedPublisher<'_, P> {
-    type Error = P::Error;
-
-    async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
-        self.inner.publish(msg).await
-    }
-
-    fn base_headers(&self) -> Option<&HeaderMap> {
-        Some(&self.base)
-    }
-}
-
-/// The publish policy for [`PubSubPublisher`]: pure declaration, constructible anywhere,
-/// paired with the connected broker by the runtime after `connect`.
+/// It carries the defaults of the per-message settings, which on Pub/Sub means one: the ordering
+/// key every message through this mount site is sent under.
 ///
 /// # Examples
 ///
 /// ```
 /// use ruststream_gcp_pubsub::PubSubPublish;
 ///
-/// let policy = PubSubPublish::default();
+/// // Every message this mount site sends is ordered under one key.
+/// let policy = PubSubPublish::default().ordering_key("order-42");
 /// # let _ = policy;
 /// ```
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[must_use]
-pub struct PubSubPublish;
+pub struct PubSubPublish {
+    ordering_key: Option<String>,
+}
+
+impl PubSubPublish {
+    /// Orders every message this mount site sends under `key`.
+    ///
+    /// Reach for it where a whole slot belongs to one entity - one order's events, one device's
+    /// telemetry. A key that differs per message is the call's to name, with the
+    /// [`ordering_key`](PubSubOrdering::ordering_key) step.
+    pub fn ordering_key(mut self, key: impl Into<String>) -> Self {
+        self.ordering_key = Some(key.into());
+        self
+    }
+
+    /// The key this policy hands its live publisher, in the form the publisher keeps it.
+    pub(crate) fn default_key(&self) -> Option<Arc<str>> {
+        self.ordering_key.as_deref().map(Arc::from)
+    }
+}
 
 impl PublishPolicy<ConnectedPubSubBroker> for PubSubPublish {
     type Live = PubSubPublisher;
@@ -210,159 +246,62 @@ impl PublishPolicy<ConnectedPubSubBroker> for PubSubPublish {
         self,
         connected: &ConnectedPubSubBroker,
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
-        ready(Ok(connected.publisher()))
+        let key = self.default_key();
+        ready(Ok(connected.publisher().with_default_ordering_key(key)))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::future::{Future, ready};
-    use std::sync::Mutex;
-
-    use ruststream::runtime::PublishExt;
-    use ruststream::{Outgoing, Serialized};
+    use ruststream::HeaderMap;
 
     use super::*;
 
-    /// Bytes travelling as themselves. The adapter's subject is the headers, so the payload
-    /// takes the lane that leaves it alone rather than a model that would drag a codec in.
-    #[derive(Outgoing, Serialized)]
-    struct Payload(Vec<u8>);
-
-    impl Payload {
-        fn created() -> Self {
-            Self(b"created".to_vec())
-        }
-    }
-
-    /// A publisher that keeps what it was handed, so the adapter's effect on the message is
-    /// observable without a connection. `base` stands for a handle that already contributes
-    /// headers of its own.
-    #[derive(Debug, Default)]
-    struct Recorder {
-        sent: Mutex<Vec<(String, Vec<u8>, HeaderMap)>>,
-        base: Option<HeaderMap>,
-    }
-
-    impl Recorder {
-        fn tagged(name: &str, value: &str) -> Self {
-            let mut base = HeaderMap::new();
-            base.insert(name, value.to_owned());
-            Self {
-                sent: Mutex::default(),
-                base: Some(base),
-            }
-        }
-
-        fn last(&self) -> (String, Vec<u8>, HeaderMap) {
-            self.sent.lock().expect("no panic held the lock")[0].clone()
-        }
-    }
-
-    impl Publisher for Recorder {
-        type Error = PubSubError;
-
-        fn publish(
-            &self,
-            msg: OutgoingMessage<'_>,
-        ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-            self.sent.lock().expect("no panic held the lock").push((
-                msg.name().to_owned(),
-                msg.payload().to_vec(),
-                msg.headers().clone(),
-            ));
-            ready(Ok(()))
-        }
-
-        fn base_headers(&self) -> Option<&HeaderMap> {
-            self.base.as_ref()
-        }
-    }
-
-    impl PubSubOrdering for Recorder {}
-
-    #[tokio::test]
-    async fn the_key_rides_the_partition_key_header() {
-        let recorder = Recorder::default();
-        recorder
-            .with_ordering_key("order-42")
-            .message(&Payload::created())
-            .to("orders")
-            .publish()
-            .await
-            .expect("the recorder accepts the message");
-
-        let (name, payload, headers) = recorder.last();
-        assert_eq!(name, "orders");
-        assert_eq!(payload, b"created");
-        assert_eq!(headers.get_str(PARTITION_KEY_HEADER), Some("order-42"));
-    }
-
-    #[tokio::test]
-    async fn other_headers_survive_the_step() {
-        let recorder = Recorder::default();
+    fn keyed_header(value: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        headers.insert("x-tenant", "acme");
-        recorder
-            .with_ordering_key(format!("order-{}", 7))
-            .message(&Payload::created())
-            .to("orders")
-            .with_headers(headers)
-            .publish()
-            .await
-            .expect("the recorder accepts the message");
-
-        let (.., headers) = recorder.last();
-        assert_eq!(headers.get_str("x-tenant"), Some("acme"));
-        assert_eq!(headers.get_str(PARTITION_KEY_HEADER), Some("order-7"));
+        headers.insert(PARTITION_KEY_HEADER, value.to_owned());
+        headers
     }
 
-    #[tokio::test]
-    async fn a_key_named_at_the_call_wins_over_the_adapter() {
-        let recorder = Recorder::default();
-        let mut headers = HeaderMap::new();
-        headers.insert(PARTITION_KEY_HEADER, "order-9");
-        recorder
-            .with_ordering_key("order-42")
-            .message(&Payload::created())
-            .to("orders")
-            .with_headers(headers)
-            .publish()
-            .await
-            .expect("the recorder accepts the message");
+    /// The step is the most specific thing a publish can say, so it wins over both the
+    /// cross-broker header spelling and the mount site's own key.
+    #[test]
+    fn the_step_wins_over_the_header_and_the_policy() {
+        let msg =
+            OutgoingMessage::new("orders", b"{}".as_slice()).with_headers(keyed_header("header"));
+        let options = PubSubPublishOptions {
+            ordering_key: Some("step".to_owned()),
+        };
 
-        // The call site wins over the adapter; do not "fix" this to the adapter's key.
-        let (.., headers) = recorder.last();
-        assert_eq!(headers.get_str(PARTITION_KEY_HEADER), Some("order-9"));
+        let key = resolve_ordering_key(&msg, Some(&options), Some("policy"));
+        assert_eq!(key.as_deref(), Some("step"));
     }
 
-    #[tokio::test]
-    async fn the_wrapped_handles_own_base_survives() {
-        let recorder = Recorder::tagged("x-tenant", "acme");
-        recorder
-            .with_ordering_key("order-42")
-            .message(&Payload::created())
-            .to("orders")
-            .publish()
-            .await
-            .expect("the recorder accepts the message");
+    /// A handler that names no broker still orders its messages: the broker-agnostic header is
+    /// this transport's other spelling of the same key, and it is a call site too.
+    #[test]
+    fn the_partition_key_header_orders_a_publish() {
+        let msg =
+            OutgoingMessage::new("orders", b"{}".as_slice()).with_headers(keyed_header("header"));
 
-        let (.., headers) = recorder.last();
-        assert_eq!(headers.get_str("x-tenant"), Some("acme"));
-        assert_eq!(headers.get_str(PARTITION_KEY_HEADER), Some("order-42"));
+        let key = resolve_ordering_key(&msg, None, Some("policy"));
+        assert_eq!(key.as_deref(), Some("header"));
     }
 
-    #[tokio::test]
-    async fn a_message_published_directly_carries_no_base() {
-        let recorder = Recorder::default();
-        let ordered = recorder.with_ordering_key("order-42");
-        // Not the builder path: an already-built message keeps the headers it was built with.
-        ordered
-            .publish(OutgoingMessage::new("orders", b"created".as_slice()))
-            .await
-            .expect("the recorder accepts the message");
+    /// What no call site named is what the mount site fixed.
+    #[test]
+    fn a_publish_that_names_nothing_takes_the_policys_key() {
+        let msg = OutgoingMessage::new("orders", b"{}".as_slice());
 
-        let (.., headers) = recorder.last();
-        assert_eq!(headers.get_str(PARTITION_KEY_HEADER), None);
+        let key = resolve_ordering_key(&msg, None, Some("policy"));
+        assert_eq!(key.as_deref(), Some("policy"));
+    }
+
+    /// Nothing anywhere means an unordered publish, which is Pub/Sub's own default.
+    #[test]
+    fn a_publish_with_no_key_anywhere_is_unordered() {
+        let msg = OutgoingMessage::new("orders", b"{}".as_slice());
+
+        assert!(resolve_ordering_key(&msg, None, None).is_none());
     }
 }

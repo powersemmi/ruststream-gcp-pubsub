@@ -5,9 +5,13 @@
 //! subscription (and its topic) on subscribe, which is what local development against the
 //! emulator wants.
 
+use std::borrow::Cow;
+// Only the stand-in's source answers without asking the transport anything.
+#[cfg(feature = "testing")]
+use std::future::{Future, ready};
 use std::time::Duration;
 
-use ruststream::SubscriptionSource;
+use ruststream::{FromName, RedeliveryAddress, SubscriptionSource};
 
 use crate::broker::ConnectedPubSubBroker;
 use crate::error::PubSubError;
@@ -143,6 +147,27 @@ impl GooglePubSub {
     }
 }
 
+/// A subscription is identified by its name and nothing else, every other setting having a
+/// default, so the mount site may supply the name instead of the declaration:
+/// `#[subscriber(GooglePubSub)]` on the handler and `.name("orders-workers")` where it is mounted.
+///
+/// # Examples
+///
+/// ```
+/// use ruststream::FromName;
+/// use ruststream_gcp_pubsub::GooglePubSub;
+///
+/// assert_eq!(
+///     GooglePubSub::from_name("orders-workers"),
+///     GooglePubSub::new("orders-workers"),
+/// );
+/// ```
+impl FromName for GooglePubSub {
+    fn from_name(name: impl Into<Cow<'static, str>>) -> Self {
+        Self::new(name.into().into_owned())
+    }
+}
+
 impl SubscriptionSource<ConnectedPubSubBroker> for GooglePubSub {
     type Subscriber = PubSubSubscriber;
 
@@ -155,6 +180,33 @@ impl SubscriptionSource<ConnectedPubSubBroker> for GooglePubSub {
         connected: &ConnectedPubSubBroker,
     ) -> Result<PubSubSubscriber, PubSubError> {
         connected.subscribe_descriptor(self).await
+    }
+
+    /// The topic this subscription is bound to, which is where a publisher reaches it again.
+    ///
+    /// A subscription name is not an address on Pub/Sub: a publish goes to a topic, and the
+    /// subscription behind it is what receives. The descriptor therefore answers with the topic -
+    /// the one `create_with_topic` names, or the one the API reports for an existing subscription.
+    /// The runtime asks once, at startup, and publishes the deferred copy of a `retry_after`
+    /// delivery there.
+    ///
+    /// `None` when the subscription's topic has been deleted, because nothing reaches it then.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PubSubError::Admin`] when the subscription has to be looked up and the call
+    /// fails.
+    async fn redelivery_address(
+        &self,
+        connected: &ConnectedPubSubBroker,
+    ) -> Result<Option<RedeliveryAddress>, PubSubError> {
+        if let Some(topic) = self.create_topic_ref() {
+            return Ok(Some(RedeliveryAddress::new(topic.to_owned())));
+        }
+        Ok(connected
+            .topic_of(self.subscription())
+            .await?
+            .map(RedeliveryAddress::new))
     }
 }
 
@@ -220,6 +272,19 @@ impl SubscriptionSource<crate::testing::ConnectedPubSubTestBroker> for GooglePub
         connected: &crate::testing::ConnectedPubSubTestBroker,
     ) -> Result<Self::Subscriber, PubSubError> {
         connected.subscribe_descriptor(self).await
+    }
+
+    /// The subscription's own name, because that is the one address the stand-in routes by. A
+    /// deferred retry lands where the next delivery comes from, which is the promise the answer
+    /// carries; the topic hop it takes against Pub/Sub is the product's, and is checked there.
+    ///
+    /// Nothing is asked of the transport, so the answer is ready before the future is polled.
+    fn redelivery_address(
+        &self,
+        connected: &crate::testing::ConnectedPubSubTestBroker,
+    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, PubSubError>> {
+        let _ = connected;
+        ready(Ok(Some(RedeliveryAddress::new(self.name.clone()))))
     }
 }
 

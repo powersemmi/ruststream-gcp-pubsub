@@ -2,15 +2,21 @@
 //!
 //! `use ruststream_gcp_pubsub::prelude::*;` carries the framework's own prelude, this crate's
 //! broker and subscription descriptor, its publish policy under the mount-site name [`Publish`],
-//! the live publisher, and the [`PubSubOrdering`] step.
+//! the live publisher, and the [`PubSubOrdering`] step with the
+//! [`PubSubPublishOptions`] it writes into.
 //!
 //! The two sides of a service import different things, and that is what keeps the two
 //! vocabularies apart. A file of handler bodies imports the framework's prelude alone and bounds
-//! a slot with a capability trait ([`Publisher`], [`PubSubOrdering`] for the ordering step), so it
-//! names no broker at all. A routes file imports this glob and attaches policies under their
-//! uniform mount-site names, so moving a service to another broker changes the one import rather
-//! than every mount site. The prefixed originals stay at the crate root for a file that speaks to
-//! two brokers at once and has to say which one it means.
+//! a slot with a capability trait ([`Publisher`]), so it names no broker at all. A routes file
+//! imports this glob and attaches policies under their uniform mount-site names, so moving a
+//! service to another broker changes the one import rather than every mount site. The prefixed
+//! originals stay at the crate root for a file that speaks to two brokers at once and has to say
+//! which one it means.
+//!
+//! A body that adjusts a per-message setting is the one exception: it names the
+//! [`ordering_key`](PubSubOrdering::ordering_key) step, so it imports this glob too and bounds its
+//! slot `Out<impl Publisher<Options = PubSubPublishOptions>, Marker>`. Its signature then says
+//! which broker the handler is tied to.
 //!
 //! # Examples
 //!
@@ -34,12 +40,14 @@
 //! }
 //!
 //! // What a mount site attaches, under the name every broker's prelude gives its publish policy.
-//! let policy: Publish = Publish;
+//! let policy: Publish = Publish::default();
 //! # let _ = policy;
 //! ```
 
 pub use crate::PubSubPublish as Publish;
-pub use crate::{GooglePubSub, PubSubBroker, PubSubOrdering, PubSubPublisher};
+pub use crate::{
+    GooglePubSub, PubSubBroker, PubSubOrdering, PubSubPublishOptions, PubSubPublisher,
+};
 pub use ruststream::prelude::*;
 
 // `Publish` is a policy name, and the framework's prelude exports nothing under it, so this

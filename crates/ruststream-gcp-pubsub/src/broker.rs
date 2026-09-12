@@ -20,6 +20,9 @@ use crate::publisher::{PubSubPublish, PubSubPublisher};
 use crate::subscriber::PubSubSubscriber;
 use crate::subscription::GooglePubSub;
 
+/// What the API puts in a subscription's `topic` field once that topic has been deleted.
+const DELETED_TOPIC: &str = "_deleted-topic_";
+
 /// The live client state shared by the connected form and every handle derived from it.
 ///
 /// Why runtime checks exist here at all: publishers may be handed out before `connect` and may
@@ -210,28 +213,11 @@ impl Broker for PubSubBroker {
     }
 }
 
-/// The host and optional port an endpoint points at, which is what
-/// [`ServerSpec::host`] is defined to carry.
-///
-/// An operator writes whatever the client accepts, and that may carry a scheme, a path, or
-/// credentials. The description goes into a document teams share, so only the address belongs in
-/// it.
-fn host_and_port(endpoint: &str) -> &str {
-    // The scheme goes first and the path second, because either may contain an `@`: cutting on
-    // the last `@` of the whole string would read `scheme://host/a@b` as a host of `b`.
-    let after_scheme = endpoint
-        .split_once("://")
-        .map_or(endpoint, |(_, rest)| rest);
-    let authority = after_scheme
-        .split_once(['/', '?', '#'])
-        .map_or(after_scheme, |(authority, _)| authority);
-    // Credentials may themselves contain an `@`, so the host is what follows the last one.
-    authority
-        .rsplit_once('@')
-        .map_or(authority, |(_, host)| host)
-}
-
 impl DescribeServer for PubSubBroker {
+    /// The address clients connect to, and nothing else. An operator writes whatever the client
+    /// accepts, so an endpoint may carry a scheme, a path or credentials; the description goes
+    /// into a document teams share, and `ServerSpec::host_from_url` is what keeps the rest of it
+    /// out.
     fn describe_server(&self) -> ServerSpec {
         let host = self
             .emulator
@@ -239,7 +225,7 @@ impl DescribeServer for PubSubBroker {
             .or(self.endpoint.as_deref())
             .map_or_else(
                 || "pubsub.googleapis.com".to_owned(),
-                |endpoint| host_and_port(endpoint).to_owned(),
+                ServerSpec::host_from_url,
             );
         ServerSpec::new(host, "googlepubsub")
     }
@@ -281,6 +267,32 @@ impl ConnectedPubSubBroker {
         }
 
         Ok(PubSubSubscriber::open(&self.core, &descriptor))
+    }
+
+    /// The topic `subscription` is bound to, as the API reports it, or `None` when that topic has
+    /// been deleted out from under the subscription.
+    ///
+    /// This is the address a publisher reaches the subscription by, which is what the runtime's
+    /// deferred `retry_after` fallback needs. Asked once per subscription at startup.
+    pub(crate) async fn topic_of(&self, subscription: &str) -> Result<Option<String>, PubSubError> {
+        let name = self.core.subscription_name(subscription);
+        let found = self
+            .core
+            .subscription_admin
+            .get_subscription()
+            .set_subscription(name.clone())
+            .send()
+            .await
+            .map_err(|err| PubSubError::Admin {
+                name,
+                source: box_err(err),
+            })?;
+        // The API's own placeholder for a subscription whose topic is gone. Answering with it
+        // would name a topic no publish can reach.
+        if found.topic == DELETED_TOPIC {
+            return Ok(None);
+        }
+        Ok(Some(found.topic))
     }
 
     /// Creates `topic` when it does not exist. Get-then-create: a lost race means the create

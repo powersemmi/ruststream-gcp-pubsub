@@ -113,29 +113,30 @@ impl IncomingMessage for PubSubMessage {
     }
 }
 
-/// Builds the Pub/Sub message for an outgoing publish. Returns the message and its ordering
-/// key (empty when unordered), which the publisher needs for the resume-after-error path.
-pub(crate) fn to_gcp_message(msg: &OutgoingMessage<'_>) -> (GcpMessage, String) {
+/// Builds the Pub/Sub message for an outgoing publish under `ordering_key`, the key the publisher
+/// resolved for it.
+///
+/// The `partition-key` header never travels as an attribute: it is this transport's other spelling
+/// of the ordering key, the publisher has already read it, and a delivery reports the key back
+/// under that same name.
+pub(crate) fn to_gcp_message(msg: &OutgoingMessage<'_>, ordering_key: Option<&str>) -> GcpMessage {
     let headers = msg.headers();
-    let mut ordering_key = String::new();
     let mut attributes: Vec<(String, String)> = Vec::with_capacity(headers.len());
     for (name, value) in headers.iter() {
-        let text = String::from_utf8_lossy(value).into_owned();
         if name == PARTITION_KEY_HEADER {
-            ordering_key = text;
-        } else {
-            attributes.push((name.to_owned(), text));
+            continue;
         }
+        attributes.push((name.to_owned(), String::from_utf8_lossy(value).into_owned()));
     }
 
     let mut message = GcpMessage::new().set_data(Bytes::copy_from_slice(msg.payload()));
     if !attributes.is_empty() {
         message = message.set_attributes(attributes);
     }
-    if !ordering_key.is_empty() {
-        message = message.set_ordering_key(ordering_key.clone());
+    if let Some(key) = ordering_key {
+        message = message.set_ordering_key(key);
     }
-    (message, ordering_key)
+    message
 }
 
 #[cfg(test)]
@@ -143,27 +144,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn partition_key_header_becomes_the_ordering_key() {
+    fn the_resolved_key_becomes_the_messages_ordering_key() {
         let mut headers = HeaderMap::new();
         headers.insert(PARTITION_KEY_HEADER, "user-42");
         headers.insert("x-tenant", "acme");
         let outgoing = OutgoingMessage::new("orders", b"{}".as_slice()).with_headers(headers);
 
-        let (message, key) = to_gcp_message(&outgoing);
-        assert_eq!(key, "user-42");
+        let message = to_gcp_message(&outgoing, Some("user-42"));
         assert_eq!(message.ordering_key, "user-42");
         assert_eq!(
             message.attributes.get("x-tenant").map(String::as_str),
             Some("acme")
         );
+        // The key is a field of the message, so it must not be duplicated as an attribute.
         assert!(!message.attributes.contains_key(PARTITION_KEY_HEADER));
     }
 
     #[test]
     fn plain_messages_carry_no_ordering_key() {
         let outgoing = OutgoingMessage::new("orders", b"{}".as_slice());
-        let (message, key) = to_gcp_message(&outgoing);
-        assert!(key.is_empty());
+        let message = to_gcp_message(&outgoing, None);
         assert!(message.ordering_key.is_empty());
     }
 }
