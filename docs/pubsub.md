@@ -24,7 +24,7 @@ The framework's optional capability traits, and what this broker implements nati
 | `RequestReply` | no | there is no native request/reply; a reply topic and a correlation attribute are an application-level pattern |
 | `Partitioned` | yes | [the partition key is the message's ordering key](#ordering-keys-and-the-partition-key) |
 | `Seekable` and `Positioned` | no | repositioning is a subscription-level admin `seek` to a timestamp or a snapshot, not an offset the subscriber addresses per stream |
-| `DescribeServer` | yes | reports the endpoint in use (emulator host, custom endpoint, or `pubsub.googleapis.com`) with the `googlepubsub` protocol |
+| `DescribeServer` | yes | reports the host and port in use (emulator, custom endpoint, or `pubsub.googleapis.com`) with the `googlepubsub` protocol; a scheme, a path or credentials written into the endpoint stay out of the document |
 
 A handler reads the ordering key off the delivery it is handed, with `message.partition_key()`
 and no broker-specific import.
