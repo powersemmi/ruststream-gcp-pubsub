@@ -29,7 +29,7 @@
 - **Streaming pull as the message stream.** Each subscription is a `Stream` of deliveries; the client extends ack deadlines in the background while a handler runs, so a slow handler does not cause redelivery.
 - **Batches for slice handlers.** A `&[T]` handler names its batch size at the mount site (`.batch(nonzero!(50))`) like on any broker; the pull hands over one delivery at a time, so the batches are assembled on the client, with `GooglePubSub::batch_wait` closing a partial one.
 - **Native acknowledgement.** `HandlerOutcome::ack()` and `retry()` map onto the product directly (with the confirmed forms on exactly-once subscriptions). `drop()` acknowledges: Pub/Sub has no drop-without-redelivery verb - poison routing belongs to the subscription's dead-letter policy, and the delivery-attempt count is surfaced as a header.
-- **Ordering keys as the partition key.** A publish names its key with `with_ordering_key`; the key travels as the `partition-key` header, under the publish's own headers, and comes back as the same header (feeding `Partitioned`) on delivery.
+- **Ordering keys as a per-message setting.** A mount site fixes one key for a whole slot with `Publish::default().ordering_key(..)`, a single publish names its own with the `ordering_key` step on the publish builder, and either way the key reaches the client as the message's own field. A delivery reports it back as its partition key (feeding `Partitioned`).
 - **Attributes carry headers directly** - no envelope format is invented, and a `#[derive(Serialized)]` payload leaves as its own bytes with no codec in the way, so non-Rust peers see plain Pub/Sub messages.
 - **Emulator as a supported target.** `PubSubBroker::new(p).emulator("localhost:8085")` wires the plaintext endpoint and anonymous credentials (the client does not honour `PUBSUB_EMULATOR_HOST` on its own), and `GooglePubSub::create_with_topic` creates the resources on subscribe for local development.
 - **In-process test broker** (feature `testing`). `PubSubTestBroker` reproduces this crate's routing with no server, a service mounts on it and runs under the `TestApp` harness, and it answers the way Pub/Sub does, which the crate's own tests hold it to.
@@ -81,13 +81,13 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         PubSubBroker::new("my-project"),
         |b| {
-            b.include(handle).out(DefaultSlot, Publish).build();
+            b.include(handle).out(DefaultSlot, Publish::default()).build();
         },
     )
 }
 ```
 
-`ruststream_gcp_pubsub::prelude` is the whole import list: the framework's own prelude plus this crate's surface. `Publish` in it is this crate's publish policy under the uniform mount-site name, so `.out(marker, Publish)` reads the same whichever broker it runs on; the handler body states a capability instead (`Out<impl Publisher>`, or `Out<impl PubSubOrdering>` when it wants the ordering step) and names no broker at all.
+`ruststream_gcp_pubsub::prelude` is the whole import list: the framework's own prelude plus this crate's surface. `Publish` in it is this crate's publish policy under the uniform mount-site name, so `.out(marker, Publish::default())` reads the same whichever broker it runs on; the handler body states a capability instead (`Out<impl Publisher>`) and names no broker at all. The exception is a body that sets an ordering key per message: it names the `ordering_key` step, so it imports this prelude too and bounds its slot `Out<impl Publisher<Options = PubSubPublishOptions>>`.
 
 A plain name subscribes to a subscription that already exists. `GooglePubSub` goes in the same slot when the subscription needs options - `#[subscriber(GooglePubSub::new("orders-workers").max_outstanding(1_000))]` sets flow control, `ack_extension` the deadline reach, `batch_wait` how long a partial batch waits, and `create_with_topic("orders")` creates the subscription (and topic) on subscribe, which the emulator workflow needs.
 
@@ -102,7 +102,7 @@ use ruststream_gcp_pubsub::testing::PubSubTestBroker;
 let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
     PubSubTestBroker::new(),
     |b| {
-        b.include(handle).out(DefaultSlot, Publish).build();
+        b.include(handle).out(DefaultSlot, Publish::default()).build();
     },
 );
 let tb = TestApp::start(app).await?;
@@ -122,7 +122,7 @@ tb.out::<DefaultSlot>()
     .with(&Confirmation { order_id: 42 });
 ```
 
-The harness puts an `Order` on the wire and reads a `Confirmation` back, so each model carries two derives more than the service alone needs: `Outgoing` and `Serialize` on the injected type, `Deserialize` and `PartialEq` on the asserted one.
+The harness puts an `Order` on the wire and reads a `Confirmation` back, so each model carries two derives more than the service alone needs: `Outgoing` and `Serialize` on the injected type, `Deserialize` and `PartialEq` on the asserted one. `with_options(&PubSubPublishOptions { .. })` on the same slot view reads back the ordering key a publish asked for, and `assert_options_default()` states that it took the mount site's.
 
 The stand-in routes by one address, the subscription name, so a test injects there rather than to a topic: it holds no topics, and the topic-to-subscription binding is the product's. Product behaviour (deadline extension, redelivery timing, ordered delivery) is not modelled either. Both are covered by the env-gated live suite instead: `just test-brokers` starts the emulator and runs the integration tests plus the framework conformance lifecycle against it.
 

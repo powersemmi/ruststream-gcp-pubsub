@@ -20,10 +20,10 @@ The framework's optional capabilities on Pub/Sub:
 | --- | --- | --- |
 | `Subscribe` | yes | you subscribe by [subscription name](#subscriptions) |
 | `BatchSubscriber` | client-side | a slice handler gets [batches assembled on the client](#batches) |
-| `TransactionalPublisher` | no | [an ordering key](#ordering-keys-and-the-partition-key) is what groups a run of messages |
+| `TransactionalPublisher` | no | [an ordering key](#ordering-keys) is what groups a run of messages |
 | `OwnedTransactions` | no | there is no publish transaction to own |
 | `RequestReply` | no | you build it yourself from a reply topic and a correlation attribute |
-| `Partitioned` | yes | [the partition key is the message's ordering key](#ordering-keys-and-the-partition-key) |
+| `Partitioned` | yes | [the partition key is the message's ordering key](#ordering-keys) |
 | `Seekable` and `Positioned` | no | you reposition a whole subscription with the admin `seek`, to a timestamp or a snapshot |
 | `DescribeServer` | yes | reports the host and port in use (emulator, custom endpoint, or `pubsub.googleapis.com`) under the `googlepubsub` protocol; a scheme, a path or credentials written into the endpoint stay out of the document |
 
@@ -87,6 +87,10 @@ the subscriber drains the stream.
 `#[subscriber("orders-workers")]` with a plain string names the same descriptor with its defaults,
 so the subscription has to exist already.
 
+A subscription is identified by its name and nothing else, so the mount site may supply it:
+`#[subscriber(GooglePubSub)]` on the handler and `.name("orders-workers")` where it is mounted. That
+is how one handler serves two deployments that differ only in subscription name.
+
 ## Batches
 
 A handler that takes a slice is handed a whole batch: one database round-trip, one bulk API call,
@@ -135,6 +139,14 @@ wire a publisher on the scope with `retry_via`, taking it from `b.broker().publi
 then acknowledges the delivery and publishes a copy of the message after the delay. Without that
 publisher the delay is dropped, the message is requeued at once, and the runtime warns.
 
+The copy goes to the topic the subscription is bound to, never to the subscription name: a publish
+on Pub/Sub addresses a topic. `GooglePubSub` reports that topic - the one `create_with_topic` names,
+or the one the API reports for a subscription managed as infrastructure, asked once at startup.
+A handler declared with a plain string cannot report one, because a subscription name reaches
+nothing, so a scope that wires `retry_via` over `#[subscriber("orders-workers")]` refuses to start
+and names the subscription. Declaring that handler with `GooglePubSub::new("orders-workers")` is the
+fix.
+
 ### Exactly-once acknowledgement
 
 Exactly-once delivery is a setting on the subscription resource, so the same handler code runs
@@ -143,25 +155,43 @@ service has confirmed it, and the message is then not redelivered. A refused ack
 expired ack id, a lost deadline race) returns `AckError::Broker` instead of passing as success. On
 an ordinary subscription `ack` returns `Ok` as soon as the acknowledgement is queued.
 
-## Ordering keys and the partition key
+## Ordering keys
 
-The framework's partition key is Pub/Sub's ordering key. A `partition-key` header (exported as
-`PARTITION_KEY_HEADER`) on an outgoing message becomes its ordering key, and a delivery reports its
-own ordering key back under that header.
+Messages sharing an ordering key are delivered to one subscriber in publish order. The key is a
+field of the message, not a header, and it is the one setting a Pub/Sub publish carries beyond its
+payload and attributes. `PubSubPublishOptions` is that setting as a type, with `ordering_key` its
+only field.
 
-`with_ordering_key` adapts a publisher: every publish built on it sends the key, so one adapter
-serves a run of publishes. The rest of the chain (codec, headers, destination) is written as usual.
-Headers named at the call are written over the adapter's, so a `partition-key` named there wins.
+The key reaches a publish from two places. The mount site fixes it for a whole slot, which is what
+a slot belonging to one entity wants:
 
 ```rust
 --8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_ordered_publish.rs:ordered"
 ```
 
-On an `Out` slot the step resolves on the slot itself, so a keyed publish is still the slot's and
-`tb.out::<Marker>()` sees it in a test.
+A single publish names its own with the `ordering_key` step, between `message(..)` and `publish()`.
+The step is a position on the framework's publish builder, so the publish it finishes keeps
+everything else the mount site decided: the codec that entry named, its transforms, and the slot a
+test asserts on.
 
-A handler's reply takes its key from the mount chain's `.transform(..)` step, which reads the
-delivery and writes the reply's `partition-key` header per message.
+A handler body that names the step imports this crate's prelude and says so in its signature, which
+is the one place a body names the broker it runs on:
+
+```rust
+--8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_ordered_publish.rs:handler"
+```
+
+A body that names no key needs neither, and sends under whatever the mount site fixed.
+
+A reply carries no call site, so its key is the policy's: `.out(Reply, Publish::default().ordering_key("receipts"))`.
+A key that differs per reply is a mount-chain `.transform(..)`, which reads the delivery and writes
+the reply's `partition-key` header.
+
+On the delivery side the framework's partition key *is* the ordering key: a delivery reports it with
+`message.partition_key()` and under the `partition-key` header (exported as `PARTITION_KEY_HEADER`),
+so a handler that reads keys imports nothing from this crate. That header is the same key on the way
+out too, for a service written against no particular broker: writing it on an outgoing message
+orders that message, and a call that names the step wins over it. It never travels as an attribute.
 
 Ordered delivery needs message ordering enabled on the subscription. A regional `endpoint` is what
 keeps one key in order across publishers in a region. A publish that returns an error on an ordered
@@ -178,21 +208,21 @@ instantiates it at startup on the connected broker. It is also the broker's defa
 replying handler mounted without an `.out(Reply, ..)` call publishes through it.
 
 A file of handler bodies imports the framework's prelude alone and bounds its slot with a
-capability: `Out(out): Out<impl Publisher>`, or `Out<impl PubSubOrdering>` for a body that names
-ordering keys. Such a file names no broker.
+capability: `Out(out): Out<impl Publisher>`. Such a file names no broker. The exception is a body
+that names an [ordering key](#ordering-keys) per message.
 
 A routes file imports `ruststream_gcp_pubsub::prelude::*`, where the policy arrives under the
-mount-site name `Publish`: `.out(Reply, Publish)` for the value a replying handler returns,
-`.out(Marker, Publish)` for an `Out` slot. `Publish` has no options, so the name is the whole
-expression. `PubSubPublish` stays at the crate root for a file that speaks to two brokers at once
-and has to say which one it means.
+mount-site name `Publish`: `.out(Reply, Publish::default())` for the value a replying handler
+returns, `.out(Marker, Publish::default())` for an `Out` slot, and `.ordering_key(..)` on the policy
+where the whole slot is ordered. `PubSubPublish` stays at the crate root for a file that speaks to
+two brokers at once and has to say which one it means.
 
 A publish addresses a topic, by id or by full resource name. The client publisher for a topic is
 created on first use and cached on the broker, so `shutdown` flushes every batch it has buffered.
 
-`with_ordering_key` is this crate's only addition to the framework's publish chain. A Pub/Sub
-message is a payload, its attributes and an ordering key, so the chain covers all three: the value,
-its headers, and the key.
+`ordering_key` is this crate's only addition to the framework's publish chain. A Pub/Sub message is
+a payload, its attributes and an ordering key, so the chain covers all three: the value, its
+headers, and the key.
 
 A message built by hand and handed to `Publisher::publish` is sent as it was built, which is the way
 to control the header map yourself.
@@ -239,6 +269,11 @@ asserts what it published to the topic. See
 A routes file mounts on the stand-in as it ships. `#[subscriber(GooglePubSub::new("orders-workers"))]`
 opens an in-process subscription as readily as it opens a streaming pull, and `Publish` pairs with
 the stand-in as it pairs with the broker. Neither side has a test-only spelling to swap in.
+
+`tb.out::<Marker>().with_options(&PubSubPublishOptions { ordering_key: Some("order-7".to_owned()) })`
+reads back the key one publish through a slot asked for, and `assert_options_default()` states that
+a publish named none and took the mount site's. The key also reaches the published message, under
+the `partition-key` header a delivery reports it by, so either assertion works.
 
 The stand-in routes by one address, the subscription name, because it holds no topics. A test
 therefore injects to the subscription, not to the topic. `batch_wait` is honoured, since batching is
