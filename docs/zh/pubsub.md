@@ -145,7 +145,8 @@ API 报告的那个，启动时问一次。用纯字符串声明的处理器报�
 是 Pub/Sub 的一次发布在载荷和属性之外唯一的设置。`PubSubPublishOptions` 就是这项设置的类型形态，
 `ordering_key` 是它唯一的字段。
 
-键从两个地方进入一次发布。挂载点为整个槽位固定它，属于同一个实体的槽位要的正是这个：
+键从两个地方进入一次发布。发布策略为一个发布者发出的每条消息固定它，属于同一个实体的发布者要的
+正是这个：
 
 ```rust
 --8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_ordered_publish.rs:ordered"

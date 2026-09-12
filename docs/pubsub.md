@@ -162,8 +162,8 @@ field of the message, not a header, and it is the one setting a Pub/Sub publish 
 payload and attributes. `PubSubPublishOptions` is that setting as a type, with `ordering_key` its
 only field.
 
-The key reaches a publish from two places. The mount site fixes it for a whole slot, which is what
-a slot belonging to one entity wants:
+The key reaches a publish from two places. The publish policy fixes it for every message one
+publisher sends, which is what a publisher belonging to one entity wants:
 
 ```rust
 --8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_ordered_publish.rs:ordered"
