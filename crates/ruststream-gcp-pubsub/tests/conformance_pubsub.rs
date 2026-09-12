@@ -11,16 +11,12 @@ use ruststream::conformance::{capabilities, harness};
 use ruststream_gcp_pubsub::testing::PubSubTestBroker;
 use ruststream_gcp_pubsub::{PubSubBroker, PubSubSubscription};
 
+mod live;
+
 const TEST_PROJECT: &str = "ruststream-test";
 
 fn test_host() -> Option<String> {
-    match std::env::var("PUBSUB_TEST_HOST") {
-        Ok(host) if !host.is_empty() => Some(host),
-        _ => {
-            eprintln!("PUBSUB_TEST_HOST is not set; skipping the emulator conformance check");
-            None
-        }
-    }
+    live::host("PUBSUB_TEST_HOST")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
