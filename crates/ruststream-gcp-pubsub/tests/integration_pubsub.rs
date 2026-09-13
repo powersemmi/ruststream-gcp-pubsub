@@ -10,7 +10,7 @@ use futures::StreamExt;
 use ruststream::runtime::PublishExt;
 use ruststream::{
     Broker, ConnectedBroker, HeaderMap, IncomingMessage, Outgoing, OutgoingMessage, PublishPolicy,
-    Publisher, RedeliveryAddress, Serialized, Subscriber, SubscriptionSource,
+    Publisher, RetryDeclaration, Serialized, Subscriber, SubscriptionSource, nonzero,
 };
 use ruststream_gcp_pubsub::{
     ConnectedPubSubBroker, GooglePubSub, PARTITION_KEY_HEADER, PubSubBroker, PubSubOrdering,
@@ -21,6 +21,10 @@ mod live;
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(15);
 const TEST_PROJECT: &str = "ruststream-test";
+
+/// The cap the dead-letter case declares. Pub/Sub accepts 5..=100 for `maxDeliveryAttempts`, so
+/// five is the shortest run that exercises the policy.
+const MAX_ATTEMPTS: u32 = 5;
 
 /// Bytes travelling as themselves. The subject here is the ordering key a built publish carries,
 /// so the payload stays exactly what the assertion reads back off the delivery.
@@ -174,54 +178,64 @@ async fn the_ordering_step_and_the_policy_default_reach_the_product() {
     connected.shutdown().await.expect("shutdown succeeds");
 }
 
-/// The promise a reported redelivery address carries: publish there and the subscription that
-/// reported it receives. On Pub/Sub that address is the topic, never the subscription name, and
-/// the descriptor asks the API for it when it did not create the binding itself.
+/// What the mount site declares becomes the subscription's own dead-letter policy: the service
+/// gives one message the declared number of deliveries and then publishes it to the declared
+/// topic. Nothing in this process moves it, which is the whole of what `BrokerMoves` means.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_reported_redelivery_address_is_the_subscriptions_topic() {
+async fn the_declaration_becomes_the_subscriptions_dead_letter_policy() {
     let Some(host) = test_host() else { return };
     let connected = connect(&host).await;
 
-    let topic = unique("retry-topic");
-    let subscription = unique("retry-subscription");
-    let mut subscriber = connected
-        .subscribe_descriptor(GooglePubSub::new(&subscription).create_with_topic(&topic))
-        .await
-        .expect("subscription opens");
+    let topic = unique("dlq-topic");
+    let workers = unique("dlq-workers");
+    let dead_letter = unique("dlq-dead");
+    let watcher = unique("dlq-watcher");
 
-    // A descriptor that names no topic has to ask the API, which is the case the runtime hits for
-    // a subscription managed as infrastructure.
-    let address = GooglePubSub::new(&subscription)
-        .redelivery_address(&connected)
-        .await
-        .expect("the lookup succeeds against a live connection");
-    assert_eq!(
-        address,
-        Some(RedeliveryAddress::new(format!(
-            "projects/{TEST_PROJECT}/topics/{topic}"
-        )))
+    let declaration = RetryDeclaration::new()
+        .with_max_attempts(nonzero!(MAX_ATTEMPTS))
+        .with_dead_letter(dead_letter.clone());
+    let source = SubscriptionSource::<ConnectedPubSubBroker>::declare_retry(
+        GooglePubSub::new(&workers).create_with_topic(&topic),
+        &declaration,
     );
+    let mut subscriber = source
+        .subscribe(&connected)
+        .await
+        .expect("the subscription opens with the declared dead-letter policy");
+    // The declaration created the dead-letter topic, so a subscription on it sees what lands
+    // there.
+    let mut dead = connected
+        .subscribe_descriptor(GooglePubSub::new(&watcher).create_with_topic(&dead_letter))
+        .await
+        .expect("the dead-letter subscription opens");
 
-    let publisher = connected.publisher();
-    publisher
-        .publish(
-            OutgoingMessage::new(
-                address.expect("the address is reported").as_str(),
-                b"deferred".as_slice(),
-            ),
-            None,
-        )
+    connected
+        .publisher()
+        .publish(OutgoingMessage::new(&topic, b"poison".as_slice()), None)
         .await
         .expect("publish succeeds");
 
     let mut stream = pin!(subscriber.stream());
-    let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+    for expected in 1..=MAX_ATTEMPTS {
+        let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+            .await
+            .expect("delivery arrives")
+            .expect("stream is open")
+            .expect("delivery is ok");
+        // The service counts the deliveries, so the count is on the message rather than in a
+        // header this process maintains.
+        assert_eq!(message.redelivery_count(), Some(u64::from(expected)));
+        message.nack(true).await.expect("nack succeeds");
+    }
+
+    let mut dead_stream = pin!(dead.stream());
+    let carried = tokio::time::timeout(RECV_TIMEOUT, dead_stream.next())
         .await
-        .expect("delivery arrives")
+        .expect("the spent delivery reaches the dead-letter topic")
         .expect("stream is open")
         .expect("delivery is ok");
-    assert_eq!(message.payload(), b"deferred");
-    message.ack().await.expect("ack succeeds");
+    assert_eq!(carried.payload(), b"poison");
+    carried.ack().await.expect("ack succeeds");
 
     connected.shutdown().await.expect("shutdown succeeds");
 }

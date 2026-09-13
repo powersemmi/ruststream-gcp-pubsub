@@ -1691,6 +1691,7 @@ dependencies = [
  "futures",
  "google-cloud-auth",
  "google-cloud-pubsub",
+ "google-cloud-wkt",
  "ruststream",
  "serde",
  "thiserror",

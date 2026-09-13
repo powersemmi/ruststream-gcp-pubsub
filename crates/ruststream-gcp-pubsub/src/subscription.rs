@@ -6,12 +6,11 @@
 //! emulator wants.
 
 use std::borrow::Cow;
-// Only the stand-in's source answers without asking the transport anything.
-#[cfg(feature = "testing")]
-use std::future::{Future, ready};
+use std::num::NonZeroU32;
+use std::ops::RangeInclusive;
 use std::time::Duration;
 
-use ruststream::{FromName, RedeliveryAddress, SubscriptionSource};
+use ruststream::{BrokerMoves, FromName, RetryDeclaration, SubscriptionSource};
 
 use crate::broker::ConnectedPubSubBroker;
 use crate::error::PubSubError;
@@ -21,6 +20,10 @@ use crate::subscriber::PubSubSubscriber;
 /// burst crosses the network in tens of milliseconds, so a deadline much shorter than this
 /// would cut most batches down to the first delivery that arrives.
 const DEFAULT_BATCH_WAIT: Duration = Duration::from_millis(50);
+
+/// The range Pub/Sub accepts for a dead-letter policy's `maxDeliveryAttempts`. A cap outside it
+/// is refused before the subscription opens, rather than at the API call that would reject it.
+const DELIVERY_ATTEMPTS: RangeInclusive<i32> = 5..=100;
 
 /// A subscription descriptor for one Pub/Sub subscription.
 ///
@@ -45,6 +48,10 @@ pub struct GooglePubSub {
     max_outstanding: Option<i64>,
     ack_extension: Option<Duration>,
     batch_wait: Duration,
+    /// What the registration declared with `max_attempts(..)`, taken in by `declare_retry`.
+    max_attempts: Option<NonZeroU32>,
+    /// What it declared with `dead_letter(..)`: the topic spent deliveries are published to.
+    dead_letter: Option<String>,
 }
 
 impl GooglePubSub {
@@ -57,6 +64,8 @@ impl GooglePubSub {
             max_outstanding: None,
             ack_extension: None,
             batch_wait: DEFAULT_BATCH_WAIT,
+            max_attempts: None,
+            dead_letter: None,
         }
     }
 
@@ -131,6 +140,20 @@ impl GooglePubSub {
         self.batch_wait
     }
 
+    /// The declared cap in the API's own type. A count past `i32::MAX` saturates onto a value
+    /// [`validate`](Self::validate) refuses, so a cap too large to express is rejected rather
+    /// than quietly reduced.
+    fn declared_attempts(&self) -> Option<i32> {
+        self.max_attempts
+            .map(|attempts| i32::try_from(attempts.get()).unwrap_or(i32::MAX))
+    }
+
+    /// The dead-letter policy this subscription opens with: the topic spent deliveries go to and
+    /// how many deliveries one message gets. `None` where the registration declared neither.
+    pub(crate) fn dead_letter_policy(&self) -> Option<(&str, i32)> {
+        Some((self.dead_letter.as_deref()?, self.declared_attempts()?))
+    }
+
     /// Rejects descriptors that cannot form a subscription, before any I/O.
     pub(crate) fn validate(&self) -> Result<(), PubSubError> {
         if self.name.is_empty() {
@@ -143,7 +166,46 @@ impl GooglePubSub {
                 "topic name must be non-empty".into(),
             ));
         }
-        Ok(())
+        self.validate_declaration()
+    }
+
+    /// Holds the registration's declaration to what a Pub/Sub dead-letter policy can express.
+    ///
+    /// A dead-letter policy is one resource field carrying both halves, so a subscription cannot
+    /// honour half a declaration: a cap alone would leave a spent delivery circulating, and a
+    /// destination alone has no attempt count to fire on. Saying so at startup is the earliest
+    /// the crate can - the mount site's declaration reaches the descriptor as data, so nothing
+    /// here is a type the compiler could reject.
+    fn validate_declaration(&self) -> Result<(), PubSubError> {
+        match (self.declared_attempts(), self.dead_letter.as_deref()) {
+            (Some(attempts), Some(topic)) => {
+                if topic.is_empty() {
+                    return Err(PubSubError::InvalidDescriptor(
+                        "dead-letter topic must be non-empty".into(),
+                    ));
+                }
+                if !DELIVERY_ATTEMPTS.contains(&attempts) {
+                    return Err(PubSubError::InvalidDescriptor(format!(
+                        "max_attempts({attempts}) is outside the {}..={} a Pub/Sub dead-letter \
+                         policy accepts",
+                        DELIVERY_ATTEMPTS.start(),
+                        DELIVERY_ATTEMPTS.end(),
+                    )));
+                }
+                Ok(())
+            }
+            (Some(_), None) => Err(PubSubError::InvalidDescriptor(format!(
+                "subscription '{}' declares max_attempts without dead_letter; a Pub/Sub \
+                 dead-letter policy needs the topic too",
+                self.name,
+            ))),
+            (None, Some(_)) => Err(PubSubError::InvalidDescriptor(format!(
+                "subscription '{}' declares dead_letter without max_attempts; a Pub/Sub \
+                 dead-letter policy needs the attempt count too",
+                self.name,
+            ))),
+            (None, None) => Ok(()),
+        }
     }
 }
 
@@ -168,8 +230,13 @@ impl FromName for GooglePubSub {
     }
 }
 
+/// A Pub/Sub subscription moves a spent delivery itself, so the copy path is
+/// [`BrokerMoves`]: the subscription's dead-letter policy is the mechanism, and nothing is
+/// published from the service to retry a message. `.out_retry(..)` over this descriptor is
+/// therefore a compile error, and the error names it.
 impl SubscriptionSource<ConnectedPubSubBroker> for GooglePubSub {
     type Subscriber = PubSubSubscriber;
+    type Copies = BrokerMoves;
 
     fn name(&self) -> &str {
         self.subscription()
@@ -182,31 +249,17 @@ impl SubscriptionSource<ConnectedPubSubBroker> for GooglePubSub {
         connected.subscribe_descriptor(self).await
     }
 
-    /// The topic this subscription is bound to, which is where a publisher reaches it again.
+    /// Takes in the registration's cap and dead-letter destination, which become the
+    /// subscription's dead-letter policy when [`subscribe`](Self::subscribe) opens it: the topic
+    /// is the policy's `deadLetterTopic` and the cap its `maxDeliveryAttempts`.
     ///
-    /// A subscription name is not an address on Pub/Sub: a publish goes to a topic, and the
-    /// subscription behind it is what receives. The descriptor therefore answers with the topic -
-    /// the one `create_with_topic` names, or the one the API reports for an existing subscription.
-    /// The runtime asks once, at startup, and publishes the deferred copy of a `retry_after`
-    /// delivery there.
-    ///
-    /// `None` when the subscription's topic has been deleted, because nothing reaches it then.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PubSubError::Admin`] when the subscription has to be looked up and the call
-    /// fails.
-    async fn redelivery_address(
-        &self,
-        connected: &ConnectedPubSubBroker,
-    ) -> Result<Option<RedeliveryAddress>, PubSubError> {
-        if let Some(topic) = self.create_topic_ref() {
-            return Ok(Some(RedeliveryAddress::new(topic.to_owned())));
-        }
-        Ok(connected
-            .topic_of(self.subscription())
-            .await?
-            .map(RedeliveryAddress::new))
+    /// Only recorded here. The declaration turns into topology where the connection exists, and
+    /// a half declaration is refused there rather than opening a subscription that honours
+    /// neither half.
+    fn declare_retry(mut self, declaration: &RetryDeclaration) -> Self {
+        self.max_attempts = declaration.max_attempts();
+        self.dead_letter = declaration.dead_letter().map(ToOwned::to_owned);
+        self
     }
 }
 
@@ -232,6 +285,9 @@ impl SubscriptionSource<ConnectedPubSubBroker> for GooglePubSub {
 /// * [`ack_extension`](GooglePubSub::ack_extension) is ignored. Nothing leases a message in
 ///   process, so nothing expires and nothing needs extending; a handler that outruns its deadline
 ///   is a live-broker scenario.
+/// * The registration's dead-letter policy is honoured. The stand-in counts the deliveries of
+///   each message, reports the count the way a Pub/Sub delivery does, and publishes a spent one
+///   to the declared topic, so a test drives the cap the service ships.
 ///
 /// # Examples
 ///
@@ -262,6 +318,7 @@ impl SubscriptionSource<ConnectedPubSubBroker> for GooglePubSub {
 #[cfg(feature = "testing")]
 impl SubscriptionSource<crate::testing::ConnectedPubSubTestBroker> for GooglePubSub {
     type Subscriber = crate::testing::PubSubTestSubscriber;
+    type Copies = BrokerMoves;
 
     fn name(&self) -> &str {
         self.subscription()
@@ -274,17 +331,13 @@ impl SubscriptionSource<crate::testing::ConnectedPubSubTestBroker> for GooglePub
         connected.subscribe_descriptor(self).await
     }
 
-    /// The subscription's own name, because that is the one address the stand-in routes by. A
-    /// deferred retry lands where the next delivery comes from, which is the promise the answer
-    /// carries; the topic hop it takes against Pub/Sub is the product's, and is checked there.
-    ///
-    /// Nothing is asked of the transport, so the answer is ready before the future is polled.
-    fn redelivery_address(
-        &self,
-        connected: &crate::testing::ConnectedPubSubTestBroker,
-    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, PubSubError>> {
-        let _ = connected;
-        ready(Ok(Some(RedeliveryAddress::new(self.name.clone()))))
+    /// The same declaration the product takes, so a test drives the cap and the dead-letter
+    /// destination it ships: the stand-in counts deliveries per message and publishes a spent
+    /// one to the declared topic, which is what the subscription's dead-letter policy does.
+    fn declare_retry(mut self, declaration: &RetryDeclaration) -> Self {
+        self.max_attempts = declaration.max_attempts();
+        self.dead_letter = declaration.dead_letter().map(ToOwned::to_owned);
+        self
     }
 }
 
@@ -304,6 +357,92 @@ mod tests {
     fn empty_topic_name_is_rejected_before_io() {
         assert!(matches!(
             GooglePubSub::new("s").create_with_topic("").validate(),
+            Err(PubSubError::InvalidDescriptor(_))
+        ));
+    }
+
+    /// Builds the descriptor a registration declaring `attempts` and `destination` produces.
+    fn declared(attempts: Option<u32>, destination: Option<&str>) -> GooglePubSub {
+        let mut declaration = RetryDeclaration::new();
+        if let Some(attempts) = attempts {
+            declaration =
+                declaration.with_max_attempts(NonZeroU32::new(attempts).expect("non-zero"));
+        }
+        if let Some(destination) = destination {
+            declaration = declaration.with_dead_letter(destination.to_owned());
+        }
+        SubscriptionSource::<ConnectedPubSubBroker>::declare_retry(
+            GooglePubSub::new("orders-workers"),
+            &declaration,
+        )
+    }
+
+    /// Both halves are one resource field, so the descriptor carries them as one policy.
+    #[test]
+    fn a_full_declaration_becomes_the_subscriptions_dead_letter_policy() {
+        let source = declared(Some(5), Some("orders-dead"));
+        assert_eq!(source.dead_letter_policy(), Some(("orders-dead", 5)));
+    }
+
+    /// A registration that declared nothing leaves the subscription's own topology alone.
+    #[test]
+    fn an_empty_declaration_leaves_the_subscription_untouched() {
+        let source = declared(None, None);
+        assert_eq!(source.dead_letter_policy(), None);
+        assert!(source.validate().is_ok());
+    }
+
+    /// Half a declaration cannot be honoured, and the subscription says so before it opens
+    /// rather than running without the cap the registration asked for.
+    #[test]
+    fn half_a_declaration_is_refused_before_io() {
+        for (attempts, destination) in [(Some(5), None), (None, Some("orders-dead"))] {
+            let source = declared(attempts, destination);
+            assert!(
+                matches!(source.validate(), Err(PubSubError::InvalidDescriptor(_))),
+                "declaring {attempts:?} / {destination:?} must be refused",
+            );
+        }
+    }
+
+    /// Pub/Sub bounds `maxDeliveryAttempts`, so a cap outside it is named here and not by the
+    /// admin call that would reject it.
+    #[test]
+    fn a_cap_outside_the_services_range_is_refused_before_io() {
+        for attempts in [1, 4, 101, 1_000] {
+            let source = declared(Some(attempts), Some("orders-dead"));
+            assert!(
+                matches!(source.validate(), Err(PubSubError::InvalidDescriptor(_))),
+                "max_attempts({attempts}) must be refused",
+            );
+        }
+        for attempts in [5, 100] {
+            let source = declared(Some(attempts), Some("orders-dead"));
+            assert!(
+                source.validate().is_ok(),
+                "max_attempts({attempts}) must be accepted",
+            );
+        }
+    }
+
+    /// A cap too large for the wire type saturates onto a value the range check refuses, so it
+    /// is rejected rather than quietly reduced to something the service accepts.
+    #[test]
+    fn a_cap_past_the_wire_type_is_refused_rather_than_reduced() {
+        let source = declared(Some(u32::MAX), Some("orders-dead"));
+        assert_eq!(source.declared_attempts(), Some(i32::MAX));
+        assert!(matches!(
+            source.validate(),
+            Err(PubSubError::InvalidDescriptor(_))
+        ));
+    }
+
+    /// A dead-letter topic is a resource name, so an empty one is refused with the rest.
+    #[test]
+    fn an_empty_dead_letter_topic_is_refused_before_io() {
+        let source = declared(Some(5), Some(""));
+        assert!(matches!(
+            source.validate(),
             Err(PubSubError::InvalidDescriptor(_))
         ));
     }

@@ -12,7 +12,11 @@ use google_cloud_auth::credentials::{Credentials, anonymous};
 use google_cloud_pubsub::client::{
     BasePublisher, Publisher, Subscriber, SubscriptionAdmin, TopicAdmin,
 };
-use ruststream::{Broker, ConnectedBroker, DefaultPublish, DescribeServer, ServerSpec, Subscribe};
+use google_cloud_pubsub::model::{DeadLetterPolicy, Subscription};
+use google_cloud_wkt::FieldMask;
+use ruststream::{
+    Broker, BrokerMoves, ConnectedBroker, DefaultPublish, DescribeServer, ServerSpec, Subscribe,
+};
 use tokio::sync::OnceCell;
 
 use crate::error::{PubSubError, box_err};
@@ -20,8 +24,13 @@ use crate::publisher::{PubSubPublish, PubSubPublisher};
 use crate::subscriber::PubSubSubscriber;
 use crate::subscription::GooglePubSub;
 
-/// What the API puts in a subscription's `topic` field once that topic has been deleted.
-const DELETED_TOPIC: &str = "_deleted-topic_";
+/// Whether a get-then-create found the resource or made it, which is what decides between
+/// carrying a dead-letter policy into the create and writing it as an update afterwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Resource {
+    Created,
+    Existing,
+}
 
 /// The live client state shared by the connected form and every handle derived from it.
 ///
@@ -260,39 +269,61 @@ impl ConnectedPubSubBroker {
         descriptor.validate()?;
         self.core.ensure_open()?;
 
-        if let Some(topic) = descriptor.create_topic_ref() {
-            self.ensure_topic(topic).await?;
-            self.ensure_subscription(descriptor.subscription(), topic)
+        let policy = descriptor.dead_letter_policy();
+        let state = match descriptor.create_topic_ref() {
+            Some(topic) => {
+                self.ensure_topic(topic).await?;
+                if let Some((dead_letter, _)) = policy {
+                    // The API refuses a dead-letter policy naming a topic that is not there, and
+                    // a descriptor creating its own topology owns this one too.
+                    self.ensure_topic(dead_letter).await?;
+                }
+                self.ensure_subscription(descriptor.subscription(), topic, policy)
+                    .await?
+            }
+            None => Resource::Existing,
+        };
+        // A subscription managed as infrastructure already exists, so the declaration reaches it
+        // as an update; the create above carried it and needs no second call.
+        if let (Some((dead_letter, attempts)), Resource::Existing) = (policy, state) {
+            self.set_dead_letter_policy(descriptor.subscription(), dead_letter, attempts)
                 .await?;
         }
 
         Ok(PubSubSubscriber::open(&self.core, &descriptor))
     }
 
-    /// The topic `subscription` is bound to, as the API reports it, or `None` when that topic has
-    /// been deleted out from under the subscription.
+    /// Writes the registration's dead-letter policy onto a subscription that already exists.
     ///
-    /// This is the address a publisher reaches the subscription by, which is what the runtime's
-    /// deferred `retry_after` fallback needs. Asked once per subscription at startup.
-    pub(crate) async fn topic_of(&self, subscription: &str) -> Result<Option<String>, PubSubError> {
+    /// Pub/Sub then stops redelivering a message once it has had `attempts` deliveries and
+    /// publishes it to `dead_letter` instead, which is the whole of what the declaration buys on
+    /// this broker.
+    async fn set_dead_letter_policy(
+        &self,
+        subscription: &str,
+        dead_letter: &str,
+        attempts: i32,
+    ) -> Result<(), PubSubError> {
         let name = self.core.subscription_name(subscription);
-        let found = self
-            .core
+        let policy = DeadLetterPolicy::new()
+            .set_dead_letter_topic(self.core.topic_name(dead_letter))
+            .set_max_delivery_attempts(attempts);
+        self.core
             .subscription_admin
-            .get_subscription()
-            .set_subscription(name.clone())
+            .update_subscription()
+            .set_subscription(
+                Subscription::new()
+                    .set_name(name.clone())
+                    .set_dead_letter_policy(policy),
+            )
+            .set_update_mask(FieldMask::default().set_paths(["dead_letter_policy"]))
             .send()
             .await
             .map_err(|err| PubSubError::Admin {
                 name,
                 source: box_err(err),
             })?;
-        // The API's own placeholder for a subscription whose topic is gone. Answering with it
-        // would name a topic no publish can reach.
-        if found.topic == DELETED_TOPIC {
-            return Ok(None);
-        }
-        Ok(Some(found.topic))
+        Ok(())
     }
 
     /// Creates `topic` when it does not exist. Get-then-create: a lost race means the create
@@ -334,7 +365,8 @@ impl ConnectedPubSubBroker {
         &self,
         subscription: &str,
         topic: &str,
-    ) -> Result<(), PubSubError> {
+        dead_letter: Option<(&str, i32)>,
+    ) -> Result<Resource, PubSubError> {
         let name = self.core.subscription_name(subscription);
         let topic_name = self.core.topic_name(topic);
         let admin = &self.core.subscription_admin;
@@ -345,16 +377,21 @@ impl ConnectedPubSubBroker {
             .await
             .is_ok()
         {
-            return Ok(());
+            return Ok(Resource::Existing);
         }
-        match admin
+        let mut create = admin
             .create_subscription()
             .set_name(name.clone())
-            .set_topic(topic_name)
-            .send()
-            .await
-        {
-            Ok(_) => Ok(()),
+            .set_topic(topic_name);
+        if let Some((dead_letter, attempts)) = dead_letter {
+            create = create.set_dead_letter_policy(
+                DeadLetterPolicy::new()
+                    .set_dead_letter_topic(self.core.topic_name(dead_letter))
+                    .set_max_delivery_attempts(attempts),
+            );
+        }
+        match create.send().await {
+            Ok(_) => Ok(Resource::Created),
             Err(create_err) => {
                 if admin
                     .get_subscription()
@@ -363,7 +400,7 @@ impl ConnectedPubSubBroker {
                     .await
                     .is_ok()
                 {
-                    Ok(())
+                    Ok(Resource::Existing)
                 } else {
                     Err(PubSubError::Admin {
                         name,
@@ -400,6 +437,9 @@ impl ConnectedBroker for ConnectedPubSubBroker {
 
 impl Subscribe for ConnectedPubSubBroker {
     type Subscriber = PubSubSubscriber;
+    // A bare name opens the descriptor's own default subscription, and a Pub/Sub subscription
+    // moves a spent delivery itself.
+    type Copies = BrokerMoves;
 
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
         self.subscribe_descriptor(GooglePubSub::new(name)).await

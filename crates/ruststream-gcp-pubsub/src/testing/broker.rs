@@ -7,15 +7,15 @@ use std::sync::{Arc, OnceLock};
 use bytes::Bytes;
 use ruststream::testing::{Coordinator, TestableBroker};
 use ruststream::{
-    Broker, ConnectedBroker, DefaultPublish, OutgoingMessage, PairError, PublishPolicy, Publisher,
-    RawMessage, Subscribe,
+    Broker, BrokerMoves, ConnectedBroker, DefaultPublish, OutgoingMessage, PairError,
+    PublishPolicy, Publisher, RawMessage, Subscribe,
 };
 
 use crate::error::PubSubError;
 use crate::message::PARTITION_KEY_HEADER;
 use crate::publisher::{PubSubPublish, PubSubPublishOptions, resolve_ordering_key};
 use crate::subscription::GooglePubSub;
-use crate::testing::router::AddressRouter;
+use crate::testing::router::{AddressRouter, DeadLetter};
 use crate::testing::subscriber::PubSubTestSubscriber;
 
 /// Shared state of one in-process broker: the router plus the harness coordinator.
@@ -146,6 +146,14 @@ impl ConnectedPubSubTestBroker {
         descriptor.validate()?;
         self.state.ensure_open()?;
         let batch_wait = descriptor.batch_wait_value();
+        let dead_letter = descriptor
+            .dead_letter_policy()
+            .map(|(topic, max_attempts)| {
+                Arc::new(DeadLetter {
+                    topic: topic.to_owned(),
+                    max_attempts,
+                })
+            });
         let (id, requeue, rx) = self.state.router.subscribe(descriptor.into_subscription());
         Ok(PubSubTestSubscriber::new(
             Arc::clone(&self.state),
@@ -154,6 +162,7 @@ impl ConnectedPubSubTestBroker {
             requeue,
             self.state.coordinator().cloned(),
             batch_wait,
+            dead_letter,
         ))
     }
 }
@@ -175,6 +184,9 @@ impl ConnectedBroker for ConnectedPubSubTestBroker {
 
 impl Subscribe for ConnectedPubSubTestBroker {
     type Subscriber = PubSubTestSubscriber;
+    // The same answer the real broker gives: a Pub/Sub subscription moves a spent delivery
+    // itself, whichever way the subscription was named.
+    type Copies = BrokerMoves;
 
     /// A name alone is the descriptor's own default form, so the two entry points open the same
     /// subscription here exactly as they do on the real broker.

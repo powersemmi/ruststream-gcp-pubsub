@@ -12,10 +12,12 @@ use ruststream::{
     Subscriber, testing::Coordinator,
 };
 
-use crate::PARTITION_KEY_HEADER;
 use crate::error::PubSubError;
 use crate::testing::broker::TestState;
-use crate::testing::router::{Delivery, DeliveryReceiver, DeliverySender, SubscriptionId};
+use crate::testing::router::{
+    DeadLetter, Delivery, DeliveryReceiver, DeliverySender, SubscriptionId,
+};
+use crate::{DELIVERY_ATTEMPT_HEADER, PARTITION_KEY_HEADER};
 
 /// Subscriber returned by [`ConnectedPubSubTestBroker`](crate::testing::ConnectedPubSubTestBroker).
 ///
@@ -43,9 +45,10 @@ impl PubSubTestSubscriber {
         requeue: DeliverySender,
         coordinator: Option<Coordinator>,
         batch_wait: Duration,
+        dead_letter: Option<Arc<DeadLetter>>,
     ) -> Self {
         Self {
-            state,
+            state: Arc::clone(&state),
             id,
             // The descriptor's own deadline, because it is the same knob on the same buffer
             // here as against the product: batching is on the client either way.
@@ -53,6 +56,8 @@ impl PubSubTestSubscriber {
                 rx,
                 requeue,
                 coordinator,
+                state,
+                dead_letter,
             })
             .max_wait(batch_wait),
         }
@@ -97,6 +102,11 @@ struct Deliveries {
     /// A clone of the broker's harness coordinator, threaded into each yielded message so a
     /// requeue re-counts and a consumed delivery decrements. `None` outside a harness run.
     coordinator: Option<Coordinator>,
+    /// The transport a spent delivery leaves through, which is the same router every publish
+    /// goes to.
+    state: Arc<TestState>,
+    /// What the registration declared, `None` where it declared nothing.
+    dead_letter: Option<Arc<DeadLetter>>,
 }
 
 impl Subscriber for Deliveries {
@@ -106,6 +116,8 @@ impl Subscriber for Deliveries {
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
         let requeue = self.requeue.clone();
         let coordinator = self.coordinator.clone();
+        let state = Arc::clone(&self.state);
+        let dead_letter = self.dead_letter.clone();
         // Poll the receiver in place rather than wrapping it in an owning stream, so `stream`
         // can be called again after the returned stream is dropped (the runtime and the
         // conformance helpers re-enter it per call).
@@ -116,6 +128,8 @@ impl Subscriber for Deliveries {
                         delivery,
                         requeue.clone(),
                         coordinator.clone(),
+                        Arc::clone(&state),
+                        dead_letter.clone(),
                     ))
                 })
             })
@@ -127,13 +141,20 @@ impl Subscriber for Deliveries {
 ///
 /// `ack` consumes the handle; `nack(requeue = true)` re-queues the delivery on the owning
 /// subscription's channel so the next handler invocation sees it again; `nack(requeue = false)`
-/// drops it, matching the real subscriber's reject path in effect.
+/// drops it, matching the real subscriber's reject path in effect. On the last delivery a
+/// declared dead-letter policy allows, either rejection publishes the message to the declared
+/// topic instead, which is what the subscription does against Pub/Sub.
 pub struct PubSubTestMessage {
     delivery: Option<Delivery>,
     requeue: DeliverySender,
     /// A clone of the broker's harness coordinator. When set, this delivery is counted in
     /// flight and is decremented exactly once when the message is consumed or dropped.
     coordinator: Option<Coordinator>,
+    /// The transport a spent delivery is published through.
+    state: Arc<TestState>,
+    /// The subscription's declared dead-letter policy, `None` where the registration declared
+    /// nothing and a rejection is the end of the message.
+    dead_letter: Option<Arc<DeadLetter>>,
 }
 
 impl Drop for PubSubTestMessage {
@@ -154,15 +175,44 @@ impl std::fmt::Debug for PubSubTestMessage {
 
 impl PubSubTestMessage {
     pub(crate) fn new(
-        delivery: Delivery,
+        mut delivery: Delivery,
         requeue: DeliverySender,
         coordinator: Option<Coordinator>,
+        state: Arc<TestState>,
+        dead_letter: Option<Arc<DeadLetter>>,
     ) -> Self {
+        // Pub/Sub reports the delivery attempt only under a dead-letter policy, and this crate
+        // surfaces it as a header, so the stand-in surfaces the same header under the same
+        // condition.
+        if dead_letter.is_some() {
+            delivery
+                .headers
+                .insert(DELIVERY_ATTEMPT_HEADER, delivery.attempt.to_string());
+        }
         Self {
             delivery: Some(delivery),
             requeue,
             coordinator,
+            state,
+            dead_letter,
         }
+    }
+
+    /// Whether this is the last delivery the subscription's dead-letter policy allows.
+    fn at_delivery_cap(&self) -> bool {
+        match (&self.dead_letter, &self.delivery) {
+            (Some(policy), Some(delivery)) => delivery.attempt >= policy.max_attempts,
+            _ => false,
+        }
+    }
+
+    /// Publishes a spent delivery to the declared topic, the way the subscription's dead-letter
+    /// policy does. The attempt header goes with the delivery, not with the message, so the copy
+    /// leaves without it.
+    fn dead_letter(&self, mut delivery: Delivery, topic: &str) {
+        delivery.headers.remove(DELIVERY_ATTEMPT_HEADER);
+        self.state
+            .publish(topic, delivery.payload, delivery.headers);
     }
 }
 
@@ -193,21 +243,41 @@ impl IncomingMessage for PubSubTestMessage {
     }
 
     fn nack(mut self, requeue: bool) -> impl Future<Output = Result<(), AckError>> {
-        let delivery = self
+        let at_cap = self.at_delivery_cap();
+        let mut delivery = self
             .delivery
             .take()
             .expect("PubSubTestMessage ack/nack invoked twice");
-        if requeue {
-            let sent = self.requeue.send(delivery);
-            // The requeue bypasses fanout, so count the re-enqueue here to balance this
-            // message's `Drop` decrement. The redelivered copy is consumed in turn.
-            if sent.is_ok()
-                && let Some(coordinator) = &self.coordinator
-            {
-                coordinator.enqueued();
+        delivery.headers.remove(DELIVERY_ATTEMPT_HEADER);
+        match (at_cap, self.dead_letter.as_deref()) {
+            // The attempts are spent, so the message leaves the subscription for the declared
+            // topic. The publish counts its own enqueue for whoever is subscribed there.
+            (true, Some(policy)) => {
+                let topic = policy.topic.clone();
+                self.dead_letter(delivery, &topic);
             }
+            _ if requeue => {
+                delivery.attempt += 1;
+                let sent = self.requeue.send(delivery);
+                // The requeue bypasses fanout, so count the re-enqueue here to balance this
+                // message's `Drop` decrement. The redelivered copy is consumed in turn.
+                if sent.is_ok()
+                    && let Some(coordinator) = &self.coordinator
+                {
+                    coordinator.enqueued();
+                }
+            }
+            _ => {}
         }
         ready(Ok(()))
+    }
+
+    /// The delivery attempt, counted the way Pub/Sub counts it: only under a dead-letter policy,
+    /// and starting at one.
+    fn redelivery_count(&self) -> Option<u64> {
+        let _policy = self.dead_letter.as_ref()?;
+        let delivery = self.delivery.as_ref()?;
+        u64::try_from(delivery.attempt).ok()
     }
 
     fn partition_key(&self) -> Option<&[u8]> {

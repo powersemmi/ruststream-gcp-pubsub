@@ -1,6 +1,6 @@
 //! Five things a service asserts on the stand-in: the ordering step through an `Out` slot, a
 //! batch handler, where a returned reply lands, the subscription descriptor it declares its
-//! handlers with, and where a deferred retry goes.
+//! handlers with, and what happens to a delivery whose retries run out.
 //!
 //! The step is a position on the publish builder, so a keyed publish is still the slot's: it keeps
 //! the slot's attribution, the codec the mount site named, and the key the call asked for. A step
@@ -17,9 +17,8 @@
 //! in-process subscription, and the same `Publish` policy that reaches Pub/Sub pairs with the
 //! stand-in.
 //!
-//! A delay Pub/Sub cannot carry is the last one: `retry_after` becomes a copy the runtime
-//! publishes to the address the subscription reports, and the mount site names the publisher it
-//! leaves through.
+//! The retries a message gets are the last one: the mount site declares the cap and the
+//! destination, and the subscription's own dead-letter policy carries a spent delivery away.
 //!
 //! A reply has no call site to name its key, so a transform on the reply position writes the
 //! setting instead, and the harness reads back what it wrote.
@@ -31,14 +30,12 @@ use std::time::Duration;
 use ruststream::codec::CborCodec;
 // `Outgoing` names the derive at the crate root and the publish pipeline's message type in
 // `runtime`; a publish transform takes the second one, and the two live in different namespaces.
-use ruststream::runtime::{
-    Out, Outgoing, PublishContext, PublishError, RETRY_COUNT_HEADER, SlotContext,
-};
+use ruststream::runtime::{Out, Outgoing, PublishContext, PublishError};
 use ruststream::testing::TestApp;
 use ruststream::{ConnectedBroker as _, HeaderMap, Outgoing, SubscriptionSource as _};
 use ruststream_gcp_pubsub::prelude::*;
 use ruststream_gcp_pubsub::testing::PubSubTestBroker;
-use ruststream_gcp_pubsub::{PARTITION_KEY_HEADER, PubSubError};
+use ruststream_gcp_pubsub::{DELIVERY_ATTEMPT_HEADER, PARTITION_KEY_HEADER, PubSubError};
 use serde::{Deserialize, Serialize};
 
 /// The order the harness injects.
@@ -517,54 +514,53 @@ async fn publishing_after_shutdown_errors() {
     );
 }
 
-/// A payment the upstream settles late, so the first delivery asks for another attempt.
+/// A payment the upstream never settles, so every delivery asks for another attempt.
 #[derive(Debug, PartialEq, Serialize, Deserialize, Outgoing)]
 struct Payment {
     id: u64,
 }
 
-/// The delay a deferred copy waits out before it comes back.
-const RETRY_DELAY: Duration = Duration::from_secs(5);
+/// How many deliveries one payment gets before the subscription carries it away.
+const MAX_ATTEMPTS: u32 = 5;
 
-/// Stamps every message leaving the slot it is mounted on with that slot's name. The retry
-/// position is an ordinary `Out` slot, so a transform there reads what any slot transform reads.
-#[derive(Debug, Clone, Copy)]
-struct DeferredStamp;
+/// Where a payment goes once those attempts are spent.
+const DEAD_LETTER: &str = "payments-dead";
 
-impl<Options> PublishTransform<ForSlot, Options> for DeferredStamp {
-    type Destination = Reads;
-
-    fn apply(&self, out: &mut Outgoing<'_>, _options: &mut Option<Options>, cx: &SlotContext<'_>) {
-        out.headers_mut()
-            .insert("x-left-through", cx.slot().to_owned());
-    }
+/// The delivery a handler was called on, as the subscription counts it.
+fn attempt_of(headers: &HeaderMap) -> Option<u32> {
+    headers
+        .get_str(DELIVERY_ATTEMPT_HEADER)
+        .and_then(|value| value.parse().ok())
 }
 
-/// Defers the first delivery and settles the copy, which the retry count is what tells apart.
+/// Never settles, so the subscription's own cap is what ends the message.
 #[subscriber(GooglePubSub::new("payments-workers"))]
-async fn reconcile(payment: &Payment, ctx: &mut Context<'_>) -> HandlerOutcome {
+async fn never_settles(payment: &Payment) -> HandlerOutcome {
     let _ = payment.id;
-    if ctx.headers().get_str(RETRY_COUNT_HEADER).is_none() {
-        return HandlerOutcome::retry_after(RETRY_DELAY);
-    }
-    HandlerOutcome::ack()
+    HandlerOutcome::retry()
 }
 
-/// Pub/Sub has no delayed nack, so the delay is a copy the runtime publishes to the address the
-/// subscription reports. The publisher it leaves through is the mount site's to name, and the
-/// steps on that position apply to the copy: the transform here is the only place a service can
-/// mark one, since nothing else on the chain sees it.
-///
-/// The clock is paused rather than multi-threaded because the delay is what the case is about;
-/// `advance` fires the redelivery that is due instead of waiting five seconds for it.
-#[tokio::test(start_paused = true)]
-async fn a_transform_on_the_retry_position_stamps_the_deferred_copy() {
+/// Settles on the third delivery, which it reads off the count the subscription reports.
+#[subscriber(GooglePubSub::new("payments-workers"))]
+async fn settles_on_the_third_attempt(payment: &Payment, ctx: &mut Context<'_>) -> HandlerOutcome {
+    let _ = payment.id;
+    if attempt_of(ctx.headers()) == Some(3) {
+        return HandlerOutcome::ack();
+    }
+    HandlerOutcome::retry()
+}
+
+/// Pub/Sub moves a spent delivery itself, so the mount site declares the cap and the destination
+/// and the subscription's dead-letter policy carries the message away. Nothing is published from
+/// the service, which is why `.out_retry(..)` does not compile over this descriptor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_spent_delivery_leaves_for_the_declared_dead_letter_topic() {
     let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
         PubSubTestBroker::new(),
         |b| {
-            b.include(reconcile)
-                .out_retry(Publish::default())
-                .transform(DeferredStamp);
+            b.include(never_settles)
+                .max_attempts(nonzero!(MAX_ATTEMPTS))
+                .dead_letter(DEAD_LETTER);
         },
     );
     let tb = TestApp::start(app)
@@ -577,23 +573,55 @@ async fn a_transform_on_the_retry_position_stamps_the_deferred_copy() {
         .publish()
         .await
         .expect("the harness accepts the injection");
-    tb.advance(RETRY_DELAY).await.expect("the copy comes back");
+    tb.settle().await.expect("the retries run out");
 
-    // The stand-in routes by the subscription name, so that is the address it reports and the
-    // address the copy is published to; against Pub/Sub it is the topic behind the subscription.
-    // Two publishes land there: the test's own injection, then the copy, which is the one the
-    // assertions below read.
-    tb.broker::<PubSubTestBroker>()
-        .published::<Payment>("payments-workers")
-        .assert_called(2)
-        .with(&Payment { id: 3 })
-        .with_header("x-left-through", "Retry");
-
-    // And the copy is a delivery like any other: the handler ran twice and settled the second.
+    // Five deliveries, the declared cap, and not a sixth.
     tb.broker::<PubSubTestBroker>()
         .subscriber("payments-workers")
-        .assert_called(2)
+        .assert_called(MAX_ATTEMPTS as usize);
+
+    // The payment itself is on the dead-letter topic, as it arrived.
+    tb.broker::<PubSubTestBroker>()
+        .published::<Payment>(DEAD_LETTER)
+        .assert_called(1)
+        .with(&Payment { id: 3 });
+
+    tb.shutdown().await.expect("graceful shutdown");
+}
+
+/// The count a delivery carries is the subscription's own, so a handler can branch on how many
+/// times a message has come back. A message that settles before the cap never reaches the
+/// dead-letter topic.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_delivery_reports_which_attempt_it_is() {
+    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
+        PubSubTestBroker::new(),
+        |b| {
+            b.include(settles_on_the_third_attempt)
+                .max_attempts(nonzero!(MAX_ATTEMPTS))
+                .dead_letter(DEAD_LETTER);
+        },
+    );
+    let tb = TestApp::start(app)
+        .await
+        .expect("the harness starts the app");
+
+    tb.broker::<PubSubTestBroker>()
+        .message(&Payment { id: 7 })
+        .to("payments-workers")
+        .publish()
+        .await
+        .expect("the harness accepts the injection");
+    tb.settle().await.expect("the third delivery settles");
+
+    tb.broker::<PubSubTestBroker>()
+        .subscriber("payments-workers")
+        .assert_called(3)
         .settled(HandlerOutcome::ack());
+
+    tb.broker::<PubSubTestBroker>()
+        .published::<Payment>(DEAD_LETTER)
+        .assert_called(0);
 
     tb.shutdown().await.expect("graceful shutdown");
 }

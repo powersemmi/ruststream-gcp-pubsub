@@ -24,13 +24,18 @@ pub const DELIVERY_ATTEMPT_HEADER: &str = "pubsub-delivery-attempt";
 ///
 /// `ack` and `nack(requeue = true)` are native. `nack(requeue = false)` acknowledges: Pub/Sub
 /// has no "drop without redelivery" beyond acknowledgement - dead-lettering is the
-/// subscription's redrive policy, driven by repeated nacks and expired deadlines, not a
-/// per-message verb. On an exactly-once subscription the confirmed forms are used, so `Ok`
+/// subscription's dead-letter policy, driven by repeated nacks and expired deadlines, not a
+/// per-message verb. The exception is the last delivery that policy allows, where a rejection is
+/// exactly how the message reaches the dead-letter topic; a delivery there is rejected rather
+/// than acknowledged. On an exactly-once subscription the confirmed forms are used, so `Ok`
 /// from `ack` means the broker accepted it.
 pub struct PubSubMessage {
     payload: Bytes,
     headers: HeaderMap,
     handler: Handler,
+    /// How many deliveries one message gets under the subscription's dead-letter policy, as the
+    /// registration declared it. `None` where none was declared.
+    max_delivery_attempts: Option<i32>,
 }
 
 impl std::fmt::Debug for PubSubMessage {
@@ -42,7 +47,11 @@ impl std::fmt::Debug for PubSubMessage {
 }
 
 impl PubSubMessage {
-    pub(crate) fn new(message: GcpMessage, handler: Handler) -> Self {
+    pub(crate) fn new(
+        message: GcpMessage,
+        handler: Handler,
+        max_delivery_attempts: Option<i32>,
+    ) -> Self {
         let mut headers = HeaderMap::with_capacity(message.attributes.len() + 2);
         for (name, value) in &message.attributes {
             headers.insert(name.clone(), value.clone());
@@ -57,6 +66,33 @@ impl PubSubMessage {
             payload: message.data,
             headers,
             handler,
+            max_delivery_attempts,
+        }
+    }
+
+    /// Whether this is the last delivery the subscription's dead-letter policy allows.
+    ///
+    /// A rejection here is what moves the message to the dead-letter topic, so it is the one
+    /// place a settlement meaning "do not redeliver" has to reach the service rather than
+    /// acknowledge.
+    fn at_delivery_cap(&self) -> bool {
+        match (self.max_delivery_attempts, self.handler.delivery_attempt()) {
+            (Some(cap), Some(attempt)) => attempt >= cap,
+            _ => false,
+        }
+    }
+
+    /// Rejects the delivery, in the form the subscription's delivery guarantee asks for.
+    async fn reject(self) -> Result<(), AckError> {
+        match self.handler {
+            Handler::ExactlyOnce(handler) => handler
+                .confirmed_nack()
+                .await
+                .map_err(|e| AckError::Broker(Box::new(e))),
+            handler => {
+                handler.nack();
+                Ok(())
+            }
         }
     }
 }
@@ -76,6 +112,16 @@ impl IncomingMessage for PubSubMessage {
         &self.headers
     }
 
+    /// The delivery attempt the service reports, counting this delivery.
+    ///
+    /// Pub/Sub sends it only where the subscription has a dead-letter policy, so a subscription
+    /// without one counts nothing and the framework reads its own header instead.
+    fn redelivery_count(&self) -> Option<u64> {
+        self.handler
+            .delivery_attempt()
+            .and_then(|attempt| u64::try_from(attempt).ok())
+    }
+
     async fn ack(self) -> Result<(), AckError> {
         match self.handler {
             // Only the confirmed form guarantees no redelivery on an exactly-once
@@ -92,22 +138,15 @@ impl IncomingMessage for PubSubMessage {
     }
 
     async fn nack(self, requeue: bool) -> Result<(), AckError> {
-        if requeue {
-            match self.handler {
-                Handler::ExactlyOnce(handler) => handler
-                    .confirmed_nack()
-                    .await
-                    .map_err(|e| AckError::Broker(Box::new(e))),
-                handler => {
-                    handler.nack();
-                    Ok(())
-                }
-            }
-        } else {
-            // Dropping without redelivery IS an acknowledge in Pub/Sub; the dead-letter
-            // policy on the subscription owns poison-message routing.
-            self.ack().await
+        // At the cap the rejection is what moves the message: the service publishes it to the
+        // dead-letter topic instead of redelivering it, so acknowledging here would drop a
+        // message the registration asked to keep.
+        if requeue || self.at_delivery_cap() {
+            return self.reject().await;
         }
+        // Dropping without redelivery IS an acknowledge in Pub/Sub; the dead-letter policy on
+        // the subscription owns poison-message routing.
+        self.ack().await
     }
 
     fn partition_key(&self) -> Option<&[u8]> {

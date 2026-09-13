@@ -1,5 +1,5 @@
-//! Delayed redelivery on Pub/Sub: a handler asks for a later attempt, and the mount site names
-//! the publisher the deferred copy leaves through.
+//! Capping the retries on Pub/Sub: a handler asks for a later attempt, and the mount site says
+//! how many attempts a message gets and where a spent one goes.
 //!
 //! Run the emulator first (`just brokers-up`), then:
 //! `cargo run --example pubsub_retry`
@@ -34,10 +34,11 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
         PubSubBroker::new("my-project").emulator("localhost:8085"),
         |b| {
-            // Pub/Sub has no delayed nack, so the delay is carried by a copy the runtime
-            // publishes to the topic behind the subscription. This names the publisher that copy
-            // leaves through, once for the registration.
-            b.include(reconcile).out_retry(Publish::default());
+            // The declaration becomes the subscription's dead-letter policy: Pub/Sub gives one
+            // payment five deliveries, then publishes it to `payments-dead` itself.
+            b.include(reconcile)
+                .max_attempts(nonzero!(5u32))
+                .dead_letter("payments-dead");
         },
     )
 }

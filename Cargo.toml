@@ -26,6 +26,9 @@ google-cloud-pubsub = "1.3"
 # The floor the client itself demands: google-cloud-pubsub 1.3 depends on auth 1.15, so a wider
 # bound here claims support for versions that can never resolve beside it.
 google-cloud-auth = "1.15"
+# The well-known types the client's own request builders take: a subscription update names the
+# fields it writes with a `FieldMask`, and the client re-exports none of them.
+google-cloud-wkt = "1.7"
 bytes = "1"
 futures = "0.3"
 thiserror = "2"

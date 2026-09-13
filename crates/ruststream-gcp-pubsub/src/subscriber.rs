@@ -71,7 +71,10 @@ impl PubSubSubscriber {
         let shutdown = stream.shutdown_token();
 
         let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
-        tokio::spawn(pump(stream, tx, name.clone()));
+        let cap = descriptor
+            .dead_letter_policy()
+            .map(|(_, attempts)| attempts);
+        tokio::spawn(pump(stream, tx, name.clone(), cap));
 
         Self {
             subscription: name,
@@ -143,12 +146,17 @@ async fn pump(
     mut stream: MessageStream,
     out: mpsc::Sender<Result<PubSubMessage, PubSubError>>,
     subscription: String,
+    max_delivery_attempts: Option<i32>,
 ) {
     while let Some(item) = stream.next().await {
         match item {
             Ok((message, handler)) => {
                 if out
-                    .send(Ok(PubSubMessage::new(message, handler)))
+                    .send(Ok(PubSubMessage::new(
+                        message,
+                        handler,
+                        max_delivery_attempts,
+                    )))
                     .await
                     .is_err()
                 {
