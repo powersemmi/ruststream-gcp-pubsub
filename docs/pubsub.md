@@ -173,7 +173,7 @@ field of the message, not a header, and it is the one setting a Pub/Sub publish 
 payload and attributes. `PubSubPublishOptions` is that setting as a type, with `ordering_key` its
 only field.
 
-The key reaches a publish from two places. The publish policy fixes it for every message one
+The key reaches a publish from three places. The publish policy fixes it for every message one
 publisher sends, which is what a publisher belonging to one entity wants:
 
 ```rust
@@ -208,9 +208,14 @@ Pub/Sub publisher and names both types where someone mounts it over another brok
 
 On the delivery side the framework's partition key *is* the ordering key: a delivery reports it with
 `message.partition_key()` and under the `partition-key` header (exported as `PARTITION_KEY_HEADER`),
-so a handler that reads keys imports nothing from this crate. That direction is a report: the key of
-an outgoing message is a setting, so writing the header on one orders nothing, and it never travels
-as an attribute.
+so a handler that reads keys imports nothing from this crate. That header is the same key on the way
+out too, for a service written against no particular broker: writing it on an outgoing message
+orders that message. It never travels as an attribute.
+
+Three places can name the key of one publish, and the most specific wins: the message's own
+settings, written by the `ordering_key` step or by a transform; then the `partition-key` header the
+call site wrote; then the key the mount site fixed. A publish that reaches none of the three is
+unordered, which is Pub/Sub's own default.
 
 Ordered delivery needs message ordering enabled on the subscription. A regional `endpoint` is what
 keeps one key in order across publishers in a region. A publish that returns an error on an ordered

@@ -1,6 +1,7 @@
 //! [`PubSubPublisher`], its [`PubSubPublish`] policy, the [`PubSubPublishOptions`] a single
 //! message may differ by, and the [`PubSubOrdering`] step that names one.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::future::{Future, ready};
 use std::sync::Arc;
@@ -11,7 +12,7 @@ use ruststream::{OutgoingMessage, PairError, PublishPolicy, Publisher};
 
 use crate::broker::{ConnectedPubSubBroker, Core, CoreCell};
 use crate::error::{PubSubError, box_err};
-use crate::message::to_gcp_message;
+use crate::message::{PARTITION_KEY_HEADER, to_gcp_message};
 
 /// The settings one Pub/Sub message may differ from the next by.
 ///
@@ -97,18 +98,25 @@ impl PubSubPublisher {
     }
 }
 
-/// The ordering key one publish carries, resolved over the two places it can come from.
+/// The ordering key one publish carries, resolved over the three places it can come from.
 ///
-/// Whoever wrote the message's settings wins - the [`ordering_key`](PubSubOrdering::ordering_key)
-/// step at the call site, or a publish transform on the position it leaves through - and the key
-/// the policy fixed applies when nothing did.
+/// The native spelling wins: the message's own settings, written by the
+/// [`ordering_key`](PubSubOrdering::ordering_key) step at a call site or by a publish transform on
+/// the position the message leaves through. Next comes the framework's `partition-key` header,
+/// which is the portable spelling of the same key and keeps a service that names no broker able to
+/// order its messages. What neither named is what the policy fixed for the mount site.
 pub(crate) fn resolve_ordering_key<'a>(
+    msg: &'a OutgoingMessage<'_>,
     options: Option<&'a PubSubPublishOptions>,
     policy: Option<&'a str>,
-) -> Option<&'a str> {
-    options
-        .and_then(|options| options.ordering_key.as_deref())
-        .or(policy)
+) -> Option<Cow<'a, str>> {
+    if let Some(key) = options.and_then(|options| options.ordering_key.as_deref()) {
+        return Some(Cow::Borrowed(key));
+    }
+    if let Some(value) = msg.headers().get(PARTITION_KEY_HEADER) {
+        return Some(String::from_utf8_lossy(value));
+    }
+    policy.map(Cow::Borrowed)
 }
 
 impl Publisher for PubSubPublisher {
@@ -122,15 +130,15 @@ impl Publisher for PubSubPublisher {
     ) -> Result<(), Self::Error> {
         let core = self.core()?;
         let publisher = self.publisher_for(core, msg.name()).await;
-        let key = resolve_ordering_key(options, self.default_ordering_key.as_deref());
-        let message = to_gcp_message(&msg, key);
+        let key = resolve_ordering_key(&msg, options, self.default_ordering_key.as_deref());
+        let message = to_gcp_message(&msg, key.as_deref());
         match publisher.publish(message).await {
             Ok(_message_id) => Ok(()),
             Err(err) => {
                 // An error on an ordered key pauses the key; resume so the pause cannot wedge
                 // every later publish on this key, and let the caller see this failure.
                 if let Some(key) = key {
-                    publisher.resume_publish(key.to_owned());
+                    publisher.resume_publish(key.into_owned());
                 }
                 Err(PubSubError::Publish {
                     topic: core.topic_name(msg.name()),
@@ -247,30 +255,55 @@ impl PublishPolicy<ConnectedPubSubBroker> for PubSubPublish {
 
 #[cfg(test)]
 mod tests {
+    use ruststream::HeaderMap;
+
     use super::*;
 
-    /// The settings of one message are the most specific thing a publish carries, so they win
-    /// over the key the mount site fixed for every message.
+    fn keyed_header(value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(PARTITION_KEY_HEADER, value.to_owned());
+        headers
+    }
+
+    /// The message's own settings are the native spelling, so they win over both the portable
+    /// header and the key the mount site fixed for every message.
     #[test]
-    fn the_messages_own_setting_wins_over_the_policy() {
+    fn the_messages_own_setting_wins_over_the_header_and_the_policy() {
+        let msg =
+            OutgoingMessage::new("orders", b"{}".as_slice()).with_headers(keyed_header("header"));
         let options = PubSubPublishOptions {
             ordering_key: Some("step".to_owned()),
         };
 
-        let key = resolve_ordering_key(Some(&options), Some("policy"));
-        assert_eq!(key, Some("step"));
+        let key = resolve_ordering_key(&msg, Some(&options), Some("policy"));
+        assert_eq!(key.as_deref(), Some("step"));
     }
 
-    /// What one message did not name is what the mount site fixed.
+    /// A handler that names no broker still orders its messages: the framework's header is the
+    /// portable spelling of the same key, and it is a call site too.
+    #[test]
+    fn the_partition_key_header_orders_a_publish() {
+        let msg =
+            OutgoingMessage::new("orders", b"{}".as_slice()).with_headers(keyed_header("header"));
+
+        let key = resolve_ordering_key(&msg, None, Some("policy"));
+        assert_eq!(key.as_deref(), Some("header"));
+    }
+
+    /// What no call site named is what the mount site fixed.
     #[test]
     fn a_publish_that_names_nothing_takes_the_policys_key() {
-        let key = resolve_ordering_key(None, Some("policy"));
-        assert_eq!(key, Some("policy"));
+        let msg = OutgoingMessage::new("orders", b"{}".as_slice());
+
+        let key = resolve_ordering_key(&msg, None, Some("policy"));
+        assert_eq!(key.as_deref(), Some("policy"));
     }
 
     /// Nothing anywhere means an unordered publish, which is Pub/Sub's own default.
     #[test]
     fn a_publish_with_no_key_anywhere_is_unordered() {
-        assert!(resolve_ordering_key(None, None).is_none());
+        let msg = OutgoingMessage::new("orders", b"{}".as_slice());
+
+        assert!(resolve_ordering_key(&msg, None, None).is_none());
     }
 }

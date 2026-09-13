@@ -233,8 +233,8 @@ impl PubSubTestPublisher {
         // The stand-in has no protocol field to put the key in, so it puts the resolved key where
         // a delivery off Pub/Sub reports it: the `partition-key` header. A test then reads the
         // same answer either way.
-        match resolve_ordering_key(options, self.default_ordering_key.as_deref()) {
-            Some(key) => headers.insert(PARTITION_KEY_HEADER, key.to_owned()),
+        match resolve_ordering_key(msg, options, self.default_ordering_key.as_deref()) {
+            Some(key) => headers.insert(PARTITION_KEY_HEADER, key.into_owned()),
             None => headers.remove(PARTITION_KEY_HEADER),
         };
         self.state

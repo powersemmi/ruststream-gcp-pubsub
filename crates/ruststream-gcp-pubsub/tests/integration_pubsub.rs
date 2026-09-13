@@ -14,7 +14,7 @@ use ruststream::{
 };
 use ruststream_gcp_pubsub::{
     ConnectedPubSubBroker, GooglePubSub, PARTITION_KEY_HEADER, PubSubBroker, PubSubOrdering,
-    PubSubPublish, PubSubPublishOptions,
+    PubSubPublish,
 };
 
 mod live;
@@ -58,13 +58,12 @@ async fn roundtrip_preserves_payload_attributes_and_partition_key() {
     let mut headers = HeaderMap::new();
     headers.insert("content-type", "application/json");
     headers.insert("x-tenant", "acme");
+    headers.insert(PARTITION_KEY_HEADER, "user-42");
     let publisher = connected.publisher();
     publisher
         .publish(
             OutgoingMessage::new(&name, b"{\"id\":1}".as_slice()).with_headers(headers),
-            Some(&PubSubPublishOptions {
-                ordering_key: Some("user-42".to_owned()),
-            }),
+            None,
         )
         .await
         .expect("publish succeeds");
@@ -88,12 +87,11 @@ async fn roundtrip_preserves_payload_attributes_and_partition_key() {
     connected.shutdown().await.expect("shutdown succeeds");
 }
 
-/// The `partition-key` header is what a delivery reports its key under, not a way to ask for one.
-/// A message carrying it and no setting arrives unordered, and the name never reaches the
-/// attributes, so a header forwarded from one delivery cannot be read back as the next message's
-/// key.
+/// The portable spelling reaches the product's own field: a service that names no broker writes
+/// the framework's `partition-key` header, and the message leaves under that ordering key. The
+/// header itself never becomes an attribute, so the key travels once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_partition_key_header_does_not_order_a_publish() {
+async fn a_partition_key_header_orders_a_publish() {
     let Some(host) = test_host() else { return };
     let connected = connect(&host).await;
 
@@ -108,7 +106,7 @@ async fn a_partition_key_header_does_not_order_a_publish() {
     let publisher = connected.publisher();
     publisher
         .publish(
-            OutgoingMessage::new(&name, b"unordered".as_slice()).with_headers(headers),
+            OutgoingMessage::new(&name, b"by-header".as_slice()).with_headers(headers),
             None,
         )
         .await
@@ -121,8 +119,8 @@ async fn a_partition_key_header_does_not_order_a_publish() {
         .expect("stream is open")
         .expect("delivery is ok");
 
-    assert_eq!(message.payload(), b"unordered");
-    assert_eq!(message.partition_key(), None);
+    assert_eq!(message.payload(), b"by-header");
+    assert_eq!(message.partition_key(), Some(b"user-42".as_slice()));
     message.ack().await.expect("ack succeeds");
 
     connected.shutdown().await.expect("shutdown succeeds");
