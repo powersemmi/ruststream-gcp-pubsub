@@ -25,7 +25,7 @@ The framework's optional capabilities on Pub/Sub:
 | `RequestReply` | no | you build it yourself from a reply topic and a correlation attribute |
 | `Partitioned` | yes | [the partition key is the message's ordering key](#ordering-keys) |
 | `Seekable` and `Positioned` | no | you reposition a whole subscription with the admin `seek`, to a timestamp or a snapshot |
-| `DescribeServer` | yes | reports the host and port in use (emulator, custom endpoint, or `pubsub.googleapis.com`) under the `googlepubsub` protocol; a scheme, a path or credentials written into the endpoint stay out of the document |
+| `DescribeServer` | yes | reports the host and port in use (emulator, custom endpoint, or `pubsub.googleapis.com`) under the `googlepubsub` protocol; a scheme, a path or credentials written into the endpoint stay out of [the document](#asyncapi) |
 
 A handler reads the ordering key off a delivery with `message.partition_key()`, and imports nothing
 from this crate for it.
@@ -128,35 +128,11 @@ Acknowledgement is native and per message:
 | `HandlerOutcome::retry()` | nack | the message becomes available again and is redelivered |
 | `HandlerOutcome::drop()` | acknowledge | the message is not redelivered |
 
-Pub/Sub has no drop-without-redelivery verb, which is why `drop()` acknowledges. Poison messages are
-routed by the subscription's dead-letter policy, set on the subscription resource. Under such a
-policy the delivery-attempt count is delivered as the `pubsub-delivery-attempt` header (exported as
-`DELIVERY_ATTEMPT_HEADER`), and a handler can branch on how many times a message has come back.
+Pub/Sub has no drop-without-redelivery verb, which is why `drop()` acknowledges.
 
-Pub/Sub has no delayed nack, so `HandlerOutcome::retry_after(delay)` runs on the runtime's
-[deferred re-publish](https://powersemmi.github.io/ruststream/latest/guides/subscribers/#delayed-redelivery).
-The publisher that copy leaves through is a position on the mount chain, bound once for the
-registration with `out_retry`:
-
-```rust
---8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_retry.rs:mount"
-```
-
-The runtime then acknowledges the delivery and publishes a copy of the message after the delay.
-Without that publisher the delay is dropped, the message is requeued at once, and the runtime warns.
-
-The position is an `Out` slot like any other, so `.codec(..)`, `.transform(..)` and
-`.map_publisher(..)` follow it. The copy carries the delivery's own bytes, so a codec named there
-encodes nothing while the transforms run on the copy. Nothing else on the chain sees it, which
-makes a transform the one place a service marks a redelivery of its own.
-
-The copy goes to the topic the subscription is bound to, never to the subscription name: a publish
-on Pub/Sub addresses a topic. `GooglePubSub` reports that topic - the one `create_with_topic` names,
-or the one the API reports for a subscription managed as infrastructure, asked once at startup.
-A handler declared with a plain string cannot report one, because a subscription name reaches
-nothing, so a registration that binds `out_retry` over `#[subscriber("orders-workers")]` refuses to
-start and names the subscription. Declaring that handler with `GooglePubSub::new("orders-workers")`
-is the fix.
+Pub/Sub has no delayed nack either, so `HandlerOutcome::retry_after(delay)` loses the delay: the
+message goes back and comes again on the subscription's own schedule, and the runtime warns once
+per delivery.
 
 ### Exactly-once acknowledgement
 
@@ -165,6 +141,44 @@ against both kinds of subscription. On an exactly-once subscription `ack` return
 service has confirmed it, and the message is then not redelivered. A refused acknowledgement (an
 expired ack id, a lost deadline race) returns `AckError::Broker` instead of passing as success. On
 an ordinary subscription `ack` returns `Ok` as soon as the acknowledgement is queued.
+
+## Capping the retries { #capping-the-retries }
+
+A handler that keeps asking for another attempt circulates its message. Two steps at the mount site
+end that, and they say how many deliveries one message gets and where it goes when they run out:
+
+```rust
+--8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_retry.rs:mount"
+```
+
+The declaration becomes the subscription's own dead-letter policy: `dead_letter(name)` is its
+dead-letter topic and `max_attempts(n)` its `maxDeliveryAttempts`. Pub/Sub counts the deliveries of
+each message from there on, and publishes a spent one to that topic itself. Nothing is published
+from the service, so `.out_retry(..)` over a Pub/Sub subscription does not compile, and the error
+names the descriptor.
+
+Pub/Sub accepts a cap between 5 and 100. A cap outside that range refuses to start, and so does a
+declaration naming only one of the two steps: the policy is a single field of the subscription
+resource, and it cannot carry half a declaration.
+
+The policy is written when the service starts. A descriptor with `create_with_topic` creates the
+dead-letter topic beside its own and opens the subscription carrying the policy; a subscription
+managed as infrastructure receives it as an update.
+
+The declaration reaches the subscription through `GooglePubSub` and through nothing else. A handler
+declared with a plain string carries the framework's own descriptor, which records nothing to apply,
+so a cap declared over `#[subscriber("orders-workers")]` leaves the subscription as it was.
+Declaring that handler with `GooglePubSub::new("orders-workers")` is the fix.
+
+Under a dead-letter policy every delivery reports which attempt it is, in the
+`pubsub-delivery-attempt` header (exported as `DELIVERY_ATTEMPT_HEADER`). The count is the service's
+own, it starts at one, and the framework reads the cap against it. A subscription without such a
+policy reports nothing, which is Pub/Sub's own behaviour.
+
+On the last delivery the policy allows, `drop()` reaches the dead-letter topic instead of
+acknowledging. A spent retry and a dropped message reach the transport as the same rejection, and
+that rejection is what moves the message: reading it as an acknowledgement would lose exactly the
+messages the declaration asked to keep.
 
 ## Ordering keys
 
@@ -250,6 +264,33 @@ headers, and the key.
 
 A message built by hand and handed to `Publisher::publish` is sent as it was built, which is the way
 to control the header map yourself.
+
+## The AsyncAPI document { #asyncapi }
+
+The `asyncapi` feature turns on the framework's document generation for this broker. The server
+carries the host clients dial and the protocol key `googlepubsub`, and nothing else: an API version
+is not a fact of the transport, and a password written into an endpoint never reaches a document
+teams share.
+
+What the crate adds to the document is the ordering key a mount site fixed:
+
+```rust
+--8<-- "crates/ruststream-gcp-pubsub/tests/asyncapi_pubsub.rs:mount"
+```
+
+The message that leaves through that policy then carries the `googlepubsub` binding:
+
+```json
+--8<-- "crates/ruststream-gcp-pubsub/tests/asyncapi_pubsub.rs:binding"
+```
+
+Everything else the binding describes - labels, message retention, the storage policy, the schema
+settings - belongs to the topic resource, and no publish policy configures it. A key named per
+message is named at a call site, and a call site is not in the document.
+
+A channel here is a subscription, and the binding describes a topic, so a subscription's channel
+carries no binding at all. The topic behind a subscription is a connection-time value: the document
+is built before anything connects, so the crate says nothing rather than guessing.
 
 ## The emulator
 

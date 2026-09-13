@@ -24,7 +24,7 @@ serde = { version = "1", features = ["derive"] }
 | `RequestReply` | 否 | 你用一个回复主题加一个关联属性自己搭 |
 | `Partitioned` | 是 | [分区键就是消息的排序键](#ordering-keys) |
 | `Seekable` 和 `Positioned` | 否 | 整条订阅的位置由管理端的 `seek` 移动，移到某个时间点或某个快照 |
-| `DescribeServer` | 是 | 以 `googlepubsub` 协议报告正在使用的主机和端口（模拟器、自定义服务地址或 `pubsub.googleapis.com`）；写进服务地址里的 scheme、路径和凭据不会进入文档 |
+| `DescribeServer` | 是 | 以 `googlepubsub` 协议报告正在使用的主机和端口（模拟器、自定义服务地址或 `pubsub.googleapis.com`）；写进服务地址里的 scheme、路径和凭据不会进入[文档](#asyncapi) |
 
 处理器用 `message.partition_key()` 从投递里读排序键，为此不需要从本 crate 导入任何东西。
 
@@ -117,31 +117,10 @@ Broker 默认用 Application Default Credentials 认证。`credentials(..)` 改�
 | `HandlerOutcome::retry()` | nack | 消息重新变为可取，会重新投递 |
 | `HandlerOutcome::drop()` | acknowledge | 消息不会重新投递 |
 
-Pub/Sub 没有“丢弃且不重新投递”这个动作，所以 `drop()` 走的是确认。毒消息由订阅的死信策略
-分流，该策略设在订阅资源上。在这样的策略下，投递尝试次数会以 `pubsub-delivery-attempt` 消息头送
-达（导出为 `DELIVERY_ATTEMPT_HEADER`），处理器可以按一条消息回来过几次来分支。
+Pub/Sub 没有“丢弃且不重新投递”这个动作，所以 `drop()` 走的是确认。
 
-Pub/Sub 没有延迟 nack，所以 `HandlerOutcome::retry_after(delay)` 走运行时的
-[延后重新发布](https://powersemmi.github.io/ruststream/latest/guides/subscribers/#delayed-redelivery)。
-副本经由哪个发布者离开，是挂载链上的一个位置，每次注册用 `out_retry` 接一次：
-
-```rust
---8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_retry.rs:mount"
-```
-
-运行时随后确认这次投递，并在延迟之后发布消息的一个副本。没有这个发布者，延迟就丢掉了，消息立刻
-重新入队，运行时给出告警。
-
-这个位置就是一个普通的 `Out` 槽位，所以它后面接 `.codec(..)`、`.transform(..)` 和
-`.map_publisher(..)`。副本带的是投递自己的字节，所以这里点名的编解码器只解析该位置，不编码任何
-东西，而各个转换会在副本上跑。链上再没有别的地方看得到它，所以转换是服务给自己的重新投递打标记
-的唯一去处。
-
-副本进的是订阅所绑定的那个主题，绝不是订阅名：在 Pub/Sub 上，一次发布寻址的是主题。
-`GooglePubSub` 报告的正是这个主题：`create_with_topic` 指定的那个，或者对按基础设施管理的订阅，
-API 报告的那个，启动时问一次。用纯字符串声明的处理器报告不出主题，因为订阅名到不了任何地方，
-所以在 `#[subscriber("orders-workers")]` 上接了 `out_retry` 的注册会拒绝启动，并点名这条订阅。
-改用 `GooglePubSub::new("orders-workers")` 声明该处理器就修好了。
+Pub/Sub 也没有延迟 nack，所以 `HandlerOutcome::retry_after(delay)` 会丢掉这个延迟：消息退回去，再
+按订阅自己的节奏重新投递过来，运行时每次投递给出一条告警。
 
 ### 精确一次确认 { #exactly-once-acknowledgement }
 
@@ -149,6 +128,38 @@ API 报告的那个，启动时问一次。用纯字符串声明的处理器报�
 只有服务确认之后 `ack` 才返回 `Ok`，此后这条消息不会重新投递。遭到拒绝的确认（过期的 ack id、
 输掉的截止时间竞争）返回 `AckError::Broker`，而不是当成功放过去。在普通订阅上，确认一入队 `ack`
 就返回 `Ok`。
+
+## 给重试设上限 { #capping-the-retries }
+
+一个不停要求下一次尝试的处理器，会让自己的消息一直转下去。挂载点上的两个步骤终结这件事：它们说
+一条消息能得到几次投递，以及次数用完后它去哪里：
+
+```rust
+--8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_retry.rs:mount"
+```
+
+这份声明会变成订阅自己的死信策略：`dead_letter(name)` 就是它的死信主题，`max_attempts(n)` 就是它
+的 `maxDeliveryAttempts`。从此 Pub/Sub 自己数每条消息的投递次数，也自己把用尽次数的那条发布到该
+主题。服务这边什么都不发布，所以 `.out_retry(..)` 接在 Pub/Sub 订阅上不会通过编译，错误里会点名
+这个描述符。
+
+Pub/Sub 接受 5 到 100 之间的上限。超出这个范围的上限会拒绝启动，只写了两个步骤中一个的声明也一
+样：这条策略是订阅资源上的一个字段，它承不住半份声明。
+
+策略在服务启动时写入。带 `create_with_topic` 的描述符会在自己的主题旁边建出死信主题，并带着策略
+打开订阅；按基础设施管理的订阅则以一次更新收到它。
+
+声明只经由 `GooglePubSub` 到达订阅，别无他路。用纯字符串声明的处理器带的是框架自己的描述符，那个
+描述符什么都不记录，所以接在 `#[subscriber("orders-workers")]` 上的上限会让订阅保持原样。改用
+`GooglePubSub::new("orders-workers")` 声明该处理器就修好了。
+
+在死信策略之下，每次投递都会报告自己是第几次，放在 `pubsub-delivery-attempt` 消息头里（导出为
+`DELIVERY_ATTEMPT_HEADER`）。这个计数由服务自己维护，从一开始，框架也正是拿它来核对上限。没有这
+样一条策略的订阅什么都不报告，这就是 Pub/Sub 本身的行为。
+
+在策略允许的最后一次投递上，`drop()` 进的是死信主题，而不是走确认。用尽次数的重新投递和被丢弃的
+消息，到了传输层是同一个拒绝动作，而正是这个动作把消息带走：把它读成确认，丢掉的恰恰是声明要求
+留下的那些消息。
 
 ## 排序键 { #ordering-keys }
 
@@ -224,6 +235,30 @@ Broker 上，所以 `shutdown` 会冲刷掉它缓冲的每一批。
 
 手工构造并交给 `Publisher::publish` 的消息，按构造出来的样子发出去，你要自己掌控整组消息头时
 走这条路。
+
+## AsyncAPI 文档 { #asyncapi }
+
+`asyncapi` 特性为这个 broker 打开框架的文档生成。服务器带的是客户端拨向的主机，以及协议键
+`googlepubsub`，此外没有别的：API 版本不是传输的事实，而写进服务地址里的口令绝不会进入团队共享
+的文档。
+
+这个 crate 往文档里加的，是挂载点固定下来的排序键：
+
+```rust
+--8<-- "crates/ruststream-gcp-pubsub/tests/asyncapi_pubsub.rs:mount"
+```
+
+经由这条策略离开的消息，随后带上 `googlepubsub` 绑定：
+
+```json
+--8<-- "crates/ruststream-gcp-pubsub/tests/asyncapi_pubsub.rs:binding"
+```
+
+这条绑定描述的其余内容 - 标签、消息保留时长、存储策略、schema 设置 - 都属于主题资源，没有哪个发
+布策略会配置它们。为单条消息点名的键是在调用处点名的，而调用处不会进入文档。
+
+这里的通道是一条订阅，而绑定描述的是主题，所以订阅的通道根本不带绑定。订阅背后的那个主题是连接
+时才知道的值：文档在任何连接建立之前就已经构建，所以这个 crate 选择不说，而不是去猜。
 
 ## 模拟器 { #the-emulator }
 
