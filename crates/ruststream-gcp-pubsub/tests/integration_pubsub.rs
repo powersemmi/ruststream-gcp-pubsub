@@ -225,7 +225,11 @@ async fn the_declaration_becomes_the_subscriptions_dead_letter_policy() {
         // The service counts the deliveries, so the count is on the message rather than in a
         // header this process maintains.
         assert_eq!(message.redelivery_count(), Some(u64::from(expected)));
-        message.nack(true).await.expect("nack succeeds");
+        // The settlement the runtime sends once the attempts are spent. Below the cap it asks
+        // for another delivery; at the cap it says this delivery is the last, and on this
+        // transport both are the same rejection.
+        let requeue = expected < MAX_ATTEMPTS;
+        message.nack(requeue).await.expect("nack succeeds");
     }
 
     let mut dead_stream = pin!(dead.stream());

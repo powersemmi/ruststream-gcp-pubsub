@@ -540,6 +540,13 @@ async fn never_settles(payment: &Payment) -> HandlerOutcome {
     HandlerOutcome::retry()
 }
 
+/// Drops its first delivery, which is a handler saying this message is done with.
+#[subscriber(GooglePubSub::new("payments-workers"))]
+async fn drops_the_first_delivery(payment: &Payment) -> HandlerOutcome {
+    let _ = payment.id;
+    HandlerOutcome::drop()
+}
+
 /// Settles on the third delivery, which it reads off the count the subscription reports.
 #[subscriber(GooglePubSub::new("payments-workers"))]
 async fn settles_on_the_third_attempt(payment: &Payment, ctx: &mut Context<'_>) -> HandlerOutcome {
@@ -585,6 +592,42 @@ async fn a_spent_delivery_leaves_for_the_declared_dead_letter_topic() {
         .published::<Payment>(DEAD_LETTER)
         .assert_called(1)
         .with(&Payment { id: 3 });
+
+    tb.shutdown().await.expect("graceful shutdown");
+}
+
+/// A delivery the handler drops is done with, and a dead-letter policy does not change that: the
+/// destination is where a message goes when its attempts run out, not where a handler sends what
+/// it decided to discard.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dropped_delivery_does_not_reach_the_dead_letter_topic() {
+    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
+        PubSubTestBroker::new(),
+        |b| {
+            b.include(drops_the_first_delivery)
+                .max_attempts(nonzero!(MAX_ATTEMPTS))
+                .dead_letter(DEAD_LETTER);
+        },
+    );
+    let tb = TestApp::start(app)
+        .await
+        .expect("the harness starts the app");
+
+    tb.broker::<PubSubTestBroker>()
+        .message(&Payment { id: 11 })
+        .to("payments-workers")
+        .publish()
+        .await
+        .expect("the harness accepts the injection");
+    tb.settle().await.expect("the handler drops the delivery");
+
+    tb.broker::<PubSubTestBroker>()
+        .subscriber("payments-workers")
+        .assert_called(1);
+
+    tb.broker::<PubSubTestBroker>()
+        .published::<Payment>(DEAD_LETTER)
+        .assert_called(0);
 
     tb.shutdown().await.expect("graceful shutdown");
 }
