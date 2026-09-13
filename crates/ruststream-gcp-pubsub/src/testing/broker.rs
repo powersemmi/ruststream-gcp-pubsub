@@ -257,7 +257,7 @@ impl Publisher for PubSubTestPublisher {
 }
 
 /// The stand-in pairs the real [`PubSubPublish`] policy, so a routes file mounts on it with the
-/// spelling it ships: `.out(Reply, Publish::default())` reads the same either way, and there is no
+/// spelling it ships: `.out_reply(Publish::default())` reads the same either way, and there is no
 /// test-only policy to swap in. The policy's ordering key is honoured here as it is against the
 /// product, so a mount site's default reaches the assertions.
 impl PublishPolicy<ConnectedPubSubTestBroker> for PubSubPublish {

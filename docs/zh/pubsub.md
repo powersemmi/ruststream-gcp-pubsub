@@ -122,14 +122,25 @@ Pub/Sub 没有“丢弃且不重新投递”这个动作，所以 `drop()` 走�
 达（导出为 `DELIVERY_ATTEMPT_HEADER`），处理器可以按一条消息回来过几次来分支。
 
 Pub/Sub 没有延迟 nack，所以 `HandlerOutcome::retry_after(delay)` 走运行时的
-[延后重新发布](https://powersemmi.github.io/ruststream/latest/guides/subscribers/#delayed-redelivery)：
-用 `retry_via` 在作用域上接一个发布者，它取自 `b.broker().publisher()`。运行时随后确认这次投递，
-并在延迟之后发布消息的一个副本。没有这个发布者，延迟就丢掉了，消息立刻重新入队，运行时给出告警。
+[延后重新发布](https://powersemmi.github.io/ruststream/latest/guides/subscribers/#delayed-redelivery)。
+副本经由哪个发布者离开，是挂载链上的一个位置，每次注册用 `out_retry` 接一次：
+
+```rust
+--8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_retry.rs:mount"
+```
+
+运行时随后确认这次投递，并在延迟之后发布消息的一个副本。没有这个发布者，延迟就丢掉了，消息立刻
+重新入队，运行时给出告警。
+
+这个位置就是一个普通的 `Out` 槽位，所以它后面接 `.codec(..)`、`.transform(..)` 和
+`.map_publisher(..)`。副本带的是投递自己的字节，所以这里点名的编解码器只解析该位置，不编码任何
+东西，而各个转换会在副本上跑。链上再没有别的地方看得到它，所以转换是服务给自己的重新投递打标记
+的唯一去处。
 
 副本进的是订阅所绑定的那个主题，绝不是订阅名：在 Pub/Sub 上，一次发布寻址的是主题。
 `GooglePubSub` 报告的正是这个主题：`create_with_topic` 指定的那个，或者对按基础设施管理的订阅，
 API 报告的那个，启动时问一次。用纯字符串声明的处理器报告不出主题，因为订阅名到不了任何地方，
-所以在 `#[subscriber("orders-workers")]` 上接了 `retry_via` 的作用域会拒绝启动，并点名这条订阅。
+所以在 `#[subscriber("orders-workers")]` 上接了 `out_retry` 的注册会拒绝启动，并点名这条订阅。
 改用 `GooglePubSub::new("orders-workers")` 声明该处理器就修好了。
 
 ### 精确一次确认 { #exactly-once-acknowledgement }
@@ -165,7 +176,7 @@ API 报告的那个，启动时问一次。用纯字符串声明的处理器报�
 
 不点名键的主体两样都不需要，它按挂载点固定的键发送。
 
-回复没有调用点，所以它的键来自策略：`.out(Reply, Publish::default().ordering_key("receipts"))`。
+回复没有调用点，所以它的键来自策略：`.out_reply(Publish::default().ordering_key("receipts"))`。
 每条回复各不相同的键，交给挂载链上的 `.transform(..)`：它读取投递，写入回复的 `partition-key`
 消息头。
 
@@ -184,13 +195,13 @@ Pub/Sub 消息。
 ## 发布 { #publishing }
 
 `PubSubPublish` 是构造发布者 `PubSubPublisher` 的策略，运行时在启动时在已连接的 Broker 上实例化
-它。它也是该 Broker 的默认策略，所以挂载时没有调用 `.out(Reply, ..)` 的回复型处理器就经由它发布。
+它。它也是该 Broker 的默认策略，所以挂载时没有调用 `.out_reply(..)` 的回复型处理器就经由它发布。
 
 装处理器主体的文件只导入框架的 prelude，并用一个能力约束它的槽位：`Out(out): Out<impl Publisher>`。
 这样的文件不点名任何 Broker。例外是逐条点名[排序键](#ordering-keys)的主体。
 
 路由文件导入 `ruststream_gcp_pubsub::prelude::*`，策略在那里以挂载点名字 `Publish` 出现：回复型
-处理器返回的值用 `.out(Reply, Publish::default())`，`Out` 槽位用
+处理器返回的值用 `.out_reply(Publish::default())`，`Out` 槽位用
 `.out(Marker, Publish::default())`，整个槽位都有序时在策略上用 `.ordering_key(..)`。
 `PubSubPublish` 留在 crate 根部，供同时对两个 Broker 说话、必须讲清指的是哪一个的文件使用。
 

@@ -24,7 +24,9 @@ async fn handle(order: &Order) -> HandlerOutcome {
 fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         PubSubBroker::new("my-project").emulator("localhost:8085"),
-        |b| b.include(handle),
+        |b| {
+            b.include(handle);
+        },
     )
 }
 // --8<-- [end:app]

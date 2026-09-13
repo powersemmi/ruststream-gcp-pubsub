@@ -35,8 +35,10 @@ async fn settle(orders: &[Order]) -> HandlerOutcome {
 fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         PubSubBroker::new("my-project").emulator("localhost:8085"),
-        // At most 50 orders reach the handler per call.
-        |b| b.include(settle.batch(nonzero!(50))),
+        |b| {
+            // At most 50 orders reach the handler per call.
+            b.include(settle.batch(nonzero!(50)));
+        },
     )
 }
 // --8<-- [end:app]

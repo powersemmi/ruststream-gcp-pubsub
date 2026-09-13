@@ -134,18 +134,29 @@ policy the delivery-attempt count is delivered as the `pubsub-delivery-attempt` 
 `DELIVERY_ATTEMPT_HEADER`), and a handler can branch on how many times a message has come back.
 
 Pub/Sub has no delayed nack, so `HandlerOutcome::retry_after(delay)` runs on the runtime's
-[deferred re-publish](https://powersemmi.github.io/ruststream/latest/guides/subscribers/#delayed-redelivery):
-wire a publisher on the scope with `retry_via`, taking it from `b.broker().publisher()`. The runtime
-then acknowledges the delivery and publishes a copy of the message after the delay. Without that
-publisher the delay is dropped, the message is requeued at once, and the runtime warns.
+[deferred re-publish](https://powersemmi.github.io/ruststream/latest/guides/subscribers/#delayed-redelivery).
+The publisher that copy leaves through is a position on the mount chain, bound once for the
+registration with `out_retry`:
+
+```rust
+--8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_retry.rs:mount"
+```
+
+The runtime then acknowledges the delivery and publishes a copy of the message after the delay.
+Without that publisher the delay is dropped, the message is requeued at once, and the runtime warns.
+
+The position is an `Out` slot like any other, so `.codec(..)`, `.transform(..)` and
+`.map_publisher(..)` follow it. The copy carries the delivery's own bytes, so a codec named there
+encodes nothing while the transforms run on the copy. Nothing else on the chain sees it, which
+makes a transform the one place a service marks a redelivery of its own.
 
 The copy goes to the topic the subscription is bound to, never to the subscription name: a publish
 on Pub/Sub addresses a topic. `GooglePubSub` reports that topic - the one `create_with_topic` names,
 or the one the API reports for a subscription managed as infrastructure, asked once at startup.
 A handler declared with a plain string cannot report one, because a subscription name reaches
-nothing, so a scope that wires `retry_via` over `#[subscriber("orders-workers")]` refuses to start
-and names the subscription. Declaring that handler with `GooglePubSub::new("orders-workers")` is the
-fix.
+nothing, so a registration that binds `out_retry` over `#[subscriber("orders-workers")]` refuses to
+start and names the subscription. Declaring that handler with `GooglePubSub::new("orders-workers")`
+is the fix.
 
 ### Exactly-once acknowledgement
 
@@ -183,7 +194,7 @@ is the one place a body names the broker it runs on:
 
 A body that names no key needs neither, and sends under whatever the mount site fixed.
 
-A reply carries no call site, so its key is the policy's: `.out(Reply, Publish::default().ordering_key("receipts"))`.
+A reply carries no call site, so its key is the policy's: `.out_reply(Publish::default().ordering_key("receipts"))`.
 A key that differs per reply is a mount-chain `.transform(..)`, which reads the delivery and writes
 the reply's `partition-key` header.
 
@@ -205,14 +216,14 @@ non-Rust peer sees an ordinary Pub/Sub message.
 
 `PubSubPublish` is the policy that constructs the publisher `PubSubPublisher`, and the runtime
 instantiates it at startup on the connected broker. It is also the broker's default policy, so a
-replying handler mounted without an `.out(Reply, ..)` call publishes through it.
+replying handler mounted without an `.out_reply(..)` call publishes through it.
 
 A file of handler bodies imports the framework's prelude alone and bounds its slot with a
 capability: `Out(out): Out<impl Publisher>`. Such a file names no broker. The exception is a body
 that names an [ordering key](#ordering-keys) per message.
 
 A routes file imports `ruststream_gcp_pubsub::prelude::*`, where the policy arrives under the
-mount-site name `Publish`: `.out(Reply, Publish::default())` for the value a replying handler
+mount-site name `Publish`: `.out_reply(Publish::default())` for the value a replying handler
 returns, `.out(Marker, Publish::default())` for an `Out` slot, and `.ordering_key(..)` on the policy
 where the whole slot is ordered. `PubSubPublish` stays at the crate root for a file that speaks to
 two brokers at once and has to say which one it means.

@@ -1,6 +1,6 @@
-//! Four things a service asserts on the stand-in: the ordering step through an `Out` slot, a
-//! batch handler, where a returned reply lands, and the subscription descriptor it declares its
-//! handlers with.
+//! Five things a service asserts on the stand-in: the ordering step through an `Out` slot, a
+//! batch handler, where a returned reply lands, the subscription descriptor it declares its
+//! handlers with, and where a deferred retry goes.
 //!
 //! The step is a position on the publish builder, so a keyed publish is still the slot's: it keeps
 //! the slot's attribution, the codec the mount site named, and the key the call asked for. A step
@@ -16,13 +16,21 @@
 //! editing to be mounted here: the same `GooglePubSub` that opens a streaming pull opens an
 //! in-process subscription, and the same `Publish` policy that reaches Pub/Sub pairs with the
 //! stand-in.
+//!
+//! A delay Pub/Sub cannot carry is the last one: `retry_after` becomes a copy the runtime
+//! publishes to the address the subscription reports, and the mount site names the publisher it
+//! leaves through.
 
 #![cfg(feature = "testing")]
 
 use std::time::Duration;
 
 use ruststream::codec::CborCodec;
-use ruststream::runtime::{Out, PublishError};
+// `Outgoing` is the derive at the crate root and the publish pipeline's message type in
+// `runtime`; a publish transform names the second one.
+use ruststream::runtime::{
+    Out, Outgoing as OutgoingMessage, PublishError, RETRY_COUNT_HEADER, SlotContext,
+};
 use ruststream::testing::TestApp;
 use ruststream::{ConnectedBroker as _, Outgoing, SubscriptionSource as _};
 use ruststream_gcp_pubsub::prelude::*;
@@ -388,7 +396,7 @@ async fn the_routes_file_a_service_ships_mounts_on_the_stand_in() {
         // descriptor on the subscribe side, the policy under its mount-site name on the publish
         // side. Neither has a test-only spelling to swap in.
         |b| {
-            b.include(plan).out(Reply, Publish::default());
+            b.include(plan).out_reply(Publish::default());
         },
     );
     let tb = TestApp::start(app)
@@ -504,4 +512,90 @@ async fn publishing_after_shutdown_errors() {
         matches!(err, PublishError::Publish(PubSubError::NotConnected)),
         "got {err}"
     );
+}
+
+/// A payment the upstream settles late, so the first delivery asks for another attempt.
+#[derive(Debug, PartialEq, Serialize, Deserialize, Outgoing)]
+struct Payment {
+    id: u64,
+}
+
+/// The delay a deferred copy waits out before it comes back.
+const RETRY_DELAY: Duration = Duration::from_secs(5);
+
+/// Stamps every message leaving the slot it is mounted on with that slot's name. The retry
+/// position is an ordinary `Out` slot, so a transform there reads what any slot transform reads.
+#[derive(Debug, Clone, Copy)]
+struct DeferredStamp;
+
+impl<Options> PublishTransform<ForSlot, Options> for DeferredStamp {
+    type Destination = Reads;
+
+    fn apply(
+        &self,
+        out: &mut OutgoingMessage<'_>,
+        _options: &mut Option<Options>,
+        cx: &SlotContext<'_>,
+    ) {
+        out.headers_mut()
+            .insert("x-left-through", cx.slot().to_owned());
+    }
+}
+
+/// Defers the first delivery and settles the copy, which the retry count is what tells apart.
+#[subscriber(GooglePubSub::new("payments-workers"))]
+async fn reconcile(payment: &Payment, ctx: &mut Context<'_>) -> HandlerOutcome {
+    let _ = payment.id;
+    if ctx.headers().get_str(RETRY_COUNT_HEADER).is_none() {
+        return HandlerOutcome::retry_after(RETRY_DELAY);
+    }
+    HandlerOutcome::ack()
+}
+
+/// Pub/Sub has no delayed nack, so the delay is a copy the runtime publishes to the address the
+/// subscription reports. The publisher it leaves through is the mount site's to name, and the
+/// steps on that position apply to the copy: the transform here is the only place a service can
+/// mark one, since nothing else on the chain sees it.
+///
+/// The clock is paused rather than multi-threaded because the delay is what the case is about;
+/// `advance` fires the redelivery that is due instead of waiting five seconds for it.
+#[tokio::test(start_paused = true)]
+async fn a_transform_on_the_retry_position_stamps_the_deferred_copy() {
+    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
+        PubSubTestBroker::new(),
+        |b| {
+            b.include(reconcile)
+                .out_retry(Publish::default())
+                .transform(DeferredStamp);
+        },
+    );
+    let tb = TestApp::start(app)
+        .await
+        .expect("the harness starts the app");
+
+    tb.broker::<PubSubTestBroker>()
+        .message(&Payment { id: 3 })
+        .to("payments-workers")
+        .publish()
+        .await
+        .expect("the harness accepts the injection");
+    tb.advance(RETRY_DELAY).await.expect("the copy comes back");
+
+    // The stand-in routes by the subscription name, so that is the address it reports and the
+    // address the copy is published to; against Pub/Sub it is the topic behind the subscription.
+    // Two publishes land there: the test's own injection, then the copy, which is the one the
+    // assertions below read.
+    tb.broker::<PubSubTestBroker>()
+        .published::<Payment>("payments-workers")
+        .assert_called(2)
+        .with(&Payment { id: 3 })
+        .with_header("x-left-through", "Retry");
+
+    // And the copy is a delivery like any other: the handler ran twice and settled the second.
+    tb.broker::<PubSubTestBroker>()
+        .subscriber("payments-workers")
+        .assert_called(2)
+        .settled(HandlerOutcome::ack());
+
+    tb.shutdown().await.expect("graceful shutdown");
 }
