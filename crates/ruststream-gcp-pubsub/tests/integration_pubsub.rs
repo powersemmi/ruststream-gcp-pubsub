@@ -178,40 +178,37 @@ async fn the_ordering_step_and_the_policy_default_reach_the_product() {
     connected.shutdown().await.expect("shutdown succeeds");
 }
 
-/// What the mount site declares becomes the subscription's own dead-letter policy: the service
-/// gives one message the declared number of deliveries and then publishes it to the declared
-/// topic. Nothing in this process moves it, which is the whole of what `BrokerMoves` means.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_declaration_becomes_the_subscriptions_dead_letter_policy() {
-    let Some(host) = test_host() else { return };
-    let connected = connect(&host).await;
-
-    let topic = unique("dlq-topic");
-    let workers = unique("dlq-workers");
-    let dead_letter = unique("dlq-dead");
-    let watcher = unique("dlq-watcher");
-
+/// Runs one message past the declared cap on `workers` and returns what reached `dead_letter`.
+///
+/// The declared number of deliveries is spent one by one, each checked for the count the service
+/// reports, and the last is settled the way the runtime settles a delivery whose attempts are
+/// gone.
+async fn dead_letters_a_spent_delivery(
+    connected: &ConnectedPubSubBroker,
+    topic: &str,
+    workers: GooglePubSub,
+    dead_letter: &str,
+) {
     let declaration = RetryDeclaration::new()
         .with_max_attempts(nonzero!(MAX_ATTEMPTS))
-        .with_dead_letter(dead_letter.clone());
-    let source = SubscriptionSource::<ConnectedPubSubBroker>::declare_retry(
-        GooglePubSub::new(&workers).create_with_topic(&topic),
-        &declaration,
-    );
-    let mut subscriber = source
-        .subscribe(&connected)
-        .await
-        .expect("the subscription opens with the declared dead-letter policy");
+        .with_dead_letter(dead_letter.to_owned());
+    let mut subscriber =
+        SubscriptionSource::<ConnectedPubSubBroker>::declare_retry(workers, &declaration)
+            .subscribe(connected)
+            .await
+            .expect("the subscription opens with the declared dead-letter policy");
     // The declaration created the dead-letter topic, so a subscription on it sees what lands
     // there.
     let mut dead = connected
-        .subscribe_descriptor(GooglePubSub::new(&watcher).create_with_topic(&dead_letter))
+        .subscribe_descriptor(
+            GooglePubSub::new(format!("{dead_letter}-watcher")).create_with_topic(dead_letter),
+        )
         .await
         .expect("the dead-letter subscription opens");
 
     connected
         .publisher()
-        .publish(OutgoingMessage::new(&topic, b"poison".as_slice()), None)
+        .publish(OutgoingMessage::new(topic, b"poison".as_slice()), None)
         .await
         .expect("publish succeeds");
 
@@ -240,6 +237,56 @@ async fn the_declaration_becomes_the_subscriptions_dead_letter_policy() {
         .expect("delivery is ok");
     assert_eq!(carried.payload(), b"poison");
     carried.ack().await.expect("ack succeeds");
+}
+
+/// What the mount site declares becomes the subscription's own dead-letter policy: the service
+/// gives one message the declared number of deliveries and then publishes it to the declared
+/// topic. Nothing in this process moves it, which is the whole of what `BrokerMoves` means.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_created_subscription_opens_with_the_declared_dead_letter_policy() {
+    let Some(host) = test_host() else { return };
+    let connected = connect(&host).await;
+
+    let topic = unique("dlq-topic");
+    let workers = unique("dlq-workers");
+    let dead_letter = unique("dlq-dead");
+
+    dead_letters_a_spent_delivery(
+        &connected,
+        &topic,
+        GooglePubSub::new(&workers).create_with_topic(&topic),
+        &dead_letter,
+    )
+    .await;
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// A subscription managed as infrastructure is already there when the service starts, so the
+/// declaration reaches it as an update instead of riding the create. The message it moves is the
+/// same one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_existing_subscription_takes_the_declaration_as_an_update() {
+    let Some(host) = test_host() else { return };
+    let connected = connect(&host).await;
+
+    let topic = unique("update-topic");
+    let workers = unique("update-workers");
+    let dead_letter = unique("update-dead");
+
+    // The subscription exists before anything is declared, which is the production shape.
+    connected
+        .subscribe_descriptor(GooglePubSub::new(&workers).create_with_topic(&topic))
+        .await
+        .expect("the subscription is created without a policy");
+
+    dead_letters_a_spent_delivery(
+        &connected,
+        &topic,
+        GooglePubSub::new(&workers).create_with_topic(&topic),
+        &dead_letter,
+    )
+    .await;
 
     connected.shutdown().await.expect("shutdown succeeds");
 }
