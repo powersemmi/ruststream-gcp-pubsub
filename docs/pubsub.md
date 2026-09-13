@@ -195,14 +195,22 @@ is the one place a body names the broker it runs on:
 A body that names no key needs neither, and sends under whatever the mount site fixed.
 
 A reply carries no call site, so its key is the policy's: `.out_reply(Publish::default().ordering_key("receipts"))`.
-A key that differs per reply is a mount-chain `.transform(..)`, which reads the delivery and writes
-the reply's `partition-key` header.
+A key that differs per reply is a transform on the reply position, which reads the delivery and
+writes the setting:
+
+```rust
+--8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_ordered_publish.rs:reply_key"
+```
+
+It goes on the chain as `.out_reply(Publish::default()).transform(ReplyUnderTheOrdersKey)`. A
+transform that writes a setting names the settings type it writes, so the mount site takes it over a
+Pub/Sub publisher and names both types where someone mounts it over another broker's.
 
 On the delivery side the framework's partition key *is* the ordering key: a delivery reports it with
 `message.partition_key()` and under the `partition-key` header (exported as `PARTITION_KEY_HEADER`),
-so a handler that reads keys imports nothing from this crate. That header is the same key on the way
-out too, for a service written against no particular broker: writing it on an outgoing message
-orders that message, and a call that names the step wins over it. It never travels as an attribute.
+so a handler that reads keys imports nothing from this crate. That direction is a report: the key of
+an outgoing message is a setting, so writing the header on one orders nothing, and it never travels
+as an attribute.
 
 Ordered delivery needs message ordering enabled on the subscription. A regional `endpoint` is what
 keeps one key in order across publishers in a region. A publish that returns an error on an ordered
@@ -285,6 +293,9 @@ the stand-in as it pairs with the broker. Neither side has a test-only spelling 
 reads back the key one publish through a slot asked for, and `assert_options_default()` states that
 a publish named none and took the mount site's. The key also reaches the published message, under
 the `partition-key` header a delivery reports it by, so either assertion works.
+
+A reply is read back the same way, on the channel it landed on:
+`published::<Receipt>("receipts").with_options(..)` is what holds a transform to the key it wrote.
 
 The stand-in routes by one address, the subscription name, because it holds no topics. A test
 therefore injects to the subscription, not to the topic. `batch_wait` is honoured, since batching is

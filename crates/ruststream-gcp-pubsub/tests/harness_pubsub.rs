@@ -20,19 +20,22 @@
 //! A delay Pub/Sub cannot carry is the last one: `retry_after` becomes a copy the runtime
 //! publishes to the address the subscription reports, and the mount site names the publisher it
 //! leaves through.
+//!
+//! A reply has no call site to name its key, so a transform on the reply position writes the
+//! setting instead, and the harness reads back what it wrote.
 
 #![cfg(feature = "testing")]
 
 use std::time::Duration;
 
 use ruststream::codec::CborCodec;
-// `Outgoing` is the derive at the crate root and the publish pipeline's message type in
-// `runtime`; a publish transform names the second one.
+// `Outgoing` names the derive at the crate root and the publish pipeline's message type in
+// `runtime`; a publish transform takes the second one, and the two live in different namespaces.
 use ruststream::runtime::{
-    Out, Outgoing as OutgoingMessage, PublishError, RETRY_COUNT_HEADER, SlotContext,
+    Out, Outgoing, PublishContext, PublishError, RETRY_COUNT_HEADER, SlotContext,
 };
 use ruststream::testing::TestApp;
-use ruststream::{ConnectedBroker as _, Outgoing, SubscriptionSource as _};
+use ruststream::{ConnectedBroker as _, HeaderMap, Outgoing, SubscriptionSource as _};
 use ruststream_gcp_pubsub::prelude::*;
 use ruststream_gcp_pubsub::testing::PubSubTestBroker;
 use ruststream_gcp_pubsub::{PARTITION_KEY_HEADER, PubSubError};
@@ -531,12 +534,7 @@ struct DeferredStamp;
 impl<Options> PublishTransform<ForSlot, Options> for DeferredStamp {
     type Destination = Reads;
 
-    fn apply(
-        &self,
-        out: &mut OutgoingMessage<'_>,
-        _options: &mut Option<Options>,
-        cx: &SlotContext<'_>,
-    ) {
+    fn apply(&self, out: &mut Outgoing<'_>, _options: &mut Option<Options>, cx: &SlotContext<'_>) {
         out.headers_mut()
             .insert("x-left-through", cx.slot().to_owned());
     }
@@ -596,6 +594,84 @@ async fn a_transform_on_the_retry_position_stamps_the_deferred_copy() {
         .subscriber("payments-workers")
         .assert_called(2)
         .settled(HandlerOutcome::ack());
+
+    tb.shutdown().await.expect("graceful shutdown");
+}
+
+/// The receipt an order gets back, under the key of the order it answers.
+#[derive(Debug, PartialEq, Serialize, Deserialize, Outgoing)]
+#[outgoing(name = "order-receipts")]
+struct KeyedReceipt {
+    id: u64,
+}
+
+/// Sends each receipt under the key of the order it answers, read off the delivery. A transform
+/// that writes a setting names the settings type it writes, so it mounts over a Pub/Sub publisher
+/// and over no other broker's.
+#[derive(Debug, Clone, Copy)]
+struct ReplyUnderTheOrdersKey;
+
+impl<C> PublishTransform<ForReply<C>, PubSubPublishOptions> for ReplyUnderTheOrdersKey {
+    type Destination = Reads;
+
+    fn apply(
+        &self,
+        _out: &mut Outgoing<'_>,
+        options: &mut Option<PubSubPublishOptions>,
+        cx: &PublishContext<'_, C>,
+    ) {
+        if let Some(key) = cx.headers().get_str(PARTITION_KEY_HEADER) {
+            options
+                .get_or_insert_with(PubSubPublishOptions::default)
+                .ordering_key = Some(key.to_owned());
+        }
+    }
+}
+
+/// Answers an order with its receipt.
+#[subscriber("orders-keyed", publish)]
+async fn keyed_receipt(order: &Order) -> KeyedReceipt {
+    KeyedReceipt { id: order.id }
+}
+
+/// A reply carries no call site, so a key that differs per reply is a transform's to write: it
+/// reads the delivery and fills the message's settings, which is where a setting belongs. The
+/// harness reads the value back as this broker's own type, so the assertion holds the transform
+/// to the setting rather than to a header that happens to travel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_transform_on_the_reply_names_the_ordering_key() {
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+        PubSubTestBroker::new(),
+        |b| {
+            b.include(keyed_receipt)
+                .out_reply(Publish::default())
+                .transform(ReplyUnderTheOrdersKey);
+        },
+    );
+    let tb = TestApp::start(app)
+        .await
+        .expect("the harness starts the app");
+
+    let mut headers = HeaderMap::new();
+    headers.insert(PARTITION_KEY_HEADER, "order-7");
+    tb.broker::<PubSubTestBroker>()
+        .message(&Order { id: 7 })
+        .with_headers(headers)
+        .to("orders-keyed")
+        .publish()
+        .await
+        .expect("the harness accepts the injection");
+    tb.settle().await.expect("the handler settles");
+
+    tb.broker::<PubSubTestBroker>()
+        .published::<KeyedReceipt>("order-receipts")
+        .assert_called_once()
+        .with(&KeyedReceipt { id: 7 })
+        .with_options(&PubSubPublishOptions {
+            ordering_key: Some("order-7".to_owned()),
+        })
+        // And the publisher resolved it: the stand-in reports the key where a delivery does.
+        .with_header(PARTITION_KEY_HEADER, "order-7");
 
     tb.shutdown().await.expect("graceful shutdown");
 }

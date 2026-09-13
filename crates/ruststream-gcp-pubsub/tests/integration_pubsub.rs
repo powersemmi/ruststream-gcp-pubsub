@@ -14,7 +14,7 @@ use ruststream::{
 };
 use ruststream_gcp_pubsub::{
     ConnectedPubSubBroker, GooglePubSub, PARTITION_KEY_HEADER, PubSubBroker, PubSubOrdering,
-    PubSubPublish,
+    PubSubPublish, PubSubPublishOptions,
 };
 
 mod live;
@@ -58,12 +58,13 @@ async fn roundtrip_preserves_payload_attributes_and_partition_key() {
     let mut headers = HeaderMap::new();
     headers.insert("content-type", "application/json");
     headers.insert("x-tenant", "acme");
-    headers.insert(PARTITION_KEY_HEADER, "user-42");
     let publisher = connected.publisher();
     publisher
         .publish(
             OutgoingMessage::new(&name, b"{\"id\":1}".as_slice()).with_headers(headers),
-            None,
+            Some(&PubSubPublishOptions {
+                ordering_key: Some("user-42".to_owned()),
+            }),
         )
         .await
         .expect("publish succeeds");
@@ -82,6 +83,46 @@ async fn roundtrip_preserves_payload_attributes_and_partition_key() {
     );
     assert_eq!(message.headers().get_str("x-tenant"), Some("acme"));
     assert_eq!(message.partition_key(), Some(b"user-42".as_slice()));
+    message.ack().await.expect("ack succeeds");
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// The `partition-key` header is what a delivery reports its key under, not a way to ask for one.
+/// A message carrying it and no setting arrives unordered, and the name never reaches the
+/// attributes, so a header forwarded from one delivery cannot be read back as the next message's
+/// key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_partition_key_header_does_not_order_a_publish() {
+    let Some(host) = test_host() else { return };
+    let connected = connect(&host).await;
+
+    let name = unique("header-key");
+    let mut subscriber = connected
+        .subscribe_descriptor(GooglePubSub::new(&name).create_with_topic(&name))
+        .await
+        .expect("subscription opens");
+
+    let mut headers = HeaderMap::new();
+    headers.insert(PARTITION_KEY_HEADER, "user-42");
+    let publisher = connected.publisher();
+    publisher
+        .publish(
+            OutgoingMessage::new(&name, b"unordered".as_slice()).with_headers(headers),
+            None,
+        )
+        .await
+        .expect("publish succeeds");
+
+    let mut stream = pin!(subscriber.stream());
+    let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("delivery arrives")
+        .expect("stream is open")
+        .expect("delivery is ok");
+
+    assert_eq!(message.payload(), b"unordered");
+    assert_eq!(message.partition_key(), None);
     message.ack().await.expect("ack succeeds");
 
     connected.shutdown().await.expect("shutdown succeeds");

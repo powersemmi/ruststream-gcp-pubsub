@@ -1,17 +1,19 @@
 //! [`PubSubMessage`] and the mapping between `RustStream` headers and Pub/Sub attributes.
 //!
-//! Message attributes carry headers directly - no envelope format is invented - and the
-//! partition key rides the message's ordering key in both directions.
+//! Message attributes carry headers directly - no envelope format is invented - and the framework's
+//! partition key is the message's own ordering key, which a delivery reports back.
 
 use bytes::Bytes;
 use google_cloud_pubsub::model::Message as GcpMessage;
 use google_cloud_pubsub::subscriber::handler::Handler;
 use ruststream::{AckError, HeaderMap, IncomingMessage, OutgoingMessage, Partitioned};
 
-/// Header carrying the partition key, mapped onto the message's ordering key.
+/// Header a delivery reports its ordering key under, which is the framework's partition key.
 ///
-/// Mirrors the in-memory broker's convention, so services can switch brokers without changing
-/// their headers.
+/// Mirrors the in-memory broker's convention, so a handler reading keys works on either broker.
+/// It is a report, not an instruction: the key of an outgoing message is a per-message setting
+/// ([`PubSubPublishOptions`](crate::PubSubPublishOptions)), and writing this header on one orders
+/// nothing.
 pub const PARTITION_KEY_HEADER: &str = "partition-key";
 
 /// Header exposing the delivery attempt count on received messages, present when the
@@ -116,9 +118,9 @@ impl IncomingMessage for PubSubMessage {
 /// Builds the Pub/Sub message for an outgoing publish under `ordering_key`, the key the publisher
 /// resolved for it.
 ///
-/// The `partition-key` header never travels as an attribute: it is this transport's other spelling
-/// of the ordering key, the publisher has already read it, and a delivery reports the key back
-/// under that same name.
+/// The `partition-key` header never travels as an attribute: the name belongs to the message's own
+/// ordering key, which a delivery reports under it, so a header copied off one delivery cannot be
+/// mistaken downstream for the key of a message that carries none.
 pub(crate) fn to_gcp_message(msg: &OutgoingMessage<'_>, ordering_key: Option<&str>) -> GcpMessage {
     let headers = msg.headers();
     let mut attributes: Vec<(String, String)> = Vec::with_capacity(headers.len());
@@ -146,7 +148,9 @@ mod tests {
     #[test]
     fn the_resolved_key_becomes_the_messages_ordering_key() {
         let mut headers = HeaderMap::new();
-        headers.insert(PARTITION_KEY_HEADER, "user-42");
+        // What a handler forwarding a delivery's headers carries along. It is a report of the
+        // delivery's key, not an instruction, so it says nothing about this publish.
+        headers.insert(PARTITION_KEY_HEADER, "the-delivery-this-answers");
         headers.insert("x-tenant", "acme");
         let outgoing = OutgoingMessage::new("orders", b"{}".as_slice()).with_headers(headers);
 
@@ -156,7 +160,8 @@ mod tests {
             message.attributes.get("x-tenant").map(String::as_str),
             Some("acme")
         );
-        // The key is a field of the message, so it must not be duplicated as an attribute.
+        // The name belongs to the message's own field, so a copied header must not reach the
+        // attributes and be read back downstream as this message's key.
         assert!(!message.attributes.contains_key(PARTITION_KEY_HEADER));
     }
 

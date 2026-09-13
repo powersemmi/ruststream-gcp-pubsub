@@ -177,13 +177,20 @@ API 报告的那个，启动时问一次。用纯字符串声明的处理器报�
 不点名键的主体两样都不需要，它按挂载点固定的键发送。
 
 回复没有调用点，所以它的键来自策略：`.out_reply(Publish::default().ordering_key("receipts"))`。
-每条回复各不相同的键，交给挂载链上的 `.transform(..)`：它读取投递，写入回复的 `partition-key`
-消息头。
+每条回复各不相同的键，交给回复位置上的一个转换：它读取投递，写入这条消息的设置。
+
+```rust
+--8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_ordered_publish.rs:reply_key"
+```
+
+它在链上写作 `.out_reply(Publish::default()).transform(ReplyUnderTheOrdersKey)`。写设置的转换会
+点名它所写的设置类型，所以挂载点在 Pub/Sub 发布者之上接受它，在别家 Broker 的发布者之上则把两个
+类型都点出来。
 
 在投递这一侧，框架的分区键*就是*排序键：一次投递通过 `message.partition_key()` 报告它，也在
 `partition-key` 消息头下报告它（导出为 `PARTITION_KEY_HEADER`），因此读取键的处理器不需要从本
-crate 导入任何东西。对不针对具体 Broker 编写的服务来说，这个消息头在发送方向上也是同一个键：把它
-写到一条外发消息上，这条消息就有序了，而点名步骤的调用优先于它。它绝不会作为属性传输。
+crate 导入任何东西。这个方向只是报告：外发消息的键是一项设置，所以在外发消息上写这个消息头不会让
+它有序。它绝不会作为属性传输。
 
 有序投递需要在订阅上开启消息排序。要让一个键在一个区域内跨多个发布者保持有序，靠的是区域性的
 `endpoint`。在有序键上返回错误的发布会在客户端把该键暂停；本 crate 会恢复该键并返回错误，因此
@@ -259,6 +266,9 @@ just test-brokers  # 启动模拟器，跑集成套件和 conformance 套件
 读回某次经槽位的发布所要求的键，`assert_options_default()` 则说明这次发布没有点名键，用的是挂载点
 的键。这个键也会进到已发布的消息里，就在投递报告它所用的那个 `partition-key` 消息头下，所以两种
 断言都可用。
+
+回复也这么读回，只是读的是它落到的那个通道：`published::<Receipt>("receipts").with_options(..)`
+就是把转换按它写下的键卡住的那一条。
 
 进程内传输只按一个地址路由，也就是订阅名，因为它不持有主题。因此测试注入的是订阅，而不是主题。
 `batch_wait` 生效，因为攒批次本来就在客户端。`create_with_topic` 无物可建，`max_outstanding` 和
