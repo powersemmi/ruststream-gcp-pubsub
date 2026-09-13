@@ -19,6 +19,9 @@ default = []
 # The in-process test broker (TestableBroker + TestApp support). The conformance harness is a
 # broker-author tool and stays in this repo's dev-dependencies, not in the user-facing feature.
 testing = ["ruststream/testing"]
+# What this broker adds to the generated AsyncAPI document: the `googlepubsub` bindings a publish
+# policy can state without a connection.
+asyncapi = ["ruststream/asyncapi", "dep:serde"]
 
 [dependencies]
 ruststream = { workspace = true, default-features = false }
@@ -30,6 +33,9 @@ futures.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+# Only a binding body is serialized here, and only under `asyncapi`: the crate carries no message
+# format of its own.
+serde = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
 # `cbor` is a second codec and nothing else: a test that names it proves a publish carries the
@@ -42,4 +48,7 @@ ruststream = { workspace = true, features = [
     "cbor",
 ] }
 serde = { version = "1", features = ["derive"] }
+# The generated document is read back as JSON, so a test asserts on fields rather than on a
+# rendered string.
+serde_json = "1"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

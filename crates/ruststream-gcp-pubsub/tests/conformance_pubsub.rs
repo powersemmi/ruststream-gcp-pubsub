@@ -7,9 +7,11 @@
 //!
 //! Which suites those are follows from what the crate implements: the routing suite and the
 //! lifecycle everywhere, [`capabilities::batches`] because both subscribers are
-//! `BatchSubscriber`. Request/reply, transactions and seeking have no impl here, so their suites
-//! have nothing to run against; `Partitioned` is covered by the integration tests, the framework
-//! shipping no suite for it.
+//! `BatchSubscriber`, and the credential scan because the broker describes itself. Request/reply,
+//! transactions and seeking have no impl here, so their suites have nothing to run against;
+//! `Partitioned` is covered by the integration tests, the framework shipping no suite for it.
+//! `harness::redelivery_address` has nothing to check either: a Pub/Sub subscription moves a
+//! spent delivery itself, so no descriptor here publishes a copy and none reports an address.
 //!
 //! Start the emulator with `just brokers-up`, then:
 //! `PUBSUB_TEST_HOST=127.0.0.1:8085 cargo test --all-features`.
@@ -80,6 +82,18 @@ async fn pubsub_broker_passes_lifecycle() {
         |connected| connected.publisher(),
     )
     .await;
+}
+
+/// The document a service publishes is shared, so a password written into an endpoint must not
+/// reach it - neither the server description nor a binding body.
+#[cfg(feature = "asyncapi")]
+#[test]
+fn pubsub_broker_describes_itself_without_credentials() {
+    harness::describes_without_credentials(
+        &PubSubBroker::new(TEST_PROJECT).endpoint("https://admin:hunter2@pubsub.example.com:443"),
+        &GooglePubSub::new("orders-workers"),
+        "hunter2",
+    );
 }
 
 /// The same contract against the product itself, where the deliveries the buffer batches come

@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
+#[cfg(feature = "asyncapi")]
+use ruststream::asyncapi::Bindings;
 use ruststream::testing::{Coordinator, TestableBroker};
 use ruststream::{
     Broker, BrokerMoves, ConnectedBroker, DefaultPublish, OutgoingMessage, PairError,
@@ -282,6 +284,13 @@ impl PublishPolicy<ConnectedPubSubTestBroker> for PubSubPublish {
         let mut publisher = connected.publisher();
         publisher.default_ordering_key = self.default_key();
         ready(Ok(publisher))
+    }
+
+    /// The same binding the product's policy writes, so a document built over the stand-in reads
+    /// like the one the service ships.
+    #[cfg(feature = "asyncapi")]
+    fn message_bindings(&self) -> Bindings {
+        self.message_binding()
     }
 }
 

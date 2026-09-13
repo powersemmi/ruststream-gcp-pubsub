@@ -7,8 +7,12 @@ use std::future::{Future, ready};
 use std::sync::Arc;
 
 use google_cloud_pubsub::client::Publisher as GcpPublisher;
+#[cfg(feature = "asyncapi")]
+use ruststream::asyncapi::{Binding, Bindings};
 use ruststream::runtime::{PublishBuilder, PublishSink};
 use ruststream::{OutgoingMessage, PairError, PublishPolicy, Publisher};
+#[cfg(feature = "asyncapi")]
+use serde::Serialize;
 
 use crate::broker::{ConnectedPubSubBroker, Core, CoreCell};
 use crate::error::{PubSubError, box_err};
@@ -239,6 +243,24 @@ impl PubSubPublish {
     pub(crate) fn default_key(&self) -> Option<Arc<str>> {
         self.ordering_key.as_deref().map(Arc::from)
     }
+
+    /// What a document can say about the messages this mount site sends.
+    ///
+    /// Only the ordering key, and only where the mount site fixed one: everything else the
+    /// binding describes belongs to the topic resource (its labels, its retention, its storage
+    /// policy, its schema), which no publish policy configures. A key named per message is named
+    /// at a call site, and a call site is not in the document.
+    #[cfg(feature = "asyncapi")]
+    pub(crate) fn message_binding(&self) -> Bindings {
+        let Some(ordering_key) = self.ordering_key.as_deref() else {
+            return Bindings::new();
+        };
+        let body = PubSubMessageBinding { ordering_key };
+        // A binding that fails to build is a binding the document goes without: a broker never
+        // holds up a service over a description of itself.
+        Binding::new("googlepubsub", BINDING_VERSION, &body)
+            .map_or_else(|_| Bindings::new(), |binding| Bindings::new().with(binding))
+    }
 }
 
 impl PublishPolicy<ConnectedPubSubBroker> for PubSubPublish {
@@ -251,6 +273,26 @@ impl PublishPolicy<ConnectedPubSubBroker> for PubSubPublish {
         let key = self.default_key();
         ready(Ok(connected.publisher().with_default_ordering_key(key)))
     }
+
+    /// The ordering key every message through this mount site is sent under, which is the one
+    /// field of the `googlepubsub` binding this crate can state without a connection.
+    #[cfg(feature = "asyncapi")]
+    fn message_bindings(&self) -> Bindings {
+        self.message_binding()
+    }
+}
+
+/// The version of the `googlepubsub` binding this crate writes.
+#[cfg(feature = "asyncapi")]
+const BINDING_VERSION: &str = "0.2.0";
+
+/// The message half of the `googlepubsub` binding: what a publish carries beyond its payload and
+/// its attributes.
+#[cfg(feature = "asyncapi")]
+#[derive(Serialize)]
+struct PubSubMessageBinding<'a> {
+    #[serde(rename = "orderingKey")]
+    ordering_key: &'a str,
 }
 
 #[cfg(test)]
