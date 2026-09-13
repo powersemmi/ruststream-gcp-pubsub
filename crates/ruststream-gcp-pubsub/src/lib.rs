@@ -9,6 +9,9 @@
 //! - A handler taking a slice gets batches: the pull hands over one delivery at a time, so the
 //!   batches are assembled on the client to the size the mount site named, with
 //!   [`GooglePubSub::batch_wait`] closing a partial one.
+//! - A delayed retry is carried by the process: the delivery is held under its lease, which the
+//!   client keeps extending, and rejected when the delay is out.
+//!   [`GooglePubSub::max_lease`] is the budget a delay may spend.
 //! - A retry cap and a dead-letter destination declared at the mount site become the
 //!   subscription's own dead-letter policy: Pub/Sub counts the deliveries of each message and
 //!   carries a spent one away itself, so the service publishes no retry copies.

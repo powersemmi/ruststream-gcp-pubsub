@@ -12,12 +12,22 @@ use ruststream::{
     Subscriber, testing::Coordinator,
 };
 
-use crate::error::PubSubError;
+use crate::error::{PubSubError, box_err};
+use crate::subscription::DeliveryLimits;
 use crate::testing::broker::TestState;
 use crate::testing::router::{
     DeadLetter, Delivery, DeliveryReceiver, DeliverySender, SubscriptionId,
 };
 use crate::{DELIVERY_ATTEMPT_HEADER, PARTITION_KEY_HEADER};
+
+/// What the descriptor said about one stand-in subscription: how long a partial batch waits, the
+/// dead-letter policy the registration declared, and the limits one delivery runs under.
+#[derive(Debug, Clone)]
+pub(crate) struct Declared {
+    pub(crate) batch_wait: Duration,
+    pub(crate) dead_letter: Option<Arc<DeadLetter>>,
+    pub(crate) limits: DeliveryLimits,
+}
 
 /// Subscriber returned by [`ConnectedPubSubTestBroker`](crate::testing::ConnectedPubSubTestBroker).
 ///
@@ -44,9 +54,13 @@ impl PubSubTestSubscriber {
         rx: DeliveryReceiver,
         requeue: DeliverySender,
         coordinator: Option<Coordinator>,
-        batch_wait: Duration,
-        dead_letter: Option<Arc<DeadLetter>>,
+        declared: Declared,
     ) -> Self {
+        let Declared {
+            batch_wait,
+            dead_letter,
+            limits,
+        } = declared;
         Self {
             state: Arc::clone(&state),
             id,
@@ -58,6 +72,7 @@ impl PubSubTestSubscriber {
                 coordinator,
                 state,
                 dead_letter,
+                limits,
             })
             .max_wait(batch_wait),
         }
@@ -107,6 +122,9 @@ struct Deliveries {
     state: Arc<TestState>,
     /// What the registration declared, `None` where it declared nothing.
     dead_letter: Option<Arc<DeadLetter>>,
+    /// The same budget the product's subscription holds a delivery under, so a delay the product
+    /// refuses is refused here too.
+    limits: DeliveryLimits,
 }
 
 impl Subscriber for Deliveries {
@@ -118,6 +136,7 @@ impl Subscriber for Deliveries {
         let coordinator = self.coordinator.clone();
         let state = Arc::clone(&self.state);
         let dead_letter = self.dead_letter.clone();
+        let limits = self.limits;
         // Poll the receiver in place rather than wrapping it in an owning stream, so `stream`
         // can be called again after the returned stream is dropped (the runtime and the
         // conformance helpers re-enter it per call).
@@ -130,6 +149,7 @@ impl Subscriber for Deliveries {
                         coordinator.clone(),
                         Arc::clone(&state),
                         dead_letter.clone(),
+                        limits,
                     ))
                 })
             })
@@ -155,6 +175,7 @@ pub struct PubSubTestMessage {
     /// The subscription's declared dead-letter policy, `None` where the registration declared
     /// nothing and a rejection is the end of the message.
     dead_letter: Option<Arc<DeadLetter>>,
+    limits: DeliveryLimits,
 }
 
 impl Drop for PubSubTestMessage {
@@ -180,6 +201,7 @@ impl PubSubTestMessage {
         coordinator: Option<Coordinator>,
         state: Arc<TestState>,
         dead_letter: Option<Arc<DeadLetter>>,
+        limits: DeliveryLimits,
     ) -> Self {
         // Pub/Sub reports the delivery attempt only under a dead-letter policy, and this crate
         // surfaces it as a header, so the stand-in surfaces the same header under the same
@@ -195,6 +217,7 @@ impl PubSubTestMessage {
             coordinator,
             state,
             dead_letter,
+            limits,
         }
     }
 
@@ -239,6 +262,64 @@ impl IncomingMessage for PubSubTestMessage {
 
     fn ack(mut self) -> impl Future<Output = Result<(), AckError>> {
         self.delivery.take();
+        ready(Ok(()))
+    }
+
+    /// The stand-in answers as the product does, because the crate holds a delayed retry in the
+    /// process on both.
+    fn supports_nack_after(&self) -> bool {
+        true
+    }
+
+    /// Holds the delivery for `delay`, then returns it to the subscription.
+    ///
+    /// Registered with the harness coordinator rather than slept on directly, so a test fires it
+    /// with [`TestApp::advance`](ruststream::testing::TestApp::advance) instead of waiting. The
+    /// delay a subscription cannot outlast is refused here as it is against the product.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AckError::Broker`] carrying
+    /// [`PubSubError::DelayBeyondLease`](crate::PubSubError::DelayBeyondLease) when `delay`
+    /// outlives the subscription's maximum lease.
+    fn nack_after(mut self, delay: Duration) -> impl Future<Output = Result<(), AckError>> {
+        if delay > self.limits.max_lease {
+            return ready(Err(AckError::Broker(box_err(
+                PubSubError::DelayBeyondLease {
+                    requested: delay,
+                    lease: self.limits.max_lease,
+                },
+            ))));
+        }
+        let at_cap = self.at_delivery_cap();
+        let mut delivery = self
+            .delivery
+            .take()
+            .expect("PubSubTestMessage ack/nack invoked twice");
+        delivery.headers.remove(DELIVERY_ATTEMPT_HEADER);
+        // A delivery whose attempts are spent is carried away rather than held: the wait would
+        // only end in the same move, and the product does not hold one either.
+        if let (true, Some(policy)) = (at_cap, self.dead_letter.as_deref()) {
+            let topic = policy.topic.clone();
+            self.dead_letter(delivery, &topic);
+            return ready(Ok(()));
+        }
+        delivery.attempt += 1;
+        let requeue = self.requeue.clone();
+        let Some(coordinator) = self.coordinator.clone() else {
+            tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                // The subscription may be gone by then; a dropped receiver is not an error.
+                let _ = requeue.send(delivery);
+            });
+            return ready(Ok(()));
+        };
+        let counter = coordinator.clone();
+        coordinator.schedule_redelivery(delay, move || {
+            if requeue.send(delivery).is_ok() {
+                counter.enqueued();
+            }
+        });
         ready(Ok(()))
     }
 

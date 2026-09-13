@@ -3,10 +3,17 @@
 //! Message attributes carry headers directly - no envelope format is invented - and the partition
 //! key rides the message's ordering key in both directions.
 
+use std::future::{Future, ready};
+use std::time::Duration;
+
 use bytes::Bytes;
 use google_cloud_pubsub::model::Message as GcpMessage;
 use google_cloud_pubsub::subscriber::handler::Handler;
 use ruststream::{AckError, HeaderMap, IncomingMessage, OutgoingMessage, Partitioned};
+use tokio::time::sleep;
+
+use crate::error::{PubSubError, box_err};
+use crate::subscription::DeliveryLimits;
 
 /// Header carrying the partition key, mapped onto the message's ordering key.
 ///
@@ -33,9 +40,7 @@ pub struct PubSubMessage {
     payload: Bytes,
     headers: HeaderMap,
     handler: Handler,
-    /// How many deliveries one message gets under the subscription's dead-letter policy, as the
-    /// registration declared it. `None` where none was declared.
-    max_delivery_attempts: Option<i32>,
+    limits: DeliveryLimits,
 }
 
 impl std::fmt::Debug for PubSubMessage {
@@ -47,11 +52,7 @@ impl std::fmt::Debug for PubSubMessage {
 }
 
 impl PubSubMessage {
-    pub(crate) fn new(
-        message: GcpMessage,
-        handler: Handler,
-        max_delivery_attempts: Option<i32>,
-    ) -> Self {
+    pub(crate) fn new(message: GcpMessage, handler: Handler, limits: DeliveryLimits) -> Self {
         let mut headers = HeaderMap::with_capacity(message.attributes.len() + 2);
         for (name, value) in &message.attributes {
             headers.insert(name.clone(), value.clone());
@@ -66,7 +67,7 @@ impl PubSubMessage {
             payload: message.data,
             headers,
             handler,
-            max_delivery_attempts,
+            limits,
         }
     }
 
@@ -76,7 +77,10 @@ impl PubSubMessage {
     /// place a settlement meaning "do not redeliver" has to reach the service rather than
     /// acknowledge.
     fn at_delivery_cap(&self) -> bool {
-        match (self.max_delivery_attempts, self.handler.delivery_attempt()) {
+        match (
+            self.limits.max_delivery_attempts,
+            self.handler.delivery_attempt(),
+        ) {
             (Some(cap), Some(attempt)) => attempt >= cap,
             _ => false,
         }
@@ -135,6 +139,49 @@ impl IncomingMessage for PubSubMessage {
                 Ok(())
             }
         }
+    }
+
+    /// Pub/Sub has no delayed nack of its own, so this crate holds the delivery instead. The
+    /// client keeps extending the ack deadline of a delivery nothing has settled, which is what
+    /// makes holding one a real delay rather than a lost message.
+    fn supports_nack_after(&self) -> bool {
+        true
+    }
+
+    /// Holds the delivery for `delay`, then rejects it so the subscription redelivers.
+    ///
+    /// The delivery stays leased while it is held: the client extends its ack deadline in the
+    /// background for as long as nothing has settled it, up to
+    /// [`GooglePubSub::max_lease`](crate::GooglePubSub::max_lease). The wait runs on a task of its
+    /// own, so the subscription keeps dispatching; the delivery counts against the subscription's
+    /// outstanding messages until it comes back, which is what it does against the service too.
+    ///
+    /// If the process dies while a delivery is held, the lease stops being extended and the
+    /// subscription redelivers on its own once it expires. The delay is lost there, not the
+    /// message.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AckError::Broker`] carrying [`PubSubError::DelayBeyondLease`] when `delay`
+    /// outlives the subscription's maximum lease, because the delivery would come back before it
+    /// elapsed. The check is at the call because a handler names the delay while it runs.
+    fn nack_after(self, delay: Duration) -> impl Future<Output = Result<(), AckError>> + Send {
+        if delay > self.limits.max_lease {
+            return ready(Err(AckError::Broker(box_err(
+                PubSubError::DelayBeyondLease {
+                    requested: delay,
+                    lease: self.limits.max_lease,
+                },
+            ))));
+        }
+        // The handle travels into the task, so the client goes on extending the lease for the
+        // whole wait. A task that never gets to finish drops the handle, which rejects the
+        // delivery at once rather than stranding it.
+        tokio::spawn(async move {
+            sleep(delay).await;
+            let _ = self.reject().await;
+        });
+        ready(Ok(()))
     }
 
     async fn nack(self, requeue: bool) -> Result<(), AckError> {

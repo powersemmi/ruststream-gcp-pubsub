@@ -18,7 +18,7 @@ use crate::message::PARTITION_KEY_HEADER;
 use crate::publisher::{PubSubPublish, PubSubPublishOptions, resolve_ordering_key};
 use crate::subscription::GooglePubSub;
 use crate::testing::router::{AddressRouter, DeadLetter};
-use crate::testing::subscriber::PubSubTestSubscriber;
+use crate::testing::subscriber::{Declared, PubSubTestSubscriber};
 
 /// Shared state of one in-process broker: the router plus the harness coordinator.
 #[derive(Debug, Default)]
@@ -148,6 +148,7 @@ impl ConnectedPubSubTestBroker {
         descriptor.validate()?;
         self.state.ensure_open()?;
         let batch_wait = descriptor.batch_wait_value();
+        let limits = descriptor.limits();
         let dead_letter = descriptor
             .dead_letter_policy()
             .map(|(topic, max_attempts)| {
@@ -163,8 +164,11 @@ impl ConnectedPubSubTestBroker {
             rx,
             requeue,
             self.state.coordinator().cloned(),
-            batch_wait,
-            dead_letter,
+            Declared {
+                batch_wait,
+                dead_letter,
+                limits,
+            },
         ))
     }
 }

@@ -9,8 +9,9 @@ use std::time::Duration;
 use futures::StreamExt;
 use ruststream::runtime::PublishExt;
 use ruststream::{
-    Broker, ConnectedBroker, HeaderMap, IncomingMessage, Outgoing, OutgoingMessage, PublishPolicy,
-    Publisher, RetryDeclaration, Serialized, Subscriber, SubscriptionSource, nonzero,
+    AckError, Broker, ConnectedBroker, HeaderMap, IncomingMessage, Outgoing, OutgoingMessage,
+    PublishPolicy, Publisher, RetryDeclaration, Serialized, Subscriber, SubscriptionSource,
+    nonzero,
 };
 use ruststream_gcp_pubsub::{
     ConnectedPubSubBroker, GooglePubSub, PARTITION_KEY_HEADER, PubSubBroker, PubSubOrdering,
@@ -287,6 +288,109 @@ async fn an_existing_subscription_takes_the_declaration_as_an_update() {
         &dead_letter,
     )
     .await;
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// The delay a live deferred delivery waits out, and the window a test looks in before it.
+const LIVE_RETRY_DELAY: Duration = Duration::from_secs(6);
+const BEFORE_THE_DELAY: Duration = Duration::from_secs(2);
+
+/// Pub/Sub has no delayed nack, so the crate holds the delivery and rejects it when the delay is
+/// out. The service keeps the delivery leased while it is held, so it comes back once - after the
+/// delay, not before it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_delayed_nack_redelivers_after_the_delay() {
+    let Some(host) = test_host() else { return };
+    let connected = connect(&host).await;
+
+    let name = unique("delayed-nack");
+    let mut subscriber = connected
+        .subscribe_descriptor(GooglePubSub::new(&name).create_with_topic(&name))
+        .await
+        .expect("subscription opens");
+    connected
+        .publisher()
+        .publish(OutgoingMessage::new(&name, b"later".as_slice()), None)
+        .await
+        .expect("publish succeeds");
+
+    let mut stream = pin!(subscriber.stream());
+    let first = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("delivery arrives")
+        .expect("stream is open")
+        .expect("delivery is ok");
+    assert!(
+        first.supports_nack_after(),
+        "the crate carries the delay itself, so it must say so",
+    );
+    first
+        .nack_after(LIVE_RETRY_DELAY)
+        .await
+        .expect("the delivery is held");
+
+    // Not before: the lease is being extended, so the service hands it to nobody meanwhile.
+    assert!(
+        tokio::time::timeout(BEFORE_THE_DELAY, stream.next())
+            .await
+            .is_err(),
+        "a held delivery must not come back before its delay is out",
+    );
+
+    // And after: the rejection at the end of the delay is what brings it back.
+    let again = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("the held delivery comes back")
+        .expect("stream is open")
+        .expect("delivery is ok");
+    assert_eq!(again.payload(), b"later");
+    again.ack().await.expect("ack succeeds");
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// A delay the subscription cannot outlast is refused at the call, because the delivery would
+/// come back before it elapsed and the handler would never learn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_delay_past_the_lease_is_refused() {
+    let Some(host) = test_host() else { return };
+    let connected = connect(&host).await;
+
+    let name = unique("short-lease");
+    let mut subscriber = connected
+        .subscribe_descriptor(
+            GooglePubSub::new(&name)
+                .create_with_topic(&name)
+                .max_lease(Duration::from_secs(5)),
+        )
+        .await
+        .expect("subscription opens");
+    connected
+        .publisher()
+        .publish(OutgoingMessage::new(&name, b"too-long".as_slice()), None)
+        .await
+        .expect("publish succeeds");
+
+    let mut stream = pin!(subscriber.stream());
+    let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("delivery arrives")
+        .expect("stream is open")
+        .expect("delivery is ok");
+
+    let err = message
+        .nack_after(Duration::from_secs(30))
+        .await
+        .expect_err("a delay past the lease must be refused");
+    assert!(
+        matches!(
+            err,
+            AckError::Broker(source)
+                if source.to_string().contains("outlives the subscription's maximum lease"),
+        ),
+        "the error must name the limit it refused against",
+    );
 
     connected.shutdown().await.expect("shutdown succeeds");
 }

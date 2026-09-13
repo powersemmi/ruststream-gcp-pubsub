@@ -23,7 +23,7 @@ use tokio::sync::mpsc;
 use crate::broker::Core;
 use crate::error::{PubSubError, box_err};
 use crate::message::PubSubMessage;
-use crate::subscription::GooglePubSub;
+use crate::subscription::{DeliveryLimits, GooglePubSub};
 
 /// How many converted deliveries may sit between the pump and the consumer. Real prefetch is
 /// the client's own flow control (`max_outstanding`); this only decouples the two loops.
@@ -67,14 +67,15 @@ impl PubSubSubscriber {
         if let Some(extension) = descriptor.ack_extension_value() {
             builder = builder.set_max_lease_extension(extension);
         }
+        // The budget a held delivery spends: the client stops extending past it, so the value the
+        // descriptor reports and the value the client honours have to be the same one.
+        let limits = descriptor.limits();
+        builder = builder.set_max_lease(limits.max_lease);
         let stream = builder.build();
         let shutdown = stream.shutdown_token();
 
         let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
-        let cap = descriptor
-            .dead_letter_policy()
-            .map(|(_, attempts)| attempts);
-        tokio::spawn(pump(stream, tx, name.clone(), cap));
+        tokio::spawn(pump(stream, tx, name.clone(), limits));
 
         Self {
             subscription: name,
@@ -146,17 +147,13 @@ async fn pump(
     mut stream: MessageStream,
     out: mpsc::Sender<Result<PubSubMessage, PubSubError>>,
     subscription: String,
-    max_delivery_attempts: Option<i32>,
+    limits: DeliveryLimits,
 ) {
     while let Some(item) = stream.next().await {
         match item {
             Ok((message, handler)) => {
                 if out
-                    .send(Ok(PubSubMessage::new(
-                        message,
-                        handler,
-                        max_delivery_attempts,
-                    )))
+                    .send(Ok(PubSubMessage::new(message, handler, limits)))
                     .await
                     .is_err()
                 {

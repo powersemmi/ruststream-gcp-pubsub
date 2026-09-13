@@ -557,6 +557,112 @@ async fn settles_on_the_third_attempt(payment: &Payment, ctx: &mut Context<'_>) 
     HandlerOutcome::retry()
 }
 
+/// The delay a deferred delivery waits out before the subscription gets it back, split so a test
+/// can stand just short of it and then step over.
+const RETRY_DELAY: Duration = Duration::from_secs(2);
+const JUST_SHORT_OF_IT: Duration = Duration::from_millis(1_999);
+const THE_LAST_TICK: Duration = Duration::from_millis(1);
+
+/// Asks for a later attempt on the first delivery and settles whatever comes back.
+#[subscriber(GooglePubSub::new("payments-workers"))]
+async fn defers_the_first_delivery(payment: &Payment, ctx: &mut Context<'_>) -> HandlerOutcome {
+    let _ = payment.id;
+    if attempt_of(ctx.headers()) == Some(1) {
+        return HandlerOutcome::retry_after(RETRY_DELAY);
+    }
+    HandlerOutcome::ack()
+}
+
+/// Never settles and always asks for a later attempt, so the cap is what ends the message.
+#[subscriber(GooglePubSub::new("payments-workers"))]
+async fn always_defers(payment: &Payment) -> HandlerOutcome {
+    let _ = payment.id;
+    HandlerOutcome::retry_after(RETRY_DELAY)
+}
+
+/// Pub/Sub has no delayed nack, so the crate holds the delivery in the process and hands it back
+/// when the delay is out. The clock is paused because the delay is what the case is about:
+/// `advance` returns the delivery that is due instead of waiting two seconds for it.
+#[tokio::test(start_paused = true)]
+async fn a_deferred_delivery_comes_back_when_the_delay_is_out() {
+    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
+        PubSubTestBroker::new(),
+        |b| {
+            b.include(defers_the_first_delivery)
+                .max_attempts(nonzero!(MAX_ATTEMPTS))
+                .dead_letter(DEAD_LETTER);
+        },
+    );
+    let tb = TestApp::start(app)
+        .await
+        .expect("the harness starts the app");
+
+    tb.broker::<PubSubTestBroker>()
+        .message(&Payment { id: 5 })
+        .to("payments-workers")
+        .publish()
+        .await
+        .expect("the harness accepts the injection");
+
+    // Not before: the delivery is held, so nothing has come back yet.
+    tb.advance(JUST_SHORT_OF_IT)
+        .await
+        .expect("nothing is due yet");
+    tb.broker::<PubSubTestBroker>()
+        .subscriber("payments-workers")
+        .assert_called(1);
+
+    // And after: the rest of the delay is what brings it back.
+    tb.advance(THE_LAST_TICK)
+        .await
+        .expect("the held delivery comes back");
+    tb.broker::<PubSubTestBroker>()
+        .subscriber("payments-workers")
+        .assert_called(2)
+        .settled(HandlerOutcome::ack());
+
+    tb.shutdown().await.expect("graceful shutdown");
+}
+
+/// A delayed retry spends the same attempts an immediate one does, so a handler that only ever
+/// defers still ends at the dead-letter topic rather than holding the message forever.
+#[tokio::test(start_paused = true)]
+async fn a_deferred_delivery_still_runs_out_of_attempts() {
+    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
+        PubSubTestBroker::new(),
+        |b| {
+            b.include(always_defers)
+                .max_attempts(nonzero!(MAX_ATTEMPTS))
+                .dead_letter(DEAD_LETTER);
+        },
+    );
+    let tb = TestApp::start(app)
+        .await
+        .expect("the harness starts the app");
+
+    tb.broker::<PubSubTestBroker>()
+        .message(&Payment { id: 9 })
+        .to("payments-workers")
+        .publish()
+        .await
+        .expect("the harness accepts the injection");
+    for _ in 1..MAX_ATTEMPTS {
+        tb.advance(RETRY_DELAY)
+            .await
+            .expect("the held delivery comes back");
+    }
+
+    tb.broker::<PubSubTestBroker>()
+        .subscriber("payments-workers")
+        .assert_called(MAX_ATTEMPTS as usize);
+    tb.broker::<PubSubTestBroker>()
+        .published::<Payment>(DEAD_LETTER)
+        .assert_called(1)
+        .with(&Payment { id: 9 });
+
+    tb.shutdown().await.expect("graceful shutdown");
+}
+
 /// Pub/Sub moves a spent delivery itself, so the mount site declares the cap and the destination
 /// and the subscription's dead-letter policy carries the message away. Nothing is published from
 /// the service, which is why `.out_retry(..)` does not compile over this descriptor.

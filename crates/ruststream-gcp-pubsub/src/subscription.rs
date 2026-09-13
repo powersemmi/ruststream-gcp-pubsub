@@ -25,6 +25,22 @@ const DEFAULT_BATCH_WAIT: Duration = Duration::from_millis(50);
 /// is refused before the subscription opens, rather than at the API call that would reject it.
 const DELIVERY_ATTEMPTS: RangeInclusive<i32> = 5..=100;
 
+/// How long the client keeps extending the ack deadline of a delivery nothing has settled, which
+/// is the client's own default and the budget a delayed retry spends. Past it the client stops
+/// extending, the lease expires, and the subscription redelivers on its own.
+const DEFAULT_MAX_LEASE: Duration = Duration::from_secs(60 * 60);
+
+/// What one delivery may do before it has to be settled, read off the subscription that opened
+/// it: how many deliveries the dead-letter policy allows, and how long the client will keep a
+/// delivery leased.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DeliveryLimits {
+    /// `None` where the registration declared no dead-letter policy, and Pub/Sub then counts
+    /// nothing.
+    pub(crate) max_delivery_attempts: Option<i32>,
+    pub(crate) max_lease: Duration,
+}
+
 /// A subscription descriptor for one Pub/Sub subscription.
 ///
 /// Implements [`SubscriptionSource`] for the real broker and for the in-process stand-in behind
@@ -52,6 +68,7 @@ pub struct GooglePubSub {
     max_attempts: Option<NonZeroU32>,
     /// What it declared with `dead_letter(..)`: the topic spent deliveries are published to.
     dead_letter: Option<String>,
+    max_lease: Duration,
 }
 
 impl GooglePubSub {
@@ -66,6 +83,7 @@ impl GooglePubSub {
             batch_wait: DEFAULT_BATCH_WAIT,
             max_attempts: None,
             dead_letter: None,
+            max_lease: DEFAULT_MAX_LEASE,
         }
     }
 
@@ -88,6 +106,26 @@ impl GooglePubSub {
     /// clamps it to the protocol's 10s..=600s range; defaults to 60s.
     pub fn ack_extension(mut self, extension: Duration) -> Self {
         self.ack_extension = Some(extension);
+        self
+    }
+
+    /// How long one delivery may stay unsettled before the client stops extending its ack
+    /// deadline. Defaults to the client's own hour.
+    ///
+    /// This is the budget a delayed retry spends: `HandlerOutcome::retry_after(delay)` holds the
+    /// delivery in the process for `delay`, and a delay longer than this is refused at the call,
+    /// because the subscription would redeliver before it elapsed.
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use ruststream_gcp_pubsub::GooglePubSub;
+    ///
+    /// // Handlers here may defer a delivery by up to two hours.
+    /// let source = GooglePubSub::new("orders-workers").max_lease(Duration::from_secs(2 * 60 * 60));
+    /// # let _ = source;
+    /// ```
+    pub fn max_lease(mut self, lease: Duration) -> Self {
+        self.max_lease = lease;
         self
     }
 
@@ -138,6 +176,14 @@ impl GooglePubSub {
 
     pub(crate) fn batch_wait_value(&self) -> Duration {
         self.batch_wait
+    }
+
+    /// What one delivery of this subscription may do before it has to be settled.
+    pub(crate) fn limits(&self) -> DeliveryLimits {
+        DeliveryLimits {
+            max_delivery_attempts: self.dead_letter_policy().map(|(_, attempts)| attempts),
+            max_lease: self.max_lease,
+        }
     }
 
     /// The declared cap in the API's own type. A count past `i32::MAX` saturates onto a value

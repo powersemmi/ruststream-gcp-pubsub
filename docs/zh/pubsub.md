@@ -119,8 +119,16 @@ Broker 默认用 Application Default Credentials 认证。`credentials(..)` 改�
 
 Pub/Sub 没有“丢弃且不重新投递”这个动作，所以 `drop()` 走的是确认。
 
-Pub/Sub 也没有延迟 nack，所以 `HandlerOutcome::retry_after(delay)` 会丢掉这个延迟：消息退回去，再
-按订阅自己的节奏重新投递过来，运行时每次投递给出一条告警。
+Pub/Sub 没有延迟 nack，所以 `HandlerOutcome::retry_after(delay)` 由进程自己扛：这个 crate 把投递
+攥住 `delay` 那么久，然后拒绝它，正是这个拒绝把它带回来。只要没有谁结算这条投递，客户端就一直替
+它延长确认截止时间，所以被攥住的投递是租住的，不是丢了，订阅期间也不会把它交给别人。它仍然占着
+`max_outstanding` 的名额。
+
+这份预算由 `GooglePubSub::max_lease` 给出，默认一小时，也就是客户端继续延长的时长。比它更长的延迟
+会在调用处被拒绝，错误里点名这个上限，因为投递会在延迟走完之前就回来。
+
+如果进程在攥着投递的时候死了，就没人再去延长租期；租期一到，订阅自己会重新投递。那里丢掉的是延迟，
+不是消息。
 
 ### 精确一次确认 { #exactly-once-acknowledgement }
 

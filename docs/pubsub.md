@@ -130,9 +130,18 @@ Acknowledgement is native and per message:
 
 Pub/Sub has no drop-without-redelivery verb, which is why `drop()` acknowledges.
 
-Pub/Sub has no delayed nack either, so `HandlerOutcome::retry_after(delay)` loses the delay: the
-message goes back and comes again on the subscription's own schedule, and the runtime warns once
-per delivery.
+Pub/Sub has no delayed nack, so `HandlerOutcome::retry_after(delay)` is carried by the process: the
+crate holds the delivery for `delay` and then rejects it, which is what brings it back. The client
+keeps extending the delivery's ack deadline for as long as nothing has settled it, so a held
+delivery is leased rather than lost, and the subscription hands it to nobody else meanwhile. It
+still counts against `max_outstanding` while it waits.
+
+The budget is `GooglePubSub::max_lease`, an hour by default, which is how long the client goes on
+extending. A delay longer than that is refused at the call with an error naming the limit, because
+the delivery would come back before it elapsed.
+
+If the process dies while a delivery is held, nothing extends the lease any more; once it expires
+the subscription redelivers on its own. The delay is what is lost there, not the message.
 
 ### Exactly-once acknowledgement
 
