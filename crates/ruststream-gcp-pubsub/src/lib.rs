@@ -9,14 +9,17 @@
 //! - A handler taking a slice gets batches: the pull hands over one delivery at a time, so the
 //!   batches are assembled on the client to the size the mount site named, with
 //!   [`GooglePubSub::batch_wait`] closing a partial one.
-//! - Dead-letter topics and delivery-attempt counts are subscription settings, surfaced on
-//!   received messages, not crate machinery.
+//! - A retry cap and a dead-letter destination declared at the mount site become the
+//!   subscription's own dead-letter policy: Pub/Sub counts the deliveries of each message and
+//!   carries a spent one away itself, so the service publishes no retry copies.
 //! - An ordering key is a per-message setting, named by [`PubSubOrdering::ordering_key`] on the
 //!   framework's publish builder or fixed for a whole mount site by
 //!   [`PubSubPublish::ordering_key`]; a delivery reports it back as its partition key. Message
 //!   attributes carry headers directly, so no envelope format is invented.
 //! - The Pub/Sub emulator is a supported target ([`PubSubBroker::emulator`]) for local
 //!   development and tests.
+//! - The `asyncapi` feature reports this broker in the generated document: the host clients dial,
+//!   and the ordering key a mount site fixed.
 //!
 //! A service imports [`prelude`]: one glob covering the framework's own prelude and this crate's
 //! user-facing surface.

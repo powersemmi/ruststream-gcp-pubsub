@@ -5,8 +5,10 @@
 //! [`TestableBroker`](ruststream::testing::TestableBroker) on its connected form, so
 //! application handlers can be unit-tested with the
 //! [`TestApp`](ruststream::testing::TestApp) harness. It routes by exact address match and does
-//! not simulate broker-specific semantics (dead-letter policies, credit, redelivery timing);
-//! those are verified end to end against a real broker.
+//! not simulate broker-specific semantics (credit, lease deadlines, redelivery timing); those are
+//! verified end to end against a real broker. The exception is the dead-letter policy a
+//! registration declares: the stand-in counts the deliveries of each message and carries a spent
+//! one away, so a test drives the cap the service ships.
 //!
 //! A service mounts on it with the wiring it ships:
 //! [`GooglePubSub`](crate::GooglePubSub) opens a subscription here as it opens a
