@@ -1,32 +1,4 @@
-//! Google Cloud Pub/Sub broker implementation for `RustStream`.
-//!
-//! Handlers, routers, codecs, and middleware come from the framework; this crate supplies the
-//! transport over the official
-//! [`google-cloud-pubsub`](https://docs.rs/google-cloud-pubsub) client.
-//!
-//! - A streaming pull subscription is the framework's message stream; ack and nack are native
-//!   per message, and the client extends ack deadlines in the background while a handler runs.
-//! - A handler taking a slice gets batches: the pull hands over one delivery at a time, so the
-//!   batches are assembled on the client to the size the mount site named, with
-//!   [`GooglePubSub::batch_wait`] closing a partial one.
-//! - A delayed retry is carried by the process: the delivery is held under its lease, which the
-//!   client keeps extending, and rejected when the delay is out.
-//!   [`GooglePubSub::max_lease`] is the budget a delay may spend.
-//! - A retry cap and a dead-letter destination declared at the mount site become the
-//!   subscription's own dead-letter policy: Pub/Sub counts the deliveries of each message and
-//!   carries a spent one away itself, so the service publishes no retry copies.
-//! - An ordering key is a per-message setting, named by [`PubSubOrdering::ordering_key`] on the
-//!   framework's publish builder or fixed for a whole mount site by
-//!   [`PubSubPublish::ordering_key`]; a delivery reports it back as its partition key. Message
-//!   attributes carry headers directly, so no envelope format is invented.
-//! - The Pub/Sub emulator is a supported target ([`PubSubBroker::emulator`]) for local
-//!   development and tests.
-//! - The `asyncapi` feature reports this broker in the generated document: the host clients dial,
-//!   and the ordering key a mount site fixed.
-//!
-//! A service imports [`prelude`]: one glob covering the framework's own prelude and this crate's
-//! user-facing surface.
-
+#![doc = include_str!("README.md")]
 #![forbid(unsafe_code)]
 
 mod broker;
