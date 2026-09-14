@@ -291,9 +291,9 @@ impl PublishPolicy<ConnectedPubSubTestBroker> for PubSubPublish {
     }
 
     /// The same binding the product's policy writes, so a document built over the stand-in reads
-    /// like the one the service ships.
+    /// like the one the service ships, the unread destination included.
     #[cfg(feature = "asyncapi")]
-    fn message_bindings(&self) -> Bindings {
+    fn message_bindings(&self, _channel: &str) -> Bindings {
         self.message_binding()
     }
 }

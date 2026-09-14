@@ -301,6 +301,10 @@ A channel here is a subscription, and the binding describes a topic, so a subscr
 carries no binding at all. The topic behind a subscription is a connection-time value: the document
 is built before anything connects, so the crate says nothing rather than guessing.
 
+A reply's channel is a topic, and the mount site names it, so the document reports that name as the
+channel's address. The channel binding still stays empty: its fields configure the topic resource,
+and a publish policy holds none of them.
+
 ## The emulator
 
 `emulator(host)` points the broker at a local Pub/Sub emulator: the plaintext endpoint and anonymous

@@ -86,6 +86,19 @@ fn a_subscription_channel_carries_no_binding() {
     assert!(value["channels"]["order-receipts"]["bindings"].is_null());
 }
 
+/// The destination the runtime hands the publish policy is the topic the reply goes to, and the
+/// document reports it as the channel's address. The crate fills no binding field from it: the
+/// address already names the topic, and the rest of the channel binding is configuration of that
+/// topic resource, which a publish policy does not hold.
+#[test]
+fn the_reply_destination_is_the_channels_address_and_nothing_else() {
+    let value = document();
+    let channel = &value["channels"]["order-receipts"];
+
+    assert_eq!(channel["address"], "order-receipts");
+    assert!(channel["bindings"].is_null());
+}
+
 /// The server is the host clients dial, under the protocol key the specification lists. Pub/Sub
 /// is reached over an API whose version is not a fact of the transport, so nothing claims one.
 #[test]

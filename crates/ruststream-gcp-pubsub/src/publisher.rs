@@ -247,9 +247,10 @@ impl PubSubPublish {
     /// What a document can say about the messages this mount site sends.
     ///
     /// Only the ordering key, and only where the mount site fixed one: everything else the
-    /// binding describes belongs to the topic resource (its labels, its retention, its storage
-    /// policy, its schema), which no publish policy configures. A key named per message is named
-    /// at a call site, and a call site is not in the document.
+    /// `googlepubsub` binding describes belongs to the topic resource (its labels, its
+    /// retention, its storage policy, its schema), which no publish policy configures and no
+    /// destination name tells. A key named per message is named at a call site, and a call site
+    /// is not in the document.
     #[cfg(feature = "asyncapi")]
     pub(crate) fn message_binding(&self) -> Bindings {
         let Some(ordering_key) = self.ordering_key.as_deref() else {
@@ -276,8 +277,13 @@ impl PublishPolicy<ConnectedPubSubBroker> for PubSubPublish {
 
     /// The ordering key every message through this mount site is sent under, which is the one
     /// field of the `googlepubsub` binding this crate can state without a connection.
+    ///
+    /// The destination the runtime resolved is the topic this mount site publishes to, and the
+    /// document already reports it as the channel's address; the channel half of the binding
+    /// carries topic configuration alone, so naming the topic here adds nothing and the
+    /// parameter goes unread.
     #[cfg(feature = "asyncapi")]
-    fn message_bindings(&self) -> Bindings {
+    fn message_bindings(&self, _channel: &str) -> Bindings {
         self.message_binding()
     }
 }
