@@ -15,14 +15,15 @@ use google_cloud_pubsub::client::{
 use google_cloud_pubsub::model::{DeadLetterPolicy, Subscription};
 use google_cloud_wkt::FieldMask;
 use ruststream::{
-    Broker, BrokerMoves, ConnectedBroker, DefaultPublish, DescribeServer, ServerSpec, Subscribe,
+    Broker, BrokerMoves, ConnectedBroker, DeclareRetryError, DefaultPublish, DescribeServer,
+    RetryDeclaration, ServerSpec, Subscribe,
 };
 use tokio::sync::OnceCell;
 
 use crate::error::{PubSubError, box_err};
 use crate::publisher::{PubSubPublish, PubSubPublisher};
 use crate::subscriber::PubSubSubscriber;
-use crate::subscription::GooglePubSub;
+use crate::subscription::{DeclaredRetries, GooglePubSub};
 
 /// Whether a get-then-create found the resource or made it, which is what decides between
 /// carrying a dead-letter policy into the create and writing it as an update afterwards.
@@ -47,6 +48,9 @@ pub(crate) struct Core {
     /// Per-topic publisher handles, shared by every publisher handle so shutdown can flush
     /// them all.
     pub(crate) publishers: tokio::sync::Mutex<std::collections::HashMap<String, Publisher>>,
+    /// What the registrations mounted by a bare subscription name declared about their retries,
+    /// taken at startup and applied when each subscription opens.
+    pub(crate) declared_retries: DeclaredRetries,
 }
 
 impl Core {
@@ -211,6 +215,7 @@ impl Broker for PubSubBroker {
                     project: self.project.clone(),
                     closed: AtomicBool::new(false),
                     publishers: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+                    declared_retries: DeclaredRetries::default(),
                 }))
             })
             .await?
@@ -442,7 +447,20 @@ impl Subscribe for ConnectedPubSubBroker {
     type Copies = BrokerMoves;
 
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
-        self.subscribe_descriptor(GooglePubSub::new(name)).await
+        self.subscribe_descriptor(self.core.declared_retries.source(name))
+            .await
+    }
+
+    /// A bare name has no descriptor to declare on, so the broker takes the declaration for the
+    /// subscription this name opens: `dead_letter(topic)` becomes its `deadLetterTopic` and
+    /// `max_attempts(n)` its `maxDeliveryAttempts`, written when
+    /// [`subscribe`](Self::subscribe) opens the subscription.
+    fn declare_retry(
+        &self,
+        name: &str,
+        declaration: &RetryDeclaration,
+    ) -> Result<(), DeclareRetryError> {
+        self.core.declared_retries.take(name, declaration)
     }
 }
 

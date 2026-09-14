@@ -174,10 +174,15 @@ The policy is written when the service starts. A descriptor with `create_with_to
 dead-letter topic beside its own and opens the subscription carrying the policy; a subscription
 managed as infrastructure receives it as an update.
 
-The declaration reaches the subscription through `GooglePubSub` and through nothing else. A handler
-declared with a plain string carries the framework's own descriptor, which records nothing to apply,
-so a cap declared over `#[subscriber("orders-workers")]` leaves the subscription as it was.
-Declaring that handler with `GooglePubSub::new("orders-workers")` is the fix.
+A handler that names its subscription with a plain string declares its retries the same way: the
+broker takes the declaration for the name and opens that subscription with the policy. What a bare
+name does not do is create topology, so the subscription and the dead-letter topic have to exist
+already; `GooglePubSub::new("orders-workers").create_with_topic("orders")` is the declaration that
+creates them.
+
+One subscription carries one dead-letter policy, so two handlers on the same subscription have to
+declare the same retries. A second declaration that differs refuses to start, rather than leaving
+whichever registration mounted last in charge of the policy.
 
 Under a dead-letter policy every delivery reports which attempt it is, in the
 `pubsub-delivery-attempt` header (exported as `DELIVERY_ATTEMPT_HEADER`). The count is the service's

@@ -852,3 +852,97 @@ async fn a_transform_on_the_reply_names_the_ordering_key() {
 
     tb.shutdown().await.expect("graceful shutdown");
 }
+
+/// The subscription a bare name opens, with no descriptor for the mount site to declare on.
+const BY_NAME: &str = "payments-by-name";
+
+/// Never settles, on a subscription the handler names with a plain string. The declaration has
+/// to reach the subscription through the broker, because there is no descriptor to carry it.
+#[subscriber("payments-by-name")]
+async fn never_settles_by_name(payment: &Payment) -> HandlerOutcome {
+    let _ = payment.id;
+    HandlerOutcome::retry()
+}
+
+/// A handler naming its subscription with a plain string gets the dead-letter policy the mount
+/// site declared: five deliveries, then the declared topic. The broker takes the declaration for
+/// the name and opens the subscription with it, so `GooglePubSub` is no longer the only spelling
+/// a cap reaches.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bare_name_opens_with_the_declared_dead_letter_policy() {
+    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
+        PubSubTestBroker::new(),
+        |b| {
+            b.include(never_settles_by_name)
+                .max_attempts(nonzero!(MAX_ATTEMPTS))
+                .dead_letter(DEAD_LETTER);
+        },
+    );
+    let tb = TestApp::start(app)
+        .await
+        .expect("the harness starts the app");
+
+    tb.broker::<PubSubTestBroker>()
+        .message(&Payment { id: 13 })
+        .to(BY_NAME)
+        .publish()
+        .await
+        .expect("the harness accepts the injection");
+    tb.settle().await.expect("the retries run out");
+
+    tb.broker::<PubSubTestBroker>()
+        .subscriber(BY_NAME)
+        .assert_called(MAX_ATTEMPTS as usize);
+    tb.broker::<PubSubTestBroker>()
+        .published::<Payment>(DEAD_LETTER)
+        .assert_called(1)
+        .with(&Payment { id: 13 });
+
+    tb.shutdown().await.expect("graceful shutdown");
+}
+
+/// Half a declaration is half a dead-letter policy, which Pub/Sub has no field for. The broker
+/// refuses it for a bare name exactly as the descriptor refuses it, so the service does not
+/// start without the cap it asked for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bare_name_refuses_half_a_declaration() {
+    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
+        PubSubTestBroker::new(),
+        |b| {
+            b.include(never_settles_by_name)
+                .max_attempts(nonzero!(MAX_ATTEMPTS));
+        },
+    );
+
+    let err = TestApp::start(app)
+        .await
+        .expect_err("a cap with nowhere to send a spent message must not start");
+    let reported = format!("{err:#}");
+    assert!(
+        reported.contains("dead-letter policy needs the topic too"),
+        "the refusal must name what is missing: {reported}",
+    );
+}
+
+/// Pub/Sub bounds `maxDeliveryAttempts`, and the bound holds for a bare name too: the refusal
+/// comes at startup rather than from the admin call that would reject the policy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bare_name_refuses_a_cap_outside_the_services_range() {
+    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
+        PubSubTestBroker::new(),
+        |b| {
+            b.include(never_settles_by_name)
+                .max_attempts(nonzero!(3u32))
+                .dead_letter(DEAD_LETTER);
+        },
+    );
+
+    let err = TestApp::start(app)
+        .await
+        .expect_err("a cap Pub/Sub does not accept must not start");
+    let reported = format!("{err:#}");
+    assert!(
+        reported.contains("max_attempts(3)"),
+        "the refusal must name the cap: {reported}",
+    );
+}

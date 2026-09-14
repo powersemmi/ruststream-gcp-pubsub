@@ -9,14 +9,14 @@ use bytes::Bytes;
 use ruststream::asyncapi::Bindings;
 use ruststream::testing::{Coordinator, TestableBroker};
 use ruststream::{
-    Broker, BrokerMoves, ConnectedBroker, DefaultPublish, OutgoingMessage, PairError,
-    PublishPolicy, Publisher, RawMessage, Subscribe,
+    Broker, BrokerMoves, ConnectedBroker, DeclareRetryError, DefaultPublish, OutgoingMessage,
+    PairError, PublishPolicy, Publisher, RawMessage, RetryDeclaration, Subscribe,
 };
 
 use crate::error::PubSubError;
 use crate::message::PARTITION_KEY_HEADER;
 use crate::publisher::{PubSubPublish, PubSubPublishOptions, resolve_ordering_key};
-use crate::subscription::GooglePubSub;
+use crate::subscription::{DeclaredRetries, GooglePubSub};
 use crate::testing::router::{AddressRouter, DeadLetter};
 use crate::testing::subscriber::{Declared, PubSubTestSubscriber};
 
@@ -28,6 +28,10 @@ pub(crate) struct TestState {
     /// Mirrors the real broker, where the connection is gone after `shutdown`: a handle that
     /// outlived it must say so rather than route into a dead transport.
     closed: AtomicBool,
+    /// What the registrations mounted by a bare subscription name declared, as the real broker
+    /// keeps it: a test drives the declaration the service ships whichever way it named the
+    /// subscription.
+    declared_retries: DeclaredRetries,
 }
 
 impl TestState {
@@ -197,7 +201,17 @@ impl Subscribe for ConnectedPubSubTestBroker {
     /// A name alone is the descriptor's own default form, so the two entry points open the same
     /// subscription here exactly as they do on the real broker.
     fn subscribe(&self, name: &str) -> impl Future<Output = Result<Self::Subscriber, Self::Error>> {
-        self.subscribe_descriptor(GooglePubSub::new(name))
+        self.subscribe_descriptor(self.state.declared_retries.source(name))
+    }
+
+    /// Takes a bare name's declaration as the real broker does, and refuses the same
+    /// declarations: what a test mounts is what the service would start with.
+    fn declare_retry(
+        &self,
+        name: &str,
+        declaration: &RetryDeclaration,
+    ) -> Result<(), DeclareRetryError> {
+        self.state.declared_retries.take(name, declaration)
     }
 }
 

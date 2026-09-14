@@ -10,12 +10,12 @@ use futures::StreamExt;
 use ruststream::runtime::PublishExt;
 use ruststream::{
     AckError, Broker, ConnectedBroker, HeaderMap, IncomingMessage, Outgoing, OutgoingMessage,
-    PublishPolicy, Publisher, RetryDeclaration, Serialized, Subscriber, SubscriptionSource,
-    nonzero,
+    PublishPolicy, Publisher, RetryDeclaration, Serialized, Subscribe, Subscriber,
+    SubscriptionSource, nonzero,
 };
 use ruststream_gcp_pubsub::{
     ConnectedPubSubBroker, GooglePubSub, PARTITION_KEY_HEADER, PubSubBroker, PubSubOrdering,
-    PubSubPublish,
+    PubSubPublish, PubSubSubscriber,
 };
 
 mod live;
@@ -190,23 +190,49 @@ async fn dead_letters_a_spent_delivery(
     workers: GooglePubSub,
     dead_letter: &str,
 ) {
-    let declaration = RetryDeclaration::new()
-        .with_max_attempts(nonzero!(MAX_ATTEMPTS))
-        .with_dead_letter(dead_letter.to_owned());
-    let mut subscriber =
-        SubscriptionSource::<ConnectedPubSubBroker>::declare_retry(workers, &declaration)
-            .subscribe(connected)
-            .await
-            .expect("the subscription opens with the declared dead-letter policy");
+    let subscriber = SubscriptionSource::<ConnectedPubSubBroker>::declare_retry(
+        workers,
+        &declared_retries(dead_letter),
+    )
+    .subscribe(connected)
+    .await
+    .expect("the subscription opens with the declared dead-letter policy");
     // The declaration created the dead-letter topic, so a subscription on it sees what lands
     // there.
-    let mut dead = connected
+    let dead = watch_dead_letter(connected, dead_letter).await;
+
+    spends_its_attempts(connected, topic, subscriber, dead).await;
+}
+
+/// What a mount site declares in every dead-letter case here.
+fn declared_retries(dead_letter: &str) -> RetryDeclaration {
+    RetryDeclaration::new()
+        .with_max_attempts(nonzero!(MAX_ATTEMPTS))
+        .with_dead_letter(dead_letter.to_owned())
+}
+
+/// Opens a subscription on the dead-letter topic, creating the topic where it is not there yet:
+/// the policy names a topic the service refuses to write a policy for otherwise.
+async fn watch_dead_letter(
+    connected: &ConnectedPubSubBroker,
+    dead_letter: &str,
+) -> PubSubSubscriber {
+    connected
         .subscribe_descriptor(
             GooglePubSub::new(format!("{dead_letter}-watcher")).create_with_topic(dead_letter),
         )
         .await
-        .expect("the dead-letter subscription opens");
+        .expect("the dead-letter subscription opens")
+}
 
+/// Publishes one message to `topic` and spends every delivery the policy allows, then reads the
+/// copy the service carried to the dead-letter topic.
+async fn spends_its_attempts(
+    connected: &ConnectedPubSubBroker,
+    topic: &str,
+    mut subscriber: PubSubSubscriber,
+    mut dead: PubSubSubscriber,
+) {
     connected
         .publisher()
         .publish(OutgoingMessage::new(topic, b"poison".as_slice()), None)
@@ -288,6 +314,40 @@ async fn an_existing_subscription_takes_the_declaration_as_an_update() {
         &dead_letter,
     )
     .await;
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// A handler that names its subscription with a plain string declares its retries at the mount
+/// site like any other, and the broker maps the declaration onto the subscription that name
+/// opens. A bare name creates no topology, so the subscription and the dead-letter topic are
+/// there before the service starts, which is the shape a bare name is used in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bare_name_opens_with_the_declared_dead_letter_policy() {
+    let Some(host) = test_host() else { return };
+    let connected = connect(&host).await;
+
+    let topic = unique("by-name-topic");
+    let workers = unique("by-name-workers");
+    let dead_letter = unique("by-name-dead");
+
+    connected
+        .subscribe_descriptor(GooglePubSub::new(&workers).create_with_topic(&topic))
+        .await
+        .expect("the subscription exists before the service starts");
+    let dead = watch_dead_letter(&connected, &dead_letter).await;
+
+    // What the runtime does for a registration mounted by a bare name: the broker takes the
+    // declaration, then opens the subscription that name identifies.
+    connected
+        .declare_retry(&workers, &declared_retries(&dead_letter))
+        .expect("the broker maps the declaration onto the subscription");
+    let subscriber = connected
+        .subscribe(&workers)
+        .await
+        .expect("the subscription opens with the declared dead-letter policy");
+
+    spends_its_attempts(&connected, &topic, subscriber, dead).await;
 
     connected.shutdown().await.expect("shutdown succeeds");
 }

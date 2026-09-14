@@ -6,11 +6,13 @@
 //! emulator wants.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::ops::RangeInclusive;
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
-use ruststream::{BrokerMoves, FromName, RetryDeclaration, SubscriptionSource};
+use ruststream::{BrokerMoves, DeclareRetryError, FromName, RetryDeclaration, SubscriptionSource};
 
 use crate::broker::ConnectedPubSubBroker;
 use crate::error::PubSubError;
@@ -200,6 +202,16 @@ impl GooglePubSub {
         Some((self.dead_letter.as_deref()?, self.declared_attempts()?))
     }
 
+    /// Takes in a registration's cap and dead-letter destination, which become the
+    /// subscription's dead-letter policy when it opens. The two `SubscriptionSource` impls and
+    /// the by-name ledger below all go through here, so a declaration means the same thing
+    /// whichever way the registration named its subscription.
+    fn take_declaration(mut self, declaration: &RetryDeclaration) -> Self {
+        self.max_attempts = declaration.max_attempts();
+        self.dead_letter = declaration.dead_letter().map(ToOwned::to_owned);
+        self
+    }
+
     /// Rejects descriptors that cannot form a subscription, before any I/O.
     pub(crate) fn validate(&self) -> Result<(), PubSubError> {
         if self.name.is_empty() {
@@ -302,10 +314,8 @@ impl SubscriptionSource<ConnectedPubSubBroker> for GooglePubSub {
     /// Only recorded here. The declaration turns into topology where the connection exists, and
     /// a half declaration is refused there rather than opening a subscription that honours
     /// neither half.
-    fn declare_retry(mut self, declaration: &RetryDeclaration) -> Self {
-        self.max_attempts = declaration.max_attempts();
-        self.dead_letter = declaration.dead_letter().map(ToOwned::to_owned);
-        self
+    fn declare_retry(self, declaration: &RetryDeclaration) -> Self {
+        self.take_declaration(declaration)
     }
 }
 
@@ -380,11 +390,77 @@ impl SubscriptionSource<crate::testing::ConnectedPubSubTestBroker> for GooglePub
     /// The same declaration the product takes, so a test drives the cap and the dead-letter
     /// destination it ships: the stand-in counts deliveries per message and publishes a spent
     /// one to the declared topic, which is what the subscription's dead-letter policy does.
-    fn declare_retry(mut self, declaration: &RetryDeclaration) -> Self {
-        self.max_attempts = declaration.max_attempts();
-        self.dead_letter = declaration.dead_letter().map(ToOwned::to_owned);
-        self
+    fn declare_retry(self, declaration: &RetryDeclaration) -> Self {
+        self.take_declaration(declaration)
     }
+}
+
+/// What the bare-name registrations of one connection declared about their retries.
+///
+/// A bare name carries no descriptor to declare on, so the broker takes the declaration through
+/// [`Subscribe::declare_retry`](ruststream::Subscribe::declare_retry) and keeps it here until
+/// the subscription of that name opens. Both the real broker and the in-process stand-in hold
+/// one, so `#[subscriber("orders-workers")]` gets the dead-letter policy the mount site declared
+/// either way.
+#[derive(Debug, Default)]
+pub(crate) struct DeclaredRetries(Mutex<HashMap<String, RetryDeclaration>>);
+
+impl DeclaredRetries {
+    /// Takes what a registration declared for the subscription `name` opens.
+    ///
+    /// Refuses what a Pub/Sub dead-letter policy cannot express - half a declaration, a cap
+    /// outside the range the service accepts - on the same check the descriptor runs, and
+    /// refuses a second registration on the same subscription that declares something else: one
+    /// subscription carries one policy, and the last writer winning would silently drop what the
+    /// other registration asked for.
+    pub(crate) fn take(
+        &self,
+        name: &str,
+        declaration: &RetryDeclaration,
+    ) -> Result<(), DeclareRetryError> {
+        GooglePubSub::new(name)
+            .take_declaration(declaration)
+            .validate()
+            .map_err(refusal)?;
+        let conflicts = {
+            let mut taken = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            match taken.get(name) {
+                Some(already) if already != declaration => true,
+                _ => {
+                    taken.insert(name.to_owned(), declaration.clone());
+                    false
+                }
+            }
+        };
+        if conflicts {
+            return Err(refusal(PubSubError::InvalidDescriptor(format!(
+                "subscription '{name}' is mounted twice with different retry \
+                 declarations, and one subscription carries one dead-letter policy",
+            ))));
+        }
+        Ok(())
+    }
+
+    /// The descriptor the bare name `name` opens: the subscription it names, carrying what the
+    /// registration declared for it.
+    pub(crate) fn source(&self, name: &str) -> GooglePubSub {
+        let source = GooglePubSub::new(name);
+        match self
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(name)
+        {
+            Some(declaration) => source.take_declaration(declaration),
+            None => source,
+        }
+    }
+}
+
+/// A startup refusal, with the crate's own error as its cause: the runtime prints the reason on
+/// one line and fails the registration that declared it.
+fn refusal(err: PubSubError) -> DeclareRetryError {
+    DeclareRetryError::Broker(Box::new(err))
 }
 
 #[cfg(test)]
@@ -407,8 +483,8 @@ mod tests {
         ));
     }
 
-    /// Builds the descriptor a registration declaring `attempts` and `destination` produces.
-    fn declared(attempts: Option<u32>, destination: Option<&str>) -> GooglePubSub {
+    /// What a registration declaring `attempts` and `destination` states at its mount site.
+    fn declaration(attempts: Option<u32>, destination: Option<&str>) -> RetryDeclaration {
         let mut declaration = RetryDeclaration::new();
         if let Some(attempts) = attempts {
             declaration =
@@ -417,9 +493,14 @@ mod tests {
         if let Some(destination) = destination {
             declaration = declaration.with_dead_letter(destination.to_owned());
         }
+        declaration
+    }
+
+    /// Builds the descriptor a registration declaring `attempts` and `destination` produces.
+    fn declared(attempts: Option<u32>, destination: Option<&str>) -> GooglePubSub {
         SubscriptionSource::<ConnectedPubSubBroker>::declare_retry(
             GooglePubSub::new("orders-workers"),
-            &declaration,
+            &declaration(attempts, destination),
         )
     }
 
@@ -491,5 +572,97 @@ mod tests {
             source.validate(),
             Err(PubSubError::InvalidDescriptor(_))
         ));
+    }
+
+    /// A bare name has no descriptor to hold the declaration, so the broker's ledger holds it
+    /// and the subscription that name opens carries the policy.
+    #[test]
+    fn a_declaration_for_a_bare_name_reaches_the_subscription_it_opens() {
+        let taken = DeclaredRetries::default();
+
+        taken
+            .take("orders-workers", &declaration(Some(5), Some("orders-dead")))
+            .expect("a full declaration is one a dead-letter policy carries");
+
+        assert_eq!(
+            taken.source("orders-workers").dead_letter_policy(),
+            Some(("orders-dead", 5)),
+        );
+    }
+
+    /// A name nothing declared for opens the subscription as it stands.
+    #[test]
+    fn a_bare_name_with_no_declaration_opens_the_subscription_untouched() {
+        let taken = DeclaredRetries::default();
+
+        taken
+            .take("orders-workers", &RetryDeclaration::new())
+            .expect("a registration may declare nothing");
+
+        assert_eq!(
+            taken.source("orders-workers"),
+            GooglePubSub::new("orders-workers")
+        );
+    }
+
+    /// The ledger holds a bare name to the same policy the descriptor is held to, and the
+    /// refusal carries the crate's own reason so the startup line says what to fix.
+    #[test]
+    fn a_bare_name_is_refused_what_a_dead_letter_policy_cannot_express() {
+        let taken = DeclaredRetries::default();
+
+        for (attempts, destination) in [
+            (Some(5), None),
+            (None, Some("orders-dead")),
+            (Some(3), Some("orders-dead")),
+        ] {
+            let err = taken
+                .take("orders-workers", &declaration(attempts, destination))
+                .expect_err("the declaration must be refused");
+            assert!(
+                matches!(err, DeclareRetryError::Broker(_)),
+                "declaring {attempts:?} / {destination:?} must refuse as a broker rejection",
+            );
+        }
+    }
+
+    /// One subscription carries one dead-letter policy, so a second registration declaring
+    /// something else for the same name is refused rather than silently overwriting the first.
+    #[test]
+    fn one_subscription_declared_twice_differently_is_refused() {
+        let taken = DeclaredRetries::default();
+        taken
+            .take("orders-workers", &declaration(Some(5), Some("orders-dead")))
+            .expect("the first declaration is taken");
+
+        let err = taken
+            .take(
+                "orders-workers",
+                &declaration(Some(10), Some("orders-dead")),
+            )
+            .expect_err("a contradicting declaration must be refused");
+
+        assert!(matches!(err, DeclareRetryError::Broker(_)));
+        assert_eq!(
+            taken.source("orders-workers").dead_letter_policy(),
+            Some(("orders-dead", 5)),
+            "the refusal leaves the declaration already taken alone",
+        );
+    }
+
+    /// Two registrations that declare the same thing are no contradiction: the subscription
+    /// opens with the policy both asked for.
+    #[test]
+    fn one_subscription_declared_twice_alike_is_taken_once() {
+        let taken = DeclaredRetries::default();
+        let declared = declaration(Some(5), Some("orders-dead"));
+
+        taken.take("orders-workers", &declared).expect("the first");
+        taken.take("orders-workers", &declared).expect("the second");
+
+        assert_eq!(
+            taken.source("orders-workers").dead_letter_policy(),
+            Some(("orders-dead", 5)),
+        );
     }
 }
