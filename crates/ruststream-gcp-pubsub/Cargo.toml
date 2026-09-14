@@ -11,6 +11,12 @@ readme = "../../README.md"
 keywords = ["gcp", "pubsub", "google-cloud", "broker", "ruststream"]
 categories = ["asynchronous", "network-programming"]
 
+# The reference is the crate's documentation, and `default` is empty, so a default build on
+# docs.rs would publish it with the `testing` module and the document bindings missing - the
+# two the overview and the site's redirects send readers to.
+[package.metadata.docs.rs]
+all-features = true
+
 [lints]
 workspace = true
 
