@@ -249,11 +249,10 @@ async fn spends_its_attempts(
         // The service counts the deliveries, so the count is on the message rather than in a
         // header this process maintains.
         assert_eq!(message.redelivery_count(), Some(u64::from(expected)));
-        // The settlement the runtime sends once the attempts are spent. Below the cap it asks
-        // for another delivery; at the cap it says this delivery is the last, and on this
-        // transport both are the same rejection.
-        let requeue = expected < MAX_ATTEMPTS;
-        message.nack(requeue).await.expect("nack succeeds");
+        // What the runtime settles an immediate retry with on this transport, at every
+        // delivery: the subscription moves a spent one itself, so nothing in the process reads
+        // the cap and asks for the last delivery to be rejected instead.
+        message.nack(true).await.expect("nack succeeds");
     }
 
     let mut dead_stream = pin!(dead.stream());

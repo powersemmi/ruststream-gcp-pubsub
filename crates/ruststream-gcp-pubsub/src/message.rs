@@ -119,7 +119,9 @@ impl IncomingMessage for PubSubMessage {
     /// The delivery attempt the service reports, counting this delivery.
     ///
     /// Pub/Sub sends it only where the subscription has a dead-letter policy, so a subscription
-    /// without one counts nothing and the framework reads its own header instead.
+    /// without one reports no count. It is the only count a delivery of this crate carries:
+    /// nothing here publishes a retry copy, so the framework's own header never appears beside
+    /// it, and the cap the count would be read against is the subscription's to apply.
     fn redelivery_count(&self) -> Option<u64> {
         self.handler
             .delivery_attempt()

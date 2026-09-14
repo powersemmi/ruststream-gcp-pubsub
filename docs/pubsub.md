@@ -186,8 +186,13 @@ whichever registration mounted last in charge of the policy.
 
 Under a dead-letter policy every delivery reports which attempt it is, in the
 `pubsub-delivery-attempt` header (exported as `DELIVERY_ATTEMPT_HEADER`). The count is the service's
-own, it starts at one, and the framework reads the cap against it. A subscription without such a
-policy reports nothing, which is Pub/Sub's own behaviour.
+own and it starts at one. A subscription without such a policy reports nothing, which is Pub/Sub's
+own behaviour.
+
+Nothing in the process counts alongside it, and nothing in the process applies the cap: the
+subscription's policy is what ends the message, whether the handler asked for the next attempt at
+once or after a delay. The count is there for a handler to read - to tell a first delivery from a
+redelivery, or to give up early.
 
 On the last delivery the policy allows, `drop()` reaches the dead-letter topic instead of
 acknowledging. A spent retry and a dropped message reach the transport as the same rejection, and
