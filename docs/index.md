@@ -23,18 +23,31 @@ You assemble a Pub/Sub service in the app function:
 --8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_service.rs:app"
 ```
 
+## What the crate gives you
+
+One [subscription descriptor](https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/index.html#subscribing)
+carries every setting a subscription has: flow control, how far the ack deadline is extended, how
+long a partial batch waits, and how long one delivery may stay unsettled. A retry cap and a
+dead-letter topic named at the mount site become the subscription's own dead-letter policy, so the
+service publishes no retry copies.
+[Publishing](https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/index.html#publishing)
+adds one per-message setting, the ordering key, which a call site, a partition key header or the
+mount site may name. The
+[`testing` feature](https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/testing/index.html)
+runs a whole service in process, with no server.
+
 ## Where to go next
 
 <div class="grid cards" markdown>
 
-- :material-transit-connection-variant: **[Pub/Sub guide](pubsub.md)** - subscriptions, acknowledgement, ordering keys, the emulator, and testing.
-- :material-book-open-variant: **[RustStream docs](https://powersemmi.github.io/ruststream/)** - the framework itself: subscribers, routing, codecs, middleware, the CLI.
-- :material-language-rust: **[API reference](https://docs.rs/ruststream-gcp-pubsub)** - the crate's rustdoc on docs.rs.
+- :material-language-rust: **[Crate reference](https://docs.rs/ruststream-gcp-pubsub)** - subscribing, publishing, the prelude, the `AsyncAPI` document, testing, operations.
+- :material-book-open-variant: **[RustStream docs](https://powersemmi.github.io/ruststream/)** - installation, the tutorial, the list of brokers.
+- :material-transit-connection-variant: **[Framework reference](https://docs.rs/ruststream/latest/ruststream/runtime/index.html)** - writing subscribers, routing, codecs, middleware, the CLI.
 
 </div>
 
 ## How this site relates to the RustStream docs
 
-This site documents the Pub/Sub broker only. Writing subscribers, publishing, routing, codecs,
-middleware, observability and the CLI live in the
-[RustStream documentation](https://powersemmi.github.io/ruststream/).
+This site is the entry page of the Pub/Sub broker. Everything the broker itself offers is on
+[docs.rs](https://docs.rs/ruststream-gcp-pubsub), and the framework is documented with its own
+crate and on the [RustStream site](https://powersemmi.github.io/ruststream/).

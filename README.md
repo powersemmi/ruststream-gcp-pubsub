@@ -142,7 +142,7 @@ ruststream-gcp-pubsub/
 └── Cargo.toml                  workspace
 ```
 
-The Pub/Sub guide, including the acknowledgement, ordering-key, emulator, and capability coverage, lives at [powersemmi.github.io/ruststream-gcp-pubsub](https://powersemmi.github.io/ruststream-gcp-pubsub/). Framework concepts (subscribers, routing, codecs, middleware, the CLI) live in the [RustStream docs](https://powersemmi.github.io/ruststream/).
+The Pub/Sub reference - the descriptor and its settings, acknowledgement, the retry cap, ordering keys, the emulator and the in-process test broker - is the crate's own documentation on [docs.rs](https://docs.rs/ruststream-gcp-pubsub); [powersemmi.github.io/ruststream-gcp-pubsub](https://powersemmi.github.io/ruststream-gcp-pubsub/) is the entry page. Framework concepts (subscribers, routing, codecs, middleware, the CLI) live in the [RustStream docs](https://docs.rs/ruststream/latest/ruststream/runtime/index.html).
 
 ## Contributing
 
