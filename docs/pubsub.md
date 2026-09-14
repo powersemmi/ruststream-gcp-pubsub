@@ -347,7 +347,7 @@ to the handler's subscription, and `tb.settle()` waits for the reaction to finis
 that the handler ran, and
 `tb.broker::<PubSubTestBroker>().published::<Receipt>("receipts").assert_called_once().with(&expected)`
 asserts what it published to the topic. See
-[Unit-testing a service with TestApp](https://powersemmi.github.io/ruststream/latest/guides/testing/#unit-testing-a-service-with-testapp).
+[the `testing` module](https://docs.rs/ruststream/latest/ruststream/testing/index.html).
 
 A routes file mounts on the stand-in as it ships. `#[subscriber(GooglePubSub::new("orders-workers"))]`
 opens an in-process subscription as readily as it opens a streaming pull, and `Publish` pairs with

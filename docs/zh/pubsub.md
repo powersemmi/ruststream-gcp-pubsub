@@ -309,7 +309,7 @@ just test-brokers  # 启动模拟器，跑集成套件和 conformance 套件
 器跑过了，
 `tb.broker::<PubSubTestBroker>().published::<Receipt>("receipts").assert_called_once().with(&expected)`
 断言它向主题发布了什么。参见
-[用 TestApp 对服务做单元测试](https://powersemmi.github.io/ruststream/latest/guides/testing/#unit-testing-a-service-with-testapp)。
+[`testing` 模块](https://docs.rs/ruststream/latest/ruststream/testing/index.html)。
 
 路由文件按出厂的样子挂到这个进程内传输上。`#[subscriber(GooglePubSub::new("orders-workers"))]`
 打开一条进程内订阅，和它打开流式拉取一样顺手，`Publish` 在它上面构造发布者，和在 Broker 上一样。

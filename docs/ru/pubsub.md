@@ -355,7 +355,7 @@ just test-brokers  # поднимает эмулятор, гоняет инте�
 проверяет, что обработчик отработал, а
 `tb.broker::<PubSubTestBroker>().published::<Receipt>("receipts").assert_called_once().with(&expected)`
 проверяет, что именно он опубликовал в тему. См.
-[Юнит-тестирование сервиса через TestApp](https://powersemmi.github.io/ruststream/latest/guides/testing/#unit-testing-a-service-with-testapp).
+[модуль `testing`](https://docs.rs/ruststream/latest/ruststream/testing/index.html).
 
 Файл маршрутов монтируется на внутрипроцессный транспорт таким, каким поставляется.
 `#[subscriber(GooglePubSub::new("orders-workers"))]` открывает внутрипроцессную подписку так же
