@@ -52,7 +52,9 @@ synchronous builder composes; the runtime authenticates and connects once at sta
 Default Credentials, and `create_with_topic` is dropped: a production subscription is managed as
 infrastructure, not by the service that consumes it.
 
-More of both halves in [`examples/`](https://github.com/powersemmi/ruststream-gcp-pubsub/tree/main/crates/ruststream-gcp-pubsub/examples).
+More of both halves in [`examples/`][examples].
+
+[examples]: https://github.com/powersemmi/ruststream-gcp-pubsub/tree/main/crates/ruststream-gcp-pubsub/examples
 
 # Subscribing
 
