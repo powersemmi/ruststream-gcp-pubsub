@@ -176,7 +176,10 @@ jobs:
       # test that skips is a defect rather than a convenience. Without it a live test returns
       # before its first assertion and reports ok, which reads exactly like a run that did the
       # work.
-      - name: Run integration + conformance against the emulator
+      # Every suite that reaches the emulator is named here, and a new one has to be added: the
+      # list is what decides whether a live case runs at all, and a file left out passes by not
+      # being built.
+      - name: Run the live suites against the emulator
         env:
           PUBSUB_TEST_HOST: 127.0.0.1:8085
           RUSTSTREAM_REQUIRE_LIVE: "1"
@@ -184,6 +187,8 @@ jobs:
           cargo test -p ruststream-gcp-pubsub --all-features
           --test integration_pubsub
           --test conformance_pubsub
+          --test topology_pubsub
+          --test deadlines_pubsub
           -- --test-threads=1
 
       - name: Cleanup
