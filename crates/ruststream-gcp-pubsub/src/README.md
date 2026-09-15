@@ -74,7 +74,13 @@ subscription takes. It names an existing subscription by short id or by full
 default, so the subscription has to exist already. `#[subscriber(GooglePubSub)]` with
 `.name("orders-workers")` at the mount site is that descriptor with its name left to the
 deployment. An empty subscription or topic name is refused before any I/O, as
-[`PubSubError::InvalidDescriptor`].
+[`PubSubError::InvalidDescriptor`]. A name that is well formed but answers to nothing is not
+refused: the subscription is infrastructure, so the name is taken on trust and the streaming pull
+reports [`PubSubError::Receive`] on the stream when the service says there is no such
+subscription.
+
+`max_outstanding` is the one setting the service enforces rather than the client: the limit
+travels with the streaming pull, and the local emulator ignores it.
 
 Both forms answer `Copies = BrokerMoves`: a spent delivery is moved by Pub/Sub itself, and the
 service publishes no retry copies. `.out_retry(policy)` over either one therefore does not

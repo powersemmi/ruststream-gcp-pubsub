@@ -76,6 +76,11 @@ pub struct GooglePubSub {
 impl GooglePubSub {
     /// Names an existing subscription (short name or full
     /// `projects/{p}/subscriptions/{s}` resource name).
+    ///
+    /// The name is taken on trust: nothing is created, and the subscription is infrastructure
+    /// this crate does not own. Where it answers to nothing, the streaming pull is what says so,
+    /// and the stream yields [`PubSubError::Receive`] naming the subscription instead of
+    /// delivering.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -104,6 +109,10 @@ impl GooglePubSub {
 
     /// Flow control: how many received messages may be outstanding (unacked) at once. Defaults
     /// to the client's 1000.
+    ///
+    /// The limit travels with the streaming pull and the service is what holds to it, pausing
+    /// the stream while this many deliveries are unsettled and resuming below it. The local
+    /// emulator does not, so a run against it sees no back-pressure.
     pub fn max_outstanding(mut self, messages: i64) -> Self {
         self.max_outstanding = Some(messages);
         self
