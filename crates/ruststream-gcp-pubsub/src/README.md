@@ -228,6 +228,11 @@ and the most specific wins:
 A publish that reaches none of the three is unordered, which is Pub/Sub's own default. The key
 travels as the message's own field and never as an attribute.
 
+Ordered delivery is what a key costs as well as what it buys: while a keyed delivery is waiting to
+come back - a `retry()`, a `retry_after(d)`, a handler that has not settled yet - the service holds
+every later message of that key behind it. A key per entity keeps that queue short; one key for a
+whole stream makes the stream serial.
+
 ```
 # mod demo {
 use ruststream_gcp_pubsub::prelude::*;
