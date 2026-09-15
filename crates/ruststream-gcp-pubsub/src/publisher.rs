@@ -40,8 +40,9 @@ use crate::message::{PARTITION_KEY_HEADER, to_gcp_message};
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PubSubPublishOptions {
-    /// The message's ordering key. Messages sharing a key are delivered to one subscriber in
-    /// publish order; `None` leaves the publish unordered unless the policy fixed a key.
+    /// The message's ordering key. Messages sharing a key reach one subscriber in publish
+    /// order, on a subscription that enables message ordering; `None` leaves the publish
+    /// unordered unless the policy fixed a key.
     pub ordering_key: Option<String>,
 }
 

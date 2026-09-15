@@ -236,6 +236,28 @@ async fn a_subscription_nothing_declared_for_carries_no_policy() {
     connected.shutdown().await.expect("shutdown succeeds");
 }
 
+/// An ordering key orders deliveries only where the subscription says so, and the subscription
+/// this descriptor creates says so. The emulator hands a keyed run over in publish order either
+/// way, so the field on the resource is what the assertion reads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_created_subscription_orders_the_deliveries_of_one_key() {
+    let Some(host) = test_host() else { return };
+    let connected = connect(&host).await;
+
+    let name = unique("ordered");
+    connected
+        .subscribe_descriptor(GooglePubSub::new(&name).create_with_topic(&name))
+        .await
+        .expect("the subscription opens");
+
+    assert!(
+        configuration(&host, &name).await.enable_message_ordering,
+        "a keyed publish through this crate has to reach the handler in publish order",
+    );
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
 /// The cap the crate refuses before any I/O never reaches the service, so the run stops with
 /// nothing created rather than with a subscription that honours neither half of the declaration.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

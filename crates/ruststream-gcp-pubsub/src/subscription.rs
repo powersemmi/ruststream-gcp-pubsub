@@ -92,6 +92,11 @@ impl GooglePubSub {
     /// Creates the subscription bound to `topic` on subscribe when it does not exist yet (the
     /// topic is created too). Meant for local development and tests against the emulator;
     /// production subscriptions are usually managed as infrastructure.
+    ///
+    /// The subscription it creates enables message ordering, so a run of messages sharing an
+    /// ordering key reaches the handler in publish order. A subscription that already exists
+    /// keeps whatever its own configuration says: ordered delivery is a field of the
+    /// subscription resource, and the crate changes no resource it did not create.
     pub fn create_with_topic(mut self, topic: impl Into<String>) -> Self {
         self.create_with_topic = Some(topic.into());
         self

@@ -208,7 +208,10 @@ A publisher handed out before `shutdown` and used after it reports
 
 Pub/Sub gives a message exactly one setting beyond its payload and attributes, its ordering key,
 so that is the whole of [`PubSubPublishOptions`]. Messages sharing a key reach one subscriber in
-publish order. Three places can name the key of one publish, and the most specific wins:
+publish order, on a subscription that enables message ordering: the subscription
+[`create_with_topic`](GooglePubSub::create_with_topic) creates does, and one managed as
+infrastructure is configured where it is declared. Three places can name the key of one publish,
+and the most specific wins:
 
 1. the message's own settings, written by the [`ordering_key`](PubSubOrdering::ordering_key) step
    at a call site or by a publish transform on the position the message leaves through;

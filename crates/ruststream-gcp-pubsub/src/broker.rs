@@ -387,7 +387,12 @@ impl ConnectedPubSubBroker {
         let mut create = admin
             .create_subscription()
             .set_name(name.clone())
-            .set_topic(topic_name);
+            .set_topic(topic_name)
+            // An ordering key orders deliveries only where the subscription says so, and this
+            // is the only subscription the crate owns. Without the flag a service would order
+            // its messages against the infrastructure it ships and not against the topology it
+            // creates for a test, which is the difference a test is there to catch.
+            .set_enable_message_ordering(true);
         if let Some((dead_letter, attempts)) = dead_letter {
             create = create.set_dead_letter_policy(
                 DeadLetterPolicy::new()
