@@ -1,0 +1,14 @@
+{
+  "rules": [
+    "Import `ruststream_gcp_pubsub::prelude::*` in a routes file; a file of handler bodies imports `ruststream::prelude::*` alone and bounds a slot `Out<impl Publisher>`, so it names no broker.",
+    "Subscribe with `#[subscriber(GooglePubSub::new(\"subscription\"))]`: that one descriptor carries `create_with_topic`, `max_outstanding`, `ack_extension`, `batch_wait` and `max_lease`, while the plain-string form opens the same subscription with every default and creates no topology.",
+    "Cap redeliveries with `.max_attempts(n).dead_letter(topic)` over either subscription form, both steps together and `n` between 5 and 100; the pair becomes that subscription's own dead-letter policy, one policy per subscription, and `.out_retry(..)` does not compile because Pub/Sub moves a spent delivery itself.",
+    "Attach the publish policy under its prelude name: `.out(marker, Publish::default()).build()` for a slot and `.out_reply(Publish::default())` for a reply; `PubSubPublish` is the same type spelled out for a file that speaks to two brokers.",
+    "Name an ordering key per message with the `.ordering_key(..)` step between `message(..)` and `publish()`, bounding the slot `Out<impl Publisher<Options = PubSubPublishOptions>>`; fix one for a whole mount site with `Publish::default().ordering_key(..)` instead.",
+    "Read the ordering key off a delivery with `message.partition_key()` or the `partition-key` header and the delivery attempt with `message.redelivery_count()`; the crate adds no per-delivery context field.",
+    "`HandlerOutcome::drop()` acknowledges, because Pub/Sub has no drop-without-redelivery verb, and `retry_after(delay)` holds the delivery in the process, refusing a delay past `GooglePubSub::max_lease`.",
+    "Batches are assembled on the client: name how large one may be with `.batch(n)` at the mount site and how long a partial one waits with `batch_wait` on the descriptor.",
+    "Test with `ruststream::testing::TestApp` over `ruststream_gcp_pubsub::testing::PubSubTestBroker` (feature `testing`), injecting to the subscription name rather than a topic; deadlines, redelivery timing and ordered delivery are checked against the emulator with `just test-brokers`.",
+    "A Pub/Sub subscription has no client-addressable position and no publish transaction, so `.start_at(..)`, transactions and request/reply do not compile here; a reply topic with a correlation attribute is the manual path."
+  ]
+}

@@ -2,8 +2,10 @@
 //!
 //! Core routing only: an exact-name match fans a published message out to every live
 //! subscription on that name, and a per-name log records traffic for assertions. Pub/Sub's own
-//! semantics (the topic/subscription split, lease deadlines, dead-lettering, ordered delivery)
-//! are transport behaviour and are not simulated here.
+//! semantics (the topic/subscription split, lease deadlines, ordered delivery) are transport
+//! behaviour and are not simulated here. The exception is the dead-letter policy a registration
+//! declares: the deliveries of each message are counted so a spent one leaves for the declared
+//! topic, which is the whole of what the declaration buys against the product.
 
 use std::collections::HashMap;
 use std::sync::{
@@ -24,6 +26,18 @@ pub(crate) struct SubscriptionId(u64);
 pub(crate) struct Delivery {
     pub(crate) payload: Bytes,
     pub(crate) headers: HeaderMap,
+    /// Which delivery of this message this is, counting from one. Pub/Sub reports the same
+    /// number as `delivery_attempt`, and only under a dead-letter policy.
+    pub(crate) attempt: i32,
+}
+
+/// A subscription's dead-letter policy, as the registration declared it.
+#[derive(Debug, Clone)]
+pub(crate) struct DeadLetter {
+    /// The topic a spent delivery is published to.
+    pub(crate) topic: String,
+    /// How many deliveries one message gets, counting the first.
+    pub(crate) max_attempts: i32,
 }
 
 pub(crate) type DeliverySender = mpsc::UnboundedSender<Delivery>;
@@ -110,7 +124,11 @@ impl AddressRouter {
             }
         }
 
-        let delivery = Delivery { payload, headers };
+        let delivery = Delivery {
+            payload,
+            headers,
+            attempt: 1,
+        };
         for tx in to_notify {
             if tx.send(delivery.clone()).is_ok()
                 && let Some(coordinator) = coordinator

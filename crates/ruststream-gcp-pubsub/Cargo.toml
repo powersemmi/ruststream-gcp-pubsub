@@ -11,6 +11,12 @@ readme = "../../README.md"
 keywords = ["gcp", "pubsub", "google-cloud", "broker", "ruststream"]
 categories = ["asynchronous", "network-programming"]
 
+# The reference is the crate's documentation, and `default` is empty, so a default build on
+# docs.rs would publish it with the `testing` module and the document bindings missing - the
+# two the overview and the site's redirects send readers to.
+[package.metadata.docs.rs]
+all-features = true
+
 [lints]
 workspace = true
 
@@ -19,18 +25,41 @@ default = []
 # The in-process test broker (TestableBroker + TestApp support). The conformance harness is a
 # broker-author tool and stays in this repo's dev-dependencies, not in the user-facing feature.
 testing = ["ruststream/testing"]
+# What this broker adds to the generated AsyncAPI document: the `googlepubsub` bindings a publish
+# policy can state without a connection.
+asyncapi = ["ruststream/asyncapi", "dep:serde"]
 
 [dependencies]
 ruststream = { workspace = true, default-features = false }
 google-cloud-pubsub.workspace = true
 google-cloud-auth.workspace = true
+google-cloud-wkt.workspace = true
 bytes.workspace = true
 futures.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+# Only a binding body is serialized here, and only under `asyncapi`: the crate carries no message
+# format of its own.
+serde = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
-ruststream = { workspace = true, features = ["conformance", "testing", "macros", "json"] }
+# `cbor` is a second codec and nothing else: a test that names it proves a publish carries the
+# codec its mount site chose rather than the crate default, which json alone cannot tell apart.
+ruststream = { workspace = true, features = [
+    "conformance",
+    "testing",
+    "macros",
+    "json",
+    "cbor",
+] }
 serde = { version = "1", features = ["derive"] }
+# The admin API, so a live test reads a subscription's configuration off the service instead of
+# inferring it from how deliveries behave.
+google-cloud-pubsub.workspace = true
+google-cloud-auth.workspace = true
+google-cloud-wkt.workspace = true
+# The generated document is read back as JSON, so a test asserts on fields rather than on a
+# rendered string.
+serde_json = "1"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

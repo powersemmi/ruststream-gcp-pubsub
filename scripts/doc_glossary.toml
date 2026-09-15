@@ -1,0 +1,304 @@
+# Locked renderings for the documentation's terms of art.
+#
+# A machine translation of technical prose does not fail by producing unreadable text; it
+# fails by rendering a term of art with a dictionary synonym, so that two pages of the same
+# site name the same concept differently and the reader cannot tell whether a distinction is
+# meant. Each term below therefore has exactly one rendering per language, and
+# `scripts/check_doc_i18n.py` enforces it: where the English page uses a listed term, the
+# translated page has to use the locked equivalent.
+#
+# Fields:
+#   en        the English term, matched case-insensitively on word boundaries
+#   en_match  optional regex replacing that default match (for irregular plurals or spellings)
+#   ru, zh    the locked rendering, and what a translator must write
+#   ru_match  optional regex accepting inflected forms of the Russian rendering
+#   zh_match  optional regex, same purpose, rarely needed
+#
+# A term kept in Latin script in a target language is a deliberate choice, not an oversight:
+# `ack`, `trait` and `crate` are what Russian and Chinese Rust texts actually write, and
+# replacing them with a translated coinage would make the page harder to read, not easier.
+#
+# Adding a term here is cheap and retroactive: the check reports every existing translated
+# page that does not yet honour it, so add terms only once their rendering is settled.
+#
+# Two vocabularies meet on this site, and which one a term comes from decides its rendering.
+# A concept that belongs to Pub/Sub takes the word Google's own documentation writes in that
+# language (topic, subscription, ordering key, streaming pull, ack deadline, dead-letter). A
+# concept that belongs to the framework takes the core's word, the one the RustStream site
+# uses in that language (batch, slot, mount site, harness, redelivery, partition key). Where
+# the two meet in one sentence - the ordering key *is* the framework's partition key - each
+# keeps its own word, and the framework's concept is qualified rather than renamed.
+
+[[term]]
+en = "ack"
+ru = "ack"
+zh = "ack"
+
+[[term]]
+en = "nack"
+ru = "nack"
+zh = "nack"
+
+[[term]]
+en = "broker"
+en_match = "brokers?"
+ru = "брокер"
+ru_match = "брокер"
+zh = "Broker"
+zh_match = "(?i)broker"
+
+[[term]]
+en = "subscriber"
+en_match = "subscribers?"
+ru = "подписчик"
+ru_match = "подписчик"
+zh = "订阅者"
+
+[[term]]
+en = "publisher"
+en_match = "publishers?"
+ru = "издатель"
+ru_match = "издател"
+zh = "发布者"
+
+[[term]]
+en = "capability"
+en_match = "capabilit(y|ies)"
+ru = "совместимость"
+ru_match = "совместимост"
+zh = "能力"
+
+[[term]]
+en = "batch"
+en_match = "batch(es|ed|ing)?"
+ru = "пакет"
+ru_match = "пакет"
+zh = "批"
+
+[[term]]
+en = "subscription"
+en_match = "subscriptions?"
+ru = "подписка"
+ru_match = "подписк"
+zh = "订阅"
+
+[[term]]
+en = "handler"
+en_match = "handlers?"
+ru = "обработчик"
+ru_match = "обработчик"
+zh = "处理器"
+
+[[term]]
+en = "message"
+en_match = "messages?"
+ru = "сообщение"
+ru_match = "сообщени"
+zh = "消息"
+
+[[term]]
+en = "middleware"
+ru = "middleware"
+zh = "中间件"
+
+[[term]]
+en = "router"
+en_match = "routers?"
+ru = "роутер"
+ru_match = "роутер"
+zh = "路由器"
+
+[[term]]
+en = "codec"
+en_match = "codecs?"
+ru = "кодек"
+ru_match = "кодек"
+zh = "编解码器"
+
+[[term]]
+en = "back-pressure"
+en_match = "back[- ]?pressure"
+ru = "обратное давление"
+ru_match = "обратн\\w* давлени"
+zh = "背压"
+
+[[term]]
+en = "at-least-once"
+ru = "at-least-once"
+zh = "至少一次"
+
+[[term]]
+en = "at-most-once"
+ru = "at-most-once"
+zh = "至多一次"
+
+[[term]]
+en = "cancel safety"
+en_match = "cancel[- ]safe(ty)?"
+ru = "безопасность при отмене"
+ru_match = "безопасн\\w* при отмене"
+zh = "取消安全"
+
+[[term]]
+en = "compile time"
+en_match = "compile[- ]time"
+ru = "время компиляции"
+ru_match = "компиляци"
+zh = "编译期"
+zh_match = "编译(期|时)"
+
+[[term]]
+en = "zero-cost"
+ru = "zero-cost"
+zh = "零成本"
+
+[[term]]
+en = "trait"
+en_match = "traits?"
+ru = "трейт"
+ru_match = "трейт"
+zh = "trait"
+
+[[term]]
+en = "crate"
+en_match = "crates?"
+ru = "крейт"
+ru_match = "крейт"
+zh = "crate"
+
+[[term]]
+en = "typestate"
+ru = "typestate"
+zh = "typestate"
+
+# Pub/Sub's own vocabulary. The rendering is the one Google's documentation writes in that
+# language, because a reader arrives here from it and has to recognise the same service.
+
+[[term]]
+en = "topic"
+en_match = "topics?"
+ru = "тема"
+ru_match = "\\bтем[аыуеой]"
+zh = "主题"
+
+[[term]]
+en = "ordering key"
+en_match = "ordering\\s+keys?"
+ru = "ключ упорядочивания"
+ru_match = "ключ\\w*\\s+упорядочивания"
+zh = "排序键"
+
+[[term]]
+en = "streaming pull"
+en_match = "streaming[-\\s]pull"
+ru = "streaming pull"
+ru_match = "streaming[-\\s]pull"
+zh = "流式拉取"
+
+[[term]]
+en = "ack deadline"
+en_match = "ack[-\\s]deadlines?"
+ru = "срок подтверждения"
+ru_match = "срок\\w*\\s+подтверждения"
+zh = "确认截止时间"
+
+[[term]]
+en = "dead-letter"
+en_match = "dead[-\\s]letter\\w*"
+ru = "dead-letter"
+ru_match = "dead[-\\s]letter"
+zh = "死信"
+
+[[term]]
+en = "exactly-once"
+en_match = "exactly[-\\s]once"
+ru = "exactly-once"
+ru_match = "exactly[-\\s]once"
+zh = "精确一次"
+
+[[term]]
+en = "attribute"
+en_match = "attributes?"
+ru = "атрибут"
+ru_match = "атрибут"
+zh = "属性"
+
+[[term]]
+en = "snapshot"
+en_match = "snapshots?"
+ru = "снимок"
+ru_match = "снимо?к"
+zh = "快照"
+
+[[term]]
+en = "emulator"
+en_match = "emulators?"
+ru = "эмулятор"
+ru_match = "эмулятор"
+zh = "模拟器"
+
+[[term]]
+en = "flow control"
+en_match = "flow\\s+control"
+ru = "управление потоком"
+ru_match = "управл\\w+\\s+потоком"
+zh = "流控"
+
+# The framework's vocabulary on a broker's page. The rendering is the core site's, so that a
+# reader moving between the two sites meets one word per concept.
+
+[[term]]
+en = "partition key"
+en_match = "partition\\s+keys?"
+ru = "ключ партиционирования"
+ru_match = "ключ\\w*\\s+партиционирования"
+zh = "分区键"
+
+[[term]]
+en = "mount site"
+en_match = "mount\\s+sites?"
+ru = "точка монтирования"
+ru_match = "точк\\w*\\s+монтирования"
+zh = "挂载点"
+
+[[term]]
+en = "slot"
+en_match = "slots?"
+ru = "слот"
+ru_match = "слот"
+zh = "槽位"
+
+[[term]]
+en = "harness"
+en_match = "harness(es)?"
+ru = "обвязка"
+ru_match = "обвязк"
+zh = "测试套件"
+
+[[term]]
+en = "redelivery"
+en_match = "re[- ]?deliver\\w*"
+ru = "повторная доставка"
+ru_match = "повторн\\w*\\s+доставк"
+zh = "重新投递"
+
+[[term]]
+en = "descriptor"
+en_match = "descriptors?"
+ru = "дескриптор"
+ru_match = "дескриптор"
+zh = "描述符"
+
+[[term]]
+en = "prefetch"
+en_match = "pre[- ]?fetch(ing)?"
+ru = "предвыборка"
+ru_match = "предвыборк"
+zh = "预取"
+
+[[term]]
+en = "in-process"
+en_match = "in[-\\s]process"
+ru = "внутрипроцессный"
+ru_match = "внутрипроцессн"
+zh = "进程内"
