@@ -14,8 +14,8 @@ use ruststream::{
     SubscriptionSource, nonzero,
 };
 use ruststream_gcp_pubsub::{
-    ConnectedPubSubBroker, GooglePubSub, PARTITION_KEY_HEADER, PubSubBroker, PubSubOrdering,
-    PubSubPublish, PubSubSubscriber,
+    ConnectedPubSubBroker, DELIVERY_ATTEMPT_HEADER, GooglePubSub, PARTITION_KEY_HEADER,
+    PubSubBroker, PubSubError, PubSubOrdering, PubSubPublish, PubSubSubscriber,
 };
 
 mod live;
@@ -247,8 +247,13 @@ async fn spends_its_attempts(
             .expect("stream is open")
             .expect("delivery is ok");
         // The service counts the deliveries, so the count is on the message rather than in a
-        // header this process maintains.
+        // header this process maintains. The crate's own header reports the same number, which
+        // is what a service reads when it stays on headers.
         assert_eq!(message.redelivery_count(), Some(u64::from(expected)));
+        assert_eq!(
+            message.headers().get_str(DELIVERY_ATTEMPT_HEADER),
+            Some(expected.to_string().as_str()),
+        );
         // What the runtime settles an immediate retry with on this transport, at every
         // delivery: the subscription moves a spent one itself, so nothing in the process reads
         // the cap and asks for the last delivery to be rejected instead.
@@ -525,6 +530,242 @@ async fn nack_without_requeue_does_not_redeliver() {
         .expect("delivery is ok");
     assert_eq!(next.payload(), b"next");
     next.ack().await.expect("ack succeeds");
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// A subscription that declares no dead-letter policy counts nothing, so a delivery through it
+/// reports no attempt at all. It is the service that counts, and a subscription with no cap to
+/// count against does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_subscription_without_a_policy_reports_no_attempt() {
+    let Some(host) = test_host() else { return };
+    let connected = connect(&host).await;
+
+    let name = unique("no-policy");
+    let mut subscriber = connected
+        .subscribe_descriptor(GooglePubSub::new(&name).create_with_topic(&name))
+        .await
+        .expect("subscription opens");
+    connected
+        .publisher()
+        .publish(OutgoingMessage::new(&name, b"once".as_slice()), None)
+        .await
+        .expect("publish succeeds");
+
+    let mut stream = pin!(subscriber.stream());
+    let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("delivery arrives")
+        .expect("stream is open")
+        .expect("delivery is ok");
+
+    assert_eq!(message.redelivery_count(), None);
+    assert_eq!(message.headers().get_str(DELIVERY_ATTEMPT_HEADER), None);
+    message.ack().await.expect("ack succeeds");
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// A publish that names no key anywhere is unordered, which is Pub/Sub's own default: the
+/// delivery carries no partition key, and the portable header the crate reads a key back under
+/// is not invented for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_publish_that_names_no_key_is_unordered() {
+    let Some(host) = test_host() else { return };
+    let connected = connect(&host).await;
+
+    let name = unique("unkeyed");
+    let mut subscriber = connected
+        .subscribe_descriptor(GooglePubSub::new(&name).create_with_topic(&name))
+        .await
+        .expect("subscription opens");
+    connected
+        .publisher()
+        .publish(OutgoingMessage::new(&name, b"plain".as_slice()), None)
+        .await
+        .expect("publish succeeds");
+
+    let mut stream = pin!(subscriber.stream());
+    let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("delivery arrives")
+        .expect("stream is open")
+        .expect("delivery is ok");
+
+    assert_eq!(message.partition_key(), None);
+    assert_eq!(message.headers().get_str(PARTITION_KEY_HEADER), None);
+    message.ack().await.expect("ack succeeds");
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// A publish to a topic the project does not have fails with the topic in the error, rather than
+/// succeeding against nothing. The client creates its per-topic handle without a round trip, so
+/// this is the first moment the service gets a say.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_publish_to_a_topic_that_is_not_there_names_the_topic() {
+    let Some(host) = test_host() else { return };
+    let connected = connect(&host).await;
+
+    let name = unique("no-topic");
+    let err = connected
+        .publisher()
+        .publish(OutgoingMessage::new(&name, b"nowhere".as_slice()), None)
+        .await
+        .expect_err("a publish to a topic that is not there must fail");
+
+    assert!(
+        matches!(err, PubSubError::Publish { ref topic, .. } if topic.ends_with(&name)),
+        "the error must name the topic it could not reach: {err}",
+    );
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// A descriptor that names a subscription and creates nothing takes the name on trust, because
+/// the subscription is infrastructure. Where the name answers to nothing the streaming pull is
+/// what says so, and the error carries the subscription rather than a bare client failure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_subscription_that_is_not_there_reports_itself_on_the_stream() {
+    let Some(host) = test_host() else { return };
+    let connected = connect(&host).await;
+
+    let name = unique("no-subscription");
+    let mut subscriber = connected
+        .subscribe_descriptor(GooglePubSub::new(&name))
+        .await
+        .expect("nothing is created, so nothing fails yet");
+
+    let mut stream = pin!(subscriber.stream());
+    let err = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("the stream reports the missing subscription")
+        .expect("stream is open")
+        .expect_err("a subscription that is not there cannot deliver");
+
+    assert!(
+        matches!(err, PubSubError::Receive { ref subscription, .. } if subscription.ends_with(&name)),
+        "the error must name the subscription it was pulling from: {err}",
+    );
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// The last delivery the policy allows is the one place a rejection means "do not redeliver":
+/// the service carries the message to the dead-letter topic instead. So a handler that drops a
+/// delivery there has it kept rather than acknowledged away.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_delivery_dropped_at_the_cap_reaches_the_dead_letter_topic() {
+    let Some(host) = test_host() else { return };
+    let connected = connect(&host).await;
+
+    let topic = unique("drop-cap-topic");
+    let workers = unique("drop-cap-workers");
+    let dead_letter = unique("drop-cap-dead");
+
+    let mut subscriber = SubscriptionSource::<ConnectedPubSubBroker>::declare_retry(
+        GooglePubSub::new(&workers).create_with_topic(&topic),
+        &declared_retries(&dead_letter),
+    )
+    .subscribe(&connected)
+    .await
+    .expect("the subscription opens with the declared dead-letter policy");
+    let mut dead = watch_dead_letter(&connected, &dead_letter).await;
+
+    connected
+        .publisher()
+        .publish(OutgoingMessage::new(&topic, b"poison".as_slice()), None)
+        .await
+        .expect("publish succeeds");
+
+    let mut stream = pin!(subscriber.stream());
+    for _ in 1..MAX_ATTEMPTS {
+        let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+            .await
+            .expect("delivery arrives")
+            .expect("stream is open")
+            .expect("delivery is ok");
+        message.nack(true).await.expect("nack succeeds");
+    }
+
+    let last = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("the last delivery the policy allows arrives")
+        .expect("stream is open")
+        .expect("delivery is ok");
+    assert_eq!(last.redelivery_count(), Some(u64::from(MAX_ATTEMPTS)));
+    last.nack(false).await.expect("dropping succeeds");
+
+    let mut dead_stream = pin!(dead.stream());
+    let carried = tokio::time::timeout(RECV_TIMEOUT, dead_stream.next())
+        .await
+        .expect("the dropped delivery reaches the dead-letter topic")
+        .expect("stream is open")
+        .expect("delivery is ok");
+    assert_eq!(carried.payload(), b"poison");
+    carried.ack().await.expect("ack succeeds");
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// Before the cap, dropping a delivery is an acknowledgement: Pub/Sub has no verb for "gone but
+/// not delivered", and the dead-letter topic is where a message goes when its deliveries run
+/// out, not when a handler declines one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_delivery_dropped_before_the_cap_is_acknowledged() {
+    let Some(host) = test_host() else { return };
+    let connected = connect(&host).await;
+
+    let topic = unique("drop-early-topic");
+    let workers = unique("drop-early-workers");
+    let dead_letter = unique("drop-early-dead");
+
+    let mut subscriber = SubscriptionSource::<ConnectedPubSubBroker>::declare_retry(
+        GooglePubSub::new(&workers).create_with_topic(&topic),
+        &declared_retries(&dead_letter),
+    )
+    .subscribe(&connected)
+    .await
+    .expect("the subscription opens with the declared dead-letter policy");
+    let mut dead = watch_dead_letter(&connected, &dead_letter).await;
+
+    let publisher = connected.publisher();
+    publisher
+        .publish(OutgoingMessage::new(&topic, b"declined".as_slice()), None)
+        .await
+        .expect("publish succeeds");
+
+    let mut stream = pin!(subscriber.stream());
+    let first = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("delivery arrives")
+        .expect("stream is open")
+        .expect("delivery is ok");
+    assert_eq!(first.redelivery_count(), Some(1));
+    first.nack(false).await.expect("dropping succeeds");
+
+    // The next message through the same subscription is the fence: once it arrives, the dropped
+    // one has been settled and was not handed back.
+    publisher
+        .publish(OutgoingMessage::new(&topic, b"next".as_slice()), None)
+        .await
+        .expect("publish succeeds");
+    let next = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("delivery arrives")
+        .expect("stream is open")
+        .expect("delivery is ok");
+    assert_eq!(next.payload(), b"next");
+    next.ack().await.expect("ack succeeds");
+
+    let mut dead_stream = pin!(dead.stream());
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), dead_stream.next())
+            .await
+            .is_err(),
+        "a delivery the handler declined before the cap must not reach the dead-letter topic",
+    );
 
     connected.shutdown().await.expect("shutdown succeeds");
 }
