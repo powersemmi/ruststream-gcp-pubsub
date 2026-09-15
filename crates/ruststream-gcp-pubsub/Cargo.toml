@@ -54,6 +54,11 @@ ruststream = { workspace = true, features = [
     "cbor",
 ] }
 serde = { version = "1", features = ["derive"] }
+# The admin API, so a live test reads a subscription's configuration off the service instead of
+# inferring it from how deliveries behave.
+google-cloud-pubsub.workspace = true
+google-cloud-auth.workspace = true
+google-cloud-wkt.workspace = true
 # The generated document is read back as JSON, so a test asserts on fields rather than on a
 # rendered string.
 serde_json = "1"
