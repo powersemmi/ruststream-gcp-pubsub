@@ -12,13 +12,26 @@ use google_cloud_auth::credentials::{Credentials, anonymous};
 use google_cloud_pubsub::client::{
     BasePublisher, Publisher, Subscriber, SubscriptionAdmin, TopicAdmin,
 };
-use ruststream::{Broker, ConnectedBroker, DefaultPublish, DescribeServer, ServerSpec, Subscribe};
+use google_cloud_pubsub::model::{DeadLetterPolicy, Subscription};
+use google_cloud_wkt::FieldMask;
+use ruststream::{
+    Broker, BrokerMoves, ConnectedBroker, DeclareRetryError, DefaultPublish, DescribeServer,
+    RetryDeclaration, ServerSpec, Subscribe,
+};
 use tokio::sync::OnceCell;
 
 use crate::error::{PubSubError, box_err};
 use crate::publisher::{PubSubPublish, PubSubPublisher};
 use crate::subscriber::PubSubSubscriber;
-use crate::subscription::PubSubSubscription;
+use crate::subscription::{DeclaredRetries, GooglePubSub};
+
+/// Whether a get-then-create found the resource or made it, which is what decides between
+/// carrying a dead-letter policy into the create and writing it as an update afterwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Resource {
+    Created,
+    Existing,
+}
 
 /// The live client state shared by the connected form and every handle derived from it.
 ///
@@ -35,6 +48,9 @@ pub(crate) struct Core {
     /// Per-topic publisher handles, shared by every publisher handle so shutdown can flush
     /// them all.
     pub(crate) publishers: tokio::sync::Mutex<std::collections::HashMap<String, Publisher>>,
+    /// What the registrations mounted by a bare subscription name declared about their retries,
+    /// taken at startup and applied when each subscription opens.
+    pub(crate) declared_retries: DeclaredRetries,
 }
 
 impl Core {
@@ -199,6 +215,7 @@ impl Broker for PubSubBroker {
                     project: self.project.clone(),
                     closed: AtomicBool::new(false),
                     publishers: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+                    declared_retries: DeclaredRetries::default(),
                 }))
             })
             .await?
@@ -211,12 +228,19 @@ impl Broker for PubSubBroker {
 }
 
 impl DescribeServer for PubSubBroker {
+    /// The address clients connect to, and nothing else. An operator writes whatever the client
+    /// accepts, so an endpoint may carry a scheme, a path or credentials; the description goes
+    /// into a document teams share, and `ServerSpec::host_from_url` is what keeps the rest of it
+    /// out.
     fn describe_server(&self) -> ServerSpec {
         let host = self
             .emulator
-            .clone()
-            .or_else(|| self.endpoint.clone())
-            .unwrap_or_else(|| "pubsub.googleapis.com".to_owned());
+            .as_deref()
+            .or(self.endpoint.as_deref())
+            .map_or_else(
+                || "pubsub.googleapis.com".to_owned(),
+                ServerSpec::host_from_url,
+            );
         ServerSpec::new(host, "googlepubsub")
     }
 }
@@ -245,18 +269,66 @@ impl ConnectedPubSubBroker {
     /// in) fails, or the broker is shut down.
     pub async fn subscribe_descriptor(
         &self,
-        descriptor: PubSubSubscription,
+        descriptor: GooglePubSub,
     ) -> Result<PubSubSubscriber, PubSubError> {
         descriptor.validate()?;
         self.core.ensure_open()?;
 
-        if let Some(topic) = descriptor.create_topic_ref() {
-            self.ensure_topic(topic).await?;
-            self.ensure_subscription(descriptor.subscription(), topic)
+        let policy = descriptor.dead_letter_policy();
+        let state = match descriptor.create_topic_ref() {
+            Some(topic) => {
+                self.ensure_topic(topic).await?;
+                if let Some((dead_letter, _)) = policy {
+                    // The API refuses a dead-letter policy naming a topic that is not there, and
+                    // a descriptor creating its own topology owns this one too.
+                    self.ensure_topic(dead_letter).await?;
+                }
+                self.ensure_subscription(descriptor.subscription(), topic, policy)
+                    .await?
+            }
+            None => Resource::Existing,
+        };
+        // A subscription managed as infrastructure already exists, so the declaration reaches it
+        // as an update; the create above carried it and needs no second call.
+        if let (Some((dead_letter, attempts)), Resource::Existing) = (policy, state) {
+            self.set_dead_letter_policy(descriptor.subscription(), dead_letter, attempts)
                 .await?;
         }
 
         Ok(PubSubSubscriber::open(&self.core, &descriptor))
+    }
+
+    /// Writes the registration's dead-letter policy onto a subscription that already exists.
+    ///
+    /// Pub/Sub then stops redelivering a message once it has had `attempts` deliveries and
+    /// publishes it to `dead_letter` instead, which is the whole of what the declaration buys on
+    /// this broker.
+    async fn set_dead_letter_policy(
+        &self,
+        subscription: &str,
+        dead_letter: &str,
+        attempts: i32,
+    ) -> Result<(), PubSubError> {
+        let name = self.core.subscription_name(subscription);
+        let policy = DeadLetterPolicy::new()
+            .set_dead_letter_topic(self.core.topic_name(dead_letter))
+            .set_max_delivery_attempts(attempts);
+        self.core
+            .subscription_admin
+            .update_subscription()
+            .set_subscription(
+                Subscription::new()
+                    .set_name(name.clone())
+                    .set_dead_letter_policy(policy),
+            )
+            .set_update_mask(FieldMask::default().set_paths(["dead_letter_policy"]))
+            .send()
+            .await
+            .map_err(|err| PubSubError::Admin {
+                name,
+                source: box_err(err),
+            })?;
+        Ok(())
     }
 
     /// Creates `topic` when it does not exist. Get-then-create: a lost race means the create
@@ -298,7 +370,8 @@ impl ConnectedPubSubBroker {
         &self,
         subscription: &str,
         topic: &str,
-    ) -> Result<(), PubSubError> {
+        dead_letter: Option<(&str, i32)>,
+    ) -> Result<Resource, PubSubError> {
         let name = self.core.subscription_name(subscription);
         let topic_name = self.core.topic_name(topic);
         let admin = &self.core.subscription_admin;
@@ -309,16 +382,26 @@ impl ConnectedPubSubBroker {
             .await
             .is_ok()
         {
-            return Ok(());
+            return Ok(Resource::Existing);
         }
-        match admin
+        let mut create = admin
             .create_subscription()
             .set_name(name.clone())
             .set_topic(topic_name)
-            .send()
-            .await
-        {
-            Ok(_) => Ok(()),
+            // An ordering key orders deliveries only where the subscription says so, and this
+            // is the only subscription the crate owns. Without the flag a service would order
+            // its messages against the infrastructure it ships and not against the topology it
+            // creates for a test, which is the difference a test is there to catch.
+            .set_enable_message_ordering(true);
+        if let Some((dead_letter, attempts)) = dead_letter {
+            create = create.set_dead_letter_policy(
+                DeadLetterPolicy::new()
+                    .set_dead_letter_topic(self.core.topic_name(dead_letter))
+                    .set_max_delivery_attempts(attempts),
+            );
+        }
+        match create.send().await {
+            Ok(_) => Ok(Resource::Created),
             Err(create_err) => {
                 if admin
                     .get_subscription()
@@ -327,7 +410,7 @@ impl ConnectedPubSubBroker {
                     .await
                     .is_ok()
                 {
-                    Ok(())
+                    Ok(Resource::Existing)
                 } else {
                     Err(PubSubError::Admin {
                         name,
@@ -364,13 +447,101 @@ impl ConnectedBroker for ConnectedPubSubBroker {
 
 impl Subscribe for ConnectedPubSubBroker {
     type Subscriber = PubSubSubscriber;
+    // A bare name opens the descriptor's own default subscription, and a Pub/Sub subscription
+    // moves a spent delivery itself.
+    type Copies = BrokerMoves;
 
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
-        self.subscribe_descriptor(PubSubSubscription::new(name))
+        self.subscribe_descriptor(self.core.declared_retries.source(name))
             .await
+    }
+
+    /// A bare name has no descriptor to declare on, so the broker takes the declaration for the
+    /// subscription this name opens: `dead_letter(topic)` becomes its `deadLetterTopic` and
+    /// `max_attempts(n)` its `maxDeliveryAttempts`, written when
+    /// [`subscribe`](Self::subscribe) opens the subscription.
+    fn declare_retry(
+        &self,
+        name: &str,
+        declaration: &RetryDeclaration,
+    ) -> Result<(), DeclareRetryError> {
+        self.core.declared_retries.take(name, declaration)
     }
 }
 
 impl DefaultPublish for ConnectedPubSubBroker {
     type Policy = PubSubPublish;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn described(broker: &PubSubBroker) -> String {
+        broker
+            .describe_server()
+            .host
+            .expect("a Pub/Sub server always has an address")
+    }
+
+    #[test]
+    fn the_default_server_is_the_public_endpoint() {
+        assert_eq!(
+            described(&PubSubBroker::new("p")),
+            "pubsub.googleapis.com".to_owned()
+        );
+    }
+
+    #[test]
+    fn an_emulator_address_is_reported_as_written() {
+        // The form the documentation puts in front of a reader.
+        assert_eq!(
+            described(&PubSubBroker::new("p").emulator("localhost:8085")),
+            "localhost:8085".to_owned()
+        );
+    }
+
+    /// Every endpoint form this crate accepts reduces to the host and port, and nothing an
+    /// operator wrote around it reaches a document teams share.
+    #[test]
+    fn an_endpoint_is_reported_as_host_and_port() {
+        for (written, expected) in [
+            ("localhost:8085", "localhost:8085"),
+            ("http://localhost:8085", "localhost:8085"),
+            (
+                "https://us-east1-pubsub.googleapis.com",
+                "us-east1-pubsub.googleapis.com",
+            ),
+            ("https://pubsub.googleapis.com/v1", "pubsub.googleapis.com"),
+            (
+                "https://pubsub.googleapis.com/v1?alt=json",
+                "pubsub.googleapis.com",
+            ),
+            ("http://user:pass@localhost:8085", "localhost:8085"),
+            // The path holds the only `@`, so cutting on it before the path is removed would
+            // report `b` as the host.
+            ("https://pubsub.googleapis.com/a@b", "pubsub.googleapis.com"),
+            // Credentials carrying an `@` of their own: the host follows the last one.
+            ("http://user:p@ss@localhost:8085", "localhost:8085"),
+            ("http://[::1]:8085", "[::1]:8085"),
+        ] {
+            let host = described(&PubSubBroker::new("p").endpoint(written));
+            assert_eq!(host, expected.to_owned(), "endpoint {written:?}");
+            assert!(
+                !host.contains("://"),
+                "scheme reached the description: {host}"
+            );
+            assert!(
+                !host.contains('@'),
+                "credentials reached the description: {host}"
+            );
+        }
+    }
+
+    /// The emulator takes the same path: it is an endpoint an operator writes too.
+    #[test]
+    fn an_emulator_endpoint_is_stripped_the_same_way() {
+        let host = described(&PubSubBroker::new("p").emulator("http://user:pass@127.0.0.1:8085"));
+        assert_eq!(host, "127.0.0.1:8085".to_owned());
+    }
 }

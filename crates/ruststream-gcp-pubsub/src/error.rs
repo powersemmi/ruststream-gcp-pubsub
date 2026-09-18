@@ -1,6 +1,7 @@
 //! The crate-level error type.
 
 use std::error::Error as StdError;
+use std::time::Duration;
 
 /// Errors returned by the Google Cloud Pub/Sub broker.
 ///
@@ -51,6 +52,19 @@ pub enum PubSubError {
     /// A subscription descriptor is invalid.
     #[error("invalid pubsub subscription descriptor: {0}")]
     InvalidDescriptor(String),
+
+    /// A delayed retry asks to hold a delivery for longer than the subscription keeps it leased.
+    #[error(
+        "a delayed retry of {requested:?} outlives the subscription's maximum lease of {lease:?}; \
+         the delivery would come back before the delay elapsed. Raise it with \
+         GooglePubSub::max_lease, or ask for a shorter delay"
+    )]
+    DelayBeyondLease {
+        /// The delay the handler asked for.
+        requested: Duration,
+        /// How long the client keeps a delivery leased.
+        lease: Duration,
+    },
 }
 
 /// Boxes a client error into the crate's `Box<dyn StdError>` source form.

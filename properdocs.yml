@@ -63,6 +63,7 @@ markdown_extensions:
 
 hooks:
   - docs/hooks/snippet_titles.py
+  - docs/hooks/i18n_banner.py
 
 plugins:
   - search
@@ -72,8 +73,8 @@ plugins:
   #
   # English is normative; a page with no translation yet falls back to the English text inside
   # the localized site rather than disappearing from it, which is what lets translations land
-  # page by page. The structure is what ships here - no page is translated yet, so every locale
-  # currently renders the English text.
+  # page by page. Every page currently has a Russian and a Chinese translation, so the fallback
+  # is what a newly added English page relies on until its translations follow.
   #
   # The plugin targets MkDocs, and properdocs aliases the `mkdocs` package and reads the
   # `mkdocs.plugins` entry-point group, so it loads unchanged under `properdocs build`.
@@ -92,7 +93,6 @@ plugins:
           build: true
           nav_translations:
             Home: Главная
-            Guide: Руководство
             RustStream docs: Документация RustStream
             API reference: Справочник API
         - locale: zh
@@ -100,9 +100,16 @@ plugins:
           build: true
           nav_translations:
             Home: 首页
-            Guide: 指南
             RustStream docs: RustStream 文档
             API reference: API 参考
+  # The guide moved into the crate's own reference on docs.rs, where the item docs already live.
+  # Each page it replaced keeps its URL and sends the reader to the section that took it over, in
+  # every language: a link published before the move must not end on a 404.
+  - redirects:
+      redirect_maps:
+        pubsub.md: https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/index.html
+        ru/pubsub.md: https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/index.html
+        zh/pubsub.md: https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/index.html
 
 extra:
   version:
@@ -113,7 +120,5 @@ extra:
 
 nav:
   - Home: index.md
-  - Guide:
-      - pubsub.md
   - RustStream docs: https://powersemmi.github.io/ruststream/
   - API reference: https://docs.rs/ruststream-gcp-pubsub

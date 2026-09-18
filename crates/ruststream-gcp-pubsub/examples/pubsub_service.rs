@@ -12,7 +12,7 @@ struct Order {
     id: u64,
 }
 
-#[subscriber(PubSubSubscription::new("orders-workers").create_with_topic("orders"))]
+#[subscriber(GooglePubSub::new("orders-workers").create_with_topic("orders"))]
 async fn handle(order: &Order) -> HandlerOutcome {
     println!("got order {}", order.id);
     HandlerOutcome::ack()
@@ -24,7 +24,9 @@ async fn handle(order: &Order) -> HandlerOutcome {
 fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         PubSubBroker::new("my-project").emulator("localhost:8085"),
-        |b| b.include(handle),
+        |b| {
+            b.include(handle);
+        },
     )
 }
 // --8<-- [end:app]
