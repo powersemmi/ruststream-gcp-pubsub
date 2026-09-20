@@ -13,7 +13,7 @@
     "memory_speed": "unknown",
     "os": "Linux 7.2.6-x64v3-xanmod1-1",
     "broker": "Pub/Sub emulator, gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators, Google Cloud SDK 578.0.0, in Docker on localhost",
-    "round_trip": "0.269 ms (20000 GetSubscription calls on one connection); a delivery is charged 1 of them",
+    "round_trip": "0.265 ms (20000 GetSubscription calls on one connection); a delivery is charged 1 of them",
     "rustc": "1.98.1",
     "profile": "bench, inheriting release (opt-level = 3, lto = false, codegen-units = 16)",
     "features": "ruststream-gcp-pubsub default (none), ruststream macros,json; google-cloud-pubsub 1.3.0",
@@ -23,25 +23,25 @@
     {
       "name": "Streaming pull, 512 B JSON, ack each",
       "unit": "msg/s",
-      "messages": 11590,
+      "messages": 11489,
       "pairs": 11,
       "raw": {
         "median": 1849,
-        "min": 1750,
-        "max": 1858
+        "min": 1816,
+        "max": 1857
       },
       "adapter": {
-        "median": 1848,
-        "min": 1833,
-        "max": 1856
-      },
-      "framework": {
-        "median": 1849,
-        "min": 1834,
+        "median": 1852,
+        "min": 1830,
         "max": 1858
       },
-      "overhead_percent": -0.0,
-      "adapter_overhead_percent": 0.0,
+      "framework": {
+        "median": 1852,
+        "min": 1830,
+        "max": 1857
+      },
+      "overhead_percent": -0.1,
+      "adapter_overhead_percent": -0.1,
       "verdict": "indistinguishable",
       "adapter_verdict": "indistinguishable",
       "broker_bound": false
@@ -49,25 +49,25 @@
     {
       "name": "Streaming pull with ordering keys, 512 B JSON, ack each",
       "unit": "msg/s",
-      "messages": 12541,
+      "messages": 12546,
       "pairs": 11,
       "raw": {
-        "median": 1995,
-        "min": 1992,
-        "max": 1996
+        "median": 1996,
+        "min": 1995,
+        "max": 1997
       },
       "adapter": {
-        "median": 1995,
-        "min": 1993,
+        "median": 1996,
+        "min": 1996,
         "max": 1996
       },
       "framework": {
-        "median": 1995,
-        "min": 1992,
-        "max": 1996
+        "median": 1996,
+        "min": 1995,
+        "max": 1997
       },
-      "overhead_percent": -0.0,
-      "adapter_overhead_percent": -0.0,
+      "overhead_percent": 0.0,
+      "adapter_overhead_percent": 0.0,
       "verdict": "indistinguishable",
       "adapter_verdict": "indistinguishable",
       "broker_bound": true
