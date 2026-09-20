@@ -9,7 +9,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use google_cloud_pubsub::model::Message as GcpMessage;
 use google_cloud_pubsub::subscriber::handler::Handler;
-use ruststream::{AckError, HeaderMap, IncomingMessage, OutgoingMessage, Partitioned};
+use ruststream::{AckError, HeaderMap, IncomingMessage, OutgoingMessage, Partitioned, Str};
 use tokio::time::sleep;
 
 use crate::error::{PubSubError, box_err};
@@ -54,14 +54,19 @@ impl std::fmt::Debug for PubSubMessage {
 impl PubSubMessage {
     pub(crate) fn new(message: GcpMessage, handler: Handler, limits: DeliveryLimits) -> Self {
         let mut headers = HeaderMap::with_capacity(message.attributes.len() + 2);
-        for (name, value) in &message.attributes {
-            headers.insert(name.clone(), value.clone());
+        // The attributes are moved, not copied: a header key and a header value are both shared
+        // buffers, and a `String` becomes one without touching its bytes.
+        for (name, value) in message.attributes {
+            headers.insert(name, value);
         }
         if !message.ordering_key.is_empty() {
-            headers.insert(PARTITION_KEY_HEADER, message.ordering_key.clone());
+            headers.insert(Str::from_static(PARTITION_KEY_HEADER), message.ordering_key);
         }
         if let Some(attempt) = handler.delivery_attempt() {
-            headers.insert(DELIVERY_ATTEMPT_HEADER, attempt.to_string());
+            headers.insert(
+                Str::from_static(DELIVERY_ATTEMPT_HEADER),
+                attempt.to_string(),
+            );
         }
         Self {
             payload: message.data,
