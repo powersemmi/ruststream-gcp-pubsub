@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/ruststream-gcp-pubsub"]
+members = ["crates/ruststream-gcp-pubsub", "crates/ruststream-gcp-pubsub-bench"]
 
 [workspace.package]
 version = "0.7.0"
