@@ -41,9 +41,10 @@
 //! The message count is not a constant: a probe run measures the raw loop's rate and the count is
 //! set from it, so a measured run lasts at least [`SECONDS`] on whatever machine it is taken on.
 //!
-//! Rounds are interleaved - raw, adapter, framework, raw, adapter, framework - and the first is
-//! discarded. Running one loop to the end and then the next would charge every drift of the
-//! machine to whichever ran last.
+//! Rounds are interleaved - raw, adapter, framework, raw, adapter, framework - and each loop
+//! reports its best round: noise only ever slows a run down, so the fastest round is the closest
+//! to the undisturbed cost. Running one loop to the end and then the next would charge every
+//! drift of the machine to whichever ran last.
 //!
 //! # What the numbers do not say
 //!
@@ -119,8 +120,8 @@ const MARGIN: f64 = 1.25;
 /// The ceiling on a calibrated count, so a machine an order faster does not turn a run into an
 /// afternoon.
 const MAX_MESSAGES: usize = 4_000_000;
-/// Pairs kept. One more is run and discarded.
-const PAIRS: usize = 11;
+/// Rounds run. The best of them is reported.
+const PAIRS: usize = 3;
 /// Worker threads both halves are driven on.
 const WORKERS: usize = 4;
 
@@ -700,32 +701,27 @@ impl Scenario {
     }
 }
 
-/// Median, smallest and largest of the kept pairs.
+/// Best and worst of the rounds.
+///
+/// Noise on the machine only ever slows a run down, so the fastest round is the closest to the
+/// undisturbed cost, and the slowest says how far from quiet the machine was.
 #[derive(Clone, Copy, Debug)]
 struct Stats {
-    median: f64,
-    min: f64,
-    max: f64,
+    best: f64,
+    worst: f64,
 }
 
 impl Stats {
-    fn of(mut rates: Vec<f64>) -> Self {
-        rates.sort_by(f64::total_cmp);
-        let middle = rates.len() / 2;
-        let median = if rates.len().is_multiple_of(2) {
-            f64::midpoint(rates[middle - 1], rates[middle])
-        } else {
-            rates[middle]
-        };
+    fn of(rates: &[f64]) -> Self {
+        assert!(!rates.is_empty(), "no round was run");
         Self {
-            median,
-            min: rates[0],
-            max: rates[rates.len() - 1],
+            best: rates.iter().copied().fold(f64::MIN, f64::max),
+            worst: rates.iter().copied().fold(f64::MAX, f64::min),
         }
     }
 
     fn spread(self) -> f64 {
-        self.max - self.min
+        self.best - self.worst
     }
 }
 
@@ -747,7 +743,7 @@ struct Measured {
 /// The honesty rule of the procedure, applied to one difference: a gap smaller than the spread
 /// between runs of either side is a verdict, never a percentage.
 fn verdict(raw: Stats, other: Stats) -> &'static str {
-    if (raw.median - other.median).abs() < raw.spread().max(other.spread()) {
+    if (raw.best - other.best).abs() < raw.spread().max(other.spread()) {
         "indistinguishable"
     } else {
         "measured"
@@ -756,7 +752,7 @@ fn verdict(raw: Stats, other: Stats) -> &'static str {
 
 /// How much slower `other` is than the raw client, as a percentage of the raw client's rate.
 fn overhead(raw: Stats, other: Stats) -> f64 {
-    (raw.median - other.median) / raw.median * 100.0
+    (raw.best - other.best) / raw.best * 100.0
 }
 
 async fn measure(
@@ -780,13 +776,10 @@ async fn measure(
     let mut raws = Vec::with_capacity(pairs);
     let mut adapters = Vec::with_capacity(pairs);
     let mut frameworks = Vec::with_capacity(pairs);
-    for round in 0..=pairs {
+    for round in 1..=pairs {
         let raw = through_client(scenario, host, &RunNames::fresh(), messages).await;
         let adapter = through_crate(scenario, host, &RunNames::fresh(), messages).await;
         let framework = through_framework(scenario, host, &RunNames::fresh(), messages).await;
-        if round == 0 {
-            continue;
-        }
         println!(
             "  round {round:>2}: raw {:>9.0}, adapter {:>9.0}, framework {:>9.0} msg/s",
             rate(raw, messages),
@@ -798,14 +791,14 @@ async fn measure(
         frameworks.push(rate(framework, messages));
     }
 
-    let raw = Stats::of(raws);
-    let adapter = Stats::of(adapters);
-    let framework = Stats::of(frameworks);
+    let raw = Stats::of(&raws);
+    let adapter = Stats::of(&adapters);
+    let framework = Stats::of(&frameworks);
     // What the transport charges the raw consumer per delivery, against what a delivery took.
     // Half is the line: past it the work above the client happened inside a wait that was already
     // being paid, and the row is a lower bound on that work rather than a measurement of it.
     let charged = ROUND_TRIPS_PER_DELIVERY * round_trip.as_secs_f64();
-    let per_message = 1.0 / raw.median;
+    let per_message = 1.0 / raw.best;
     Measured {
         scenario,
         messages,
@@ -838,12 +831,9 @@ fn document(measured: &[Measured], round_trip: Duration) -> String {
                 "      \"unit\": \"msg/s\",\n",
                 "      \"messages\": {messages},\n",
                 "      \"pairs\": {pairs},\n",
-                "      \"raw\": {{ \"median\": {raw_median:.0}, \"min\": {raw_min:.0},",
-                " \"max\": {raw_max:.0} }},\n",
-                "      \"adapter\": {{ \"median\": {ad_median:.0}, \"min\": {ad_min:.0},",
-                " \"max\": {ad_max:.0} }},\n",
-                "      \"framework\": {{ \"median\": {fw_median:.0}, \"min\": {fw_min:.0},",
-                " \"max\": {fw_max:.0} }},\n",
+                "      \"raw\": {{ \"best\": {raw_best:.0}, \"worst\": {raw_worst:.0} }},\n",
+                "      \"adapter\": {{ \"best\": {ad_best:.0}, \"worst\": {ad_worst:.0} }},\n",
+                "      \"framework\": {{ \"best\": {fw_best:.0}, \"worst\": {fw_worst:.0} }},\n",
                 "      \"overhead_percent\": {overhead:.1},\n",
                 "      \"adapter_overhead_percent\": {adapter_overhead:.1},\n",
                 "      \"verdict\": \"{verdict}\",\n",
@@ -854,15 +844,12 @@ fn document(measured: &[Measured], round_trip: Duration) -> String {
             name = row.scenario.name(),
             messages = row.messages,
             pairs = row.pairs,
-            raw_median = row.raw.median,
-            raw_min = row.raw.min,
-            raw_max = row.raw.max,
-            ad_median = row.adapter.median,
-            ad_min = row.adapter.min,
-            ad_max = row.adapter.max,
-            fw_median = row.framework.median,
-            fw_min = row.framework.min,
-            fw_max = row.framework.max,
+            raw_best = row.raw.best,
+            raw_worst = row.raw.worst,
+            ad_best = row.adapter.best,
+            ad_worst = row.adapter.worst,
+            fw_best = row.framework.best,
+            fw_worst = row.framework.worst,
             overhead = row.overhead_percent,
             adapter_overhead = row.adapter_overhead_percent,
             verdict = row.verdict,
@@ -887,7 +874,7 @@ fn runtime() -> Runtime {
 /// A positive count from the environment, or the default.
 ///
 /// The parse target rejects zero, so a pairs count of zero is refused here rather than after the
-/// probe run, where it would panic in the statistics with every kept pair discarded.
+/// probe run, where it would panic in the statistics with no round to report.
 fn number(name: &str, fallback: usize) -> usize {
     env::var(name).ok().map_or(fallback, |value| {
         value
@@ -920,11 +907,11 @@ fn main() {
         println!(
             "{}: raw {:.0}, adapter {:.0} ({:+.1}%, {}), framework {:.0} ({:+.1}%, {}) msg/s{}",
             row.scenario.name(),
-            row.raw.median,
-            row.adapter.median,
+            row.raw.best,
+            row.adapter.best,
             row.adapter_overhead_percent,
             row.adapter_verdict,
-            row.framework.median,
+            row.framework.best,
             row.overhead_percent,
             row.verdict,
             if row.broker_bound {
