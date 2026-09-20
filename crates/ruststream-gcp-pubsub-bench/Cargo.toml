@@ -1,0 +1,42 @@
+[package]
+name = "ruststream-gcp-pubsub-bench"
+description = "The paired raw-versus-framework benchmark for ruststream-gcp-pubsub. Never published."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# A benchmark measures what ships, and the `testing` feature is not it: it compiles an in-process
+# stand-in into this crate and turns on the framework's harness. Nothing here enables it; it exists
+# so that asking for it is the compile error in `benches/paired.rs` rather than a number nobody can
+# trust.
+testing = ["ruststream-gcp-pubsub/testing"]
+
+# The benchmark lives in its own package so that the measured binary links this crate with the
+# feature set a service ships. `ruststream-gcp-pubsub`'s own dev-dependencies pull
+# `ruststream/conformance`, which enables `ruststream/testing`, and a benchmark inside that package
+# would be built against it.
+[dev-dependencies]
+ruststream-gcp-pubsub.workspace = true
+# The framework loop is a service like any other, so the core comes with the decorator that
+# declares a subscriber and the codec a service decodes with.
+ruststream = { workspace = true, features = ["macros", "json"] }
+google-cloud-pubsub.workspace = true
+google-cloud-auth.workspace = true
+bytes.workspace = true
+futures.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+[[bench]]
+name = "paired"
+harness = false
