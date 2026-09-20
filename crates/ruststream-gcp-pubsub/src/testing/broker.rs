@@ -1,5 +1,6 @@
 //! [`PubSubTestBroker`]: the in-process transport and its connected form.
 
+use std::borrow::Cow;
 use std::future::{Future, ready};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -257,20 +258,23 @@ impl PubSubTestPublisher {
     /// future below is what gives the call site its parity with the real publisher.
     fn route(
         &self,
-        msg: &OutgoingMessage<'_, BytesMut>,
+        msg: OutgoingMessage<'_, BytesMut>,
         options: Option<&PubSubPublishOptions>,
     ) -> Result<(), PubSubError> {
         self.state.ensure_open()?;
+        let name = msg.name();
         let mut headers = msg.headers().clone();
+        let payload = msg.into_payload();
         // The stand-in has no protocol field to put the key in, so it puts the resolved key where
         // a delivery off Pub/Sub reports it: the `partition-key` header. A test then reads the
         // same answer either way.
-        match resolve_ordering_key(msg, options, self.default_ordering_key.as_deref()) {
-            Some(key) => headers.insert(PARTITION_KEY_HEADER, key.into_owned()),
+        let key = resolve_ordering_key(&headers, options, self.default_ordering_key.as_deref())
+            .map(Cow::into_owned);
+        match key {
+            Some(key) => headers.insert(PARTITION_KEY_HEADER, key),
             None => headers.remove(PARTITION_KEY_HEADER),
         };
-        self.state
-            .publish(msg.name(), Bytes::copy_from_slice(msg.payload()), headers);
+        self.state.publish(name, payload.freeze(), headers);
         Ok(())
     }
 }
@@ -287,7 +291,7 @@ impl Publisher for PubSubTestPublisher {
         msg: OutgoingMessage<'_, BytesMut>,
         options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
-        ready(self.route(&msg, options))
+        ready(self.route(msg, options))
     }
 }
 
