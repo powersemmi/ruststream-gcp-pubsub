@@ -262,9 +262,7 @@ impl PubSubTestPublisher {
         options: Option<&PubSubPublishOptions>,
     ) -> Result<(), PubSubError> {
         self.state.ensure_open()?;
-        let name = msg.name();
-        let mut headers = msg.headers().clone();
-        let payload = msg.into_payload();
+        let (name, payload, mut headers) = msg.into_parts();
         // The stand-in has no protocol field to put the key in, so it puts the resolved key where
         // a delivery off Pub/Sub reports it: the `partition-key` header. A test then reads the
         // same answer either way.
