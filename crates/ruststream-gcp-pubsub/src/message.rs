@@ -6,7 +6,7 @@
 use std::future::{Future, ready};
 use std::time::Duration;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use google_cloud_pubsub::model::Message as GcpMessage;
 use google_cloud_pubsub::subscriber::handler::Handler;
 use ruststream::{AckError, HeaderMap, IncomingMessage, OutgoingMessage, Partitioned, Str};
@@ -214,7 +214,10 @@ impl IncomingMessage for PubSubMessage {
 /// The `partition-key` header never travels as an attribute: it is the portable spelling of the
 /// ordering key, the publisher has already read it, and a delivery reports the key back under that
 /// same name.
-pub(crate) fn to_gcp_message(msg: &OutgoingMessage<'_>, ordering_key: Option<&str>) -> GcpMessage {
+pub(crate) fn to_gcp_message(
+    msg: &OutgoingMessage<'_, BytesMut>,
+    ordering_key: Option<&str>,
+) -> GcpMessage {
     let headers = msg.headers();
     let mut attributes: Vec<(String, String)> = Vec::with_capacity(headers.len());
     for (name, value) in headers.iter() {

@@ -4,13 +4,13 @@ use std::future::{Future, ready};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::Bindings;
 use ruststream::testing::{Coordinator, TestableBroker};
 use ruststream::{
     Broker, BrokerMoves, ConnectedBroker, DeclareRetryError, DefaultPublish, OutgoingMessage,
-    PairError, PublishPolicy, Publisher, RawMessage, RetryDeclaration, Subscribe,
+    PairError, PublishPolicy, Publisher, RawMessage, RetryDeclaration, Subscribe, Take,
 };
 
 use crate::error::PubSubError;
@@ -257,7 +257,7 @@ impl PubSubTestPublisher {
     /// future below is what gives the call site its parity with the real publisher.
     fn route(
         &self,
-        msg: &OutgoingMessage<'_>,
+        msg: &OutgoingMessage<'_, BytesMut>,
         options: Option<&PubSubPublishOptions>,
     ) -> Result<(), PubSubError> {
         self.state.ensure_open()?;
@@ -276,12 +276,15 @@ impl PubSubTestPublisher {
 }
 
 impl Publisher for PubSubTestPublisher {
+    /// The same answer the live publisher gives: the router keeps the payload.
+    type Payload = Take;
+
     type Error = PubSubError;
     type Options = PubSubPublishOptions;
 
     fn publish(
         &self,
-        msg: OutgoingMessage<'_>,
+        msg: OutgoingMessage<'_, BytesMut>,
         options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
         ready(self.route(&msg, options))

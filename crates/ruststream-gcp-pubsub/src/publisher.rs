@@ -6,11 +6,12 @@ use std::fmt;
 use std::future::{Future, ready};
 use std::sync::Arc;
 
+use bytes::BytesMut;
 use google_cloud_pubsub::client::Publisher as GcpPublisher;
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::{Binding, Bindings};
 use ruststream::runtime::{PublishBuilder, PublishSink};
-use ruststream::{OutgoingMessage, PairError, PublishPolicy, Publisher};
+use ruststream::{OutgoingMessage, PairError, PublishPolicy, Publisher, Take};
 #[cfg(feature = "asyncapi")]
 use serde::Serialize;
 
@@ -111,7 +112,7 @@ impl PubSubPublisher {
 /// which is the portable spelling of the same key and keeps a service that names no broker able to
 /// order its messages. What neither named is what the policy fixed for the mount site.
 pub(crate) fn resolve_ordering_key<'a>(
-    msg: &'a OutgoingMessage<'_>,
+    msg: &'a OutgoingMessage<'_, BytesMut>,
     options: Option<&'a PubSubPublishOptions>,
     policy: Option<&'a str>,
 ) -> Option<Cow<'a, str>> {
@@ -125,12 +126,16 @@ pub(crate) fn resolve_ordering_key<'a>(
 }
 
 impl Publisher for PubSubPublisher {
+    /// The client keeps the payload: a Pub/Sub message's data is a `Bytes`, so the buffer the
+    /// framework wrote becomes it.
+    type Payload = Take;
+
     type Error = PubSubError;
     type Options = PubSubPublishOptions;
 
     async fn publish(
         &self,
-        msg: OutgoingMessage<'_>,
+        msg: OutgoingMessage<'_, BytesMut>,
         options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
         let core = self.core()?;
