@@ -47,6 +47,7 @@
 use std::convert::Infallible;
 use std::env;
 use std::future::Future;
+use std::hint::black_box;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
@@ -113,12 +114,16 @@ pub const MESSAGES: usize = 1_000;
 /// The measurement configuration every gated scenario shares.
 ///
 /// `steady` is what one delivery allocates in the steady state and `cold` what starting the
-/// service and taking the first delivery allocate once; together, with [`TIMERS`] on top, they
-/// are the hard limit the longest run of the scenario (twice [`MESSAGES`] deliveries) is held to,
-/// so the run fails when the path allocates more than it does today. Both are the highest counts
-/// seen over repeated runs, and a number that goes down is lowered here in the same change. The
-/// instruction limit is relative: `just bench-code --save-baseline=main` records a baseline and
-/// `just bench-code --baseline=main` compares against it.
+/// service and taking the first delivery allocate once; together they are the hard limit the
+/// longest run of the scenario (twice [`MESSAGES`] deliveries) is held to, so the run fails when
+/// the path allocates more than it does today. The client acknowledges in batches and extends
+/// leases on timers, so a run's count moves a little on an unchanged tree: the limit is the
+/// highest count seen over repeated runs plus a margin at least as large as the spread seen, and
+/// a tenth of a percent at the least. One allocation more per delivery adds `2 * MESSAGES` to
+/// the run, more than any margin here, so the gate still catches it. A number that goes down is
+/// lowered here in the same change. The instruction totals moved by at most half a percent, a
+/// quarter of the relative limit: `just bench-code --save-baseline=main` records a baseline and
+/// `just bench-code --baseline=main` fails on two percent more.
 pub fn config(steady: u64, cold: u64) -> LibraryBenchmarkConfig {
     config_every(steady, 1, cold)
 }
@@ -135,20 +140,10 @@ pub fn config_every(steady: u64, per: u64, cold: u64) -> LibraryBenchmarkConfig 
 }
 
 /// The limit for the configured count: the cold part once, plus the steady rate over the longest
-/// run of the scenario, which is twice [`MESSAGES`], plus [`TIMERS`]. The division rounds up.
+/// run of the scenario, which is twice [`MESSAGES`]. The division rounds up.
 const fn blocks(steady: u64, per: u64, cold: u64) -> u64 {
-    cold + (steady * 2 * MESSAGES as u64).div_ceil(per) + TIMERS
+    cold + (steady * 2 * MESSAGES as u64).div_ceil(per)
 }
-
-/// Allocations the longest run may make above the highest count seen, for the client's timers.
-///
-/// The client acknowledges in batches and extends leases on timers, so how many of those requests
-/// a run makes depends on how long it took, and the longest run's count moved by up to 40 between
-/// runs of an unchanged tree. A limit at the highest count seen would fail some run of that tree.
-/// One allocation more per delivery adds `2 * MESSAGES` to the run, twenty times this margin, so
-/// the gate still catches it. The instruction totals moved by at most half a percent, a quarter of
-/// the two percent the soft limit allows.
-const TIMERS: u64 = 100;
 
 /// Callgrind collecting inside the measured region alone.
 fn callgrind() -> Callgrind {
@@ -163,7 +158,9 @@ fn callgrind() -> Callgrind {
 /// The measured region: everything this runs is counted, nothing around it is.
 #[inline(never)]
 pub fn measure<T>(body: impl FnOnce() -> T) -> T {
-    body()
+    // `black_box` runs after the body returns, so the call cannot become a tail jump: DHAT
+    // attributes an allocation to this region only while this frame is on the stack.
+    black_box(body())
 }
 
 /// DHAT with a stack window deep enough to reach the measured frame from a publish inside a
