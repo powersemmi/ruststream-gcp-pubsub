@@ -22,9 +22,9 @@
 
 ## 数字 { #the-numbers }
 
-三个交错轮次中的最佳值，括号里是最差的一轮。越大越好。
+三个交错轮次中的最佳值，括号里是中位的一轮。越大越好。
 
-<div id="benchmark-results" data-benchmark-results="../../benchmarks/results.json" data-benchmark-labels='{"loading": "正在加载公布的结果...", "scenario": "场景", "raw": "裸客户端", "adapter": "适配层", "framework": "服务", "adapterOverhead": "适配层开销", "overhead": "服务开销", "indistinguishable": "无法区分", "brokerBound": "受 Broker 限制", "machine": "机器", "os": "操作系统", "broker": "Broker", "roundTrip": "往返时间", "build": "构建", "versions": "版本", "measured": "测量于", "unavailable": "读不到结果。它们公布在 {url}。", "unknownSchema": "公布的结果声明的 schema 是 {schema}，这一页不渲染它。"}'></div>
+<div id="benchmark-results" data-benchmark-results="../../benchmarks/results.json" data-benchmark-labels='{"loading": "正在加载公布的结果...", "scenario": "场景", "raw": "裸客户端", "adapter": "适配层", "framework": "服务", "adapterOverhead": "适配层开销", "overhead": "服务开销", "indistinguishable": "无法区分", "brokerBound": "受 Broker 限制", "machine": "机器", "os": "操作系统", "broker": "Broker", "roundTrip": "往返时间", "build": "构建", "versions": "版本", "measured": "测量于", "instructions": "每条消息的指令数", "allocations": "每条消息的内存分配次数", "cold": "冷启动（指令 / 分配）", "unavailable": "读不到结果。它们公布在 {url}。", "unknownSchema": "公布的结果声明的 schema 是 {schema}，这一页不渲染它。"}'></div>
 
 表格由浏览器从上一次运行写下的文档读出，所以这一页上没有任何会过期的副本。
 
@@ -38,6 +38,29 @@
 同一次运行的机器可读形式在
 [`benchmarks/results.json`](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/benchmarks/results.json)，
 框架的站点用它拼出跨 Broker 的汇总表。
+
+## crate 自身的代码 { #the-crates-own-code }
+
+<div id="benchmark-code"></div>
+
+第二张表不计时，而是数一条消息在服务线程上花掉多少：指令数由 callgrind 统计，内存分配次数由 DHAT
+统计。每个场景都是用户会写的那种服务：它建在 `PubSubBroker` 上，对着同一套环境里的模拟器启动。服务
+只在一个线程上运行，这个线程上的一切都计入：框架的分发、本 crate 的代码，以及 `google-cloud-pubsub`
+客户端，它的流式拉取、确认、确认截止时间的延长和发布请求都在这里运行。模拟器是另一个进程，不在数字里。
+消息在开始消费之前从另一个线程发布，这部分工作也不在数字里。
+
+指令数和分配次数都是稳态下每条消息的值：1000 次投递的运行和 2000 次投递的运行之间的斜率。最后一列
+是启动服务并处理第一次投递一次性付出的开销。这些数字是绝对值，客户端和框架的工作都算在内；框架单独的
+开销由核心库在它的[基准测试页](https://powersemmi.github.io/ruststream/latest/zh/benchmarks/)上公布。
+
+每一行的大头都是客户端。回复那一行最重：运行时要等每条回复得到确认，才去取下一次投递，所以每条回复
+都单独作为一个发布请求发出。冷启动的开销也几乎全在客户端：它要构建两个管理客户端，每一个都会读取并
+解析这台机器的根证书，所以这一列取决于机器上的证书库。
+
+客户端按批确认，并按定时器延长确认截止时间，所以每次运行的计数都会有一点浮动：三次运行里，每条消息
+的指令数相差不超过百分之 1.1，最长那次运行的分配次数相差不超过 40 次。`just bench-code` 在分配次数
+超过场景声明的下限时失败（下限是见到过的最大计数，再加上留给这些定时器的 100 次余量），加上
+`--baseline=main` 时，指令数多出百分之二以上也算失败；改变开销的合并请求要附上自己的数字。
 
 ## 机器 { #the-machine }
 
@@ -55,8 +78,9 @@
 也正因为如此，「受 Broker 限制」这个标记值得先读。带着它的一行是被模拟器定的速：两半在同一份等待
 里跑完了整轮，它们之间的差值是分发开销的下界，而不是对它的测量。这个标记由算术定出：一次在配对
 之外的探测量出到模拟器的一个往返，一次投递按它的确认计一个往返，当这个乘积覆盖了一条消息所用
-时间的一半以上时，这一行就被标记。往返时间和机器一起公布在下面，算术可以核对。这里的两行落在这条线的两侧，相差不到一个百分点，
-所以第一行没有这个标记，并不是在说消费者曾经是瓶颈。
+时间的一半以上时，这一行就被标记。往返时间和机器一起公布在下面，算术可以核对。第一行离这条线只差
+几个百分点，每次运行都可能落在线的这一侧或那一侧，所以它有没有这个标记，都说明不了消费者是否曾经是
+瓶颈。
 
 流控是模拟器不复现的第二样东西。它能发多快就发多快，不管订阅上写着什么上限，所以两半都遇不到云上
 的订阅对落后的消费者施加的那次暂停。
@@ -77,5 +101,13 @@ just bench
 ```
 
 这条 recipe 从 `docker-compose.test.yml` 起停模拟器，跑完两个场景，然后把测到的结果写回
-`docs/benchmarks/results.json`。它要花十分钟左右，并且需要整台机器。消息条数不是固定的：一次试探
+`docs/benchmarks/results.json`。它要花几分钟，并且需要整台机器。消息条数不是固定的：一次试探
 运行会把它定下来，使得每一次被测量的运行在所在机器上都不短于五秒。
+
+```bash
+just bench-code
+```
+
+这条 recipe 先起模拟器，在 valgrind 下统计代码表，再把模拟器停掉，并重写同一份文档里的 `code`
+部分。它要花几分钟。除了 Docker，还需要 valgrind 和基准测试运行器：
+`cargo install --locked gungraun-runner --version =0.19.4`。
