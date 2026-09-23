@@ -6,10 +6,10 @@
 use std::future::{Future, ready};
 use std::time::Duration;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use google_cloud_pubsub::model::Message as GcpMessage;
 use google_cloud_pubsub::subscriber::handler::Handler;
-use ruststream::{AckError, HeaderMap, IncomingMessage, OutgoingMessage, Partitioned};
+use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned, Str};
 use tokio::time::sleep;
 
 use crate::error::{PubSubError, box_err};
@@ -54,14 +54,19 @@ impl std::fmt::Debug for PubSubMessage {
 impl PubSubMessage {
     pub(crate) fn new(message: GcpMessage, handler: Handler, limits: DeliveryLimits) -> Self {
         let mut headers = HeaderMap::with_capacity(message.attributes.len() + 2);
-        for (name, value) in &message.attributes {
-            headers.insert(name.clone(), value.clone());
+        // The attributes are moved, not copied: a header key and a header value are both shared
+        // buffers, and a `String` becomes one without touching its bytes.
+        for (name, value) in message.attributes {
+            headers.insert(name, value);
         }
         if !message.ordering_key.is_empty() {
-            headers.insert(PARTITION_KEY_HEADER, message.ordering_key.clone());
+            headers.insert(Str::from_static(PARTITION_KEY_HEADER), message.ordering_key);
         }
         if let Some(attempt) = handler.delivery_attempt() {
-            headers.insert(DELIVERY_ATTEMPT_HEADER, attempt.to_string());
+            headers.insert(
+                Str::from_static(DELIVERY_ATTEMPT_HEADER),
+                attempt.to_string(),
+            );
         }
         Self {
             payload: message.data,
@@ -209,8 +214,11 @@ impl IncomingMessage for PubSubMessage {
 /// The `partition-key` header never travels as an attribute: it is the portable spelling of the
 /// ordering key, the publisher has already read it, and a delivery reports the key back under that
 /// same name.
-pub(crate) fn to_gcp_message(msg: &OutgoingMessage<'_>, ordering_key: Option<&str>) -> GcpMessage {
-    let headers = msg.headers();
+pub(crate) fn to_gcp_message(
+    payload: BytesMut,
+    headers: &HeaderMap,
+    ordering_key: Option<&str>,
+) -> GcpMessage {
     let mut attributes: Vec<(String, String)> = Vec::with_capacity(headers.len());
     for (name, value) in headers.iter() {
         if name == PARTITION_KEY_HEADER {
@@ -219,7 +227,7 @@ pub(crate) fn to_gcp_message(msg: &OutgoingMessage<'_>, ordering_key: Option<&st
         attributes.push((name.to_owned(), String::from_utf8_lossy(value).into_owned()));
     }
 
-    let mut message = GcpMessage::new().set_data(Bytes::copy_from_slice(msg.payload()));
+    let mut message = GcpMessage::new().set_data(payload);
     if !attributes.is_empty() {
         message = message.set_attributes(attributes);
     }
@@ -238,9 +246,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(PARTITION_KEY_HEADER, "user-42");
         headers.insert("x-tenant", "acme");
-        let outgoing = OutgoingMessage::new("orders", b"{}".as_slice()).with_headers(headers);
-
-        let message = to_gcp_message(&outgoing, Some("user-42"));
+        let message = to_gcp_message(BytesMut::from(&b"{}"[..]), &headers, Some("user-42"));
         assert_eq!(message.ordering_key, "user-42");
         assert_eq!(
             message.attributes.get("x-tenant").map(String::as_str),
@@ -250,10 +256,25 @@ mod tests {
         assert!(!message.attributes.contains_key(PARTITION_KEY_HEADER));
     }
 
+    // A copy and a hand-over carry the same bytes, so only the address tells them apart.
+    #[test]
+    fn the_messages_data_is_the_buffer_the_framework_wrote() {
+        let payload = BytesMut::from(&br#"{"id":1}"#[..]);
+        let written_at = payload.as_ptr();
+
+        let message = to_gcp_message(payload, &HeaderMap::new(), None);
+
+        assert_eq!(
+            message.data.as_ptr(),
+            written_at,
+            "Pub/Sub keeps the payload, so the buffer travels into the message rather than being \
+             copied into a second one",
+        );
+    }
+
     #[test]
     fn plain_messages_carry_no_ordering_key() {
-        let outgoing = OutgoingMessage::new("orders", b"{}".as_slice());
-        let message = to_gcp_message(&outgoing, None);
+        let message = to_gcp_message(BytesMut::from(&b"{}"[..]), &HeaderMap::new(), None);
         assert!(message.ordering_key.is_empty());
     }
 }

@@ -1,0 +1,70 @@
+{
+  "schema": 3,
+  "crate": "ruststream-gcp-pubsub",
+  "crate_version": "0.7.0",
+  "core_version": "0.7.0-rc.9",
+  "measured_at": "2026-09-21",
+  "environment": {
+    "cpu": "AMD Ryzen 9 7900X 12-Core Processor",
+    "architecture": "x86_64",
+    "cpu_frequency": "427-5912 MHz",
+    "cores": "12 physical, 24 logical",
+    "memory": "62.4 GiB",
+    "memory_speed": "unknown",
+    "os": "Linux 7.2.6-x64v3-xanmod1-1",
+    "broker": "Pub/Sub emulator, gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators, Google Cloud SDK 578.0.0, in Docker on localhost",
+    "round_trip": "0.258 ms (20000 GetSubscription calls on one connection); a delivery is charged 1 of them",
+    "rustc": "1.98.1",
+    "profile": "bench, inheriting release (opt-level = 3, lto = false, codegen-units = 16)",
+    "features": "ruststream-gcp-pubsub default (none), ruststream macros,json; google-cloud-pubsub 1.3.0",
+    "rustflags": "none (the recipe clears RUSTFLAGS, so the numbers are not tied to this CPU)"
+  },
+  "scenarios": [
+    {
+      "name": "Streaming pull, 512 B JSON, ack each",
+      "unit": "msg/s",
+      "messages": 11489,
+      "pairs": 3,
+      "raw": {
+        "best": 1827,
+        "worst": 1818
+      },
+      "adapter": {
+        "best": 1834,
+        "worst": 1827
+      },
+      "framework": {
+        "best": 1849,
+        "worst": 1836
+      },
+      "overhead_percent": -1.2,
+      "adapter_overhead_percent": -0.4,
+      "verdict": "measured",
+      "adapter_verdict": "indistinguishable",
+      "broker_bound": false
+    },
+    {
+      "name": "Streaming pull with ordering keys, 512 B JSON, ack each",
+      "unit": "msg/s",
+      "messages": 12548,
+      "pairs": 3,
+      "raw": {
+        "best": 1997,
+        "worst": 1996
+      },
+      "adapter": {
+        "best": 1997,
+        "worst": 1996
+      },
+      "framework": {
+        "best": 1998,
+        "worst": 1996
+      },
+      "overhead_percent": -0.0,
+      "adapter_overhead_percent": -0.0,
+      "verdict": "indistinguishable",
+      "adapter_verdict": "indistinguishable",
+      "broker_bound": true
+    }
+  ]
+}
