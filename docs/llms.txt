@@ -1,0 +1,31 @@
+# ruststream-gcp-pubsub
+
+> `ruststream-gcp-pubsub` is the Google Cloud Pub/Sub broker crate for RustStream, a Rust framework for services that subscribe to message brokers and publish to them. It runs over the official `google-cloud-pubsub` client: a streaming pull subscription is the message stream a handler reads, acknowledgement is native and per message, and an ordering key is the framework's partition key.
+
+A subscription is the descriptor `GooglePubSub`, which names an existing subscription and carries every setting it takes: flow control, the ack deadline extension, the batch wait and how long one delivery may stay unsettled. A retry cap and a dead-letter topic named at the mount site become the subscription's own dead-letter policy. A routes file imports `ruststream_gcp_pubsub::prelude::*`, which offers `PubSubPublish` as `Publish`; the ordering key of one publish is its per-message setting.
+
+This site holds the entry pages. The crate's guide is its overview on docs.rs, and the framework itself is documented on the RustStream site.
+
+## Site
+
+- [Home](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/): what the crate gives you, the dependency lines and a first service
+- [Benchmarks](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/benchmarks/): what this crate's consumer and publisher cost over the raw `google-cloud-pubsub` client on the emulator, and how to re-measure it with `just bench`
+
+## Guide
+
+- [Overview](https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/index.html): the transport and a service
+- [Subscribing](https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/index.html#subscribing): the descriptor and its settings
+- [Capping the retries](https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/index.html#capping-the-retries): the retry cap and dead-letter topic as the subscription's dead-letter policy
+- [Settling a delivery](https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/index.html#settling-a-delivery): acknowledgement, including the confirmed form on exactly-once subscriptions
+- [Batches](https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/index.html#batches): batch handlers and the batch wait
+- [Publishing](https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/index.html#publishing): the publish policy, replies and the ordering key
+- [The prelude](https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/index.html#the-prelude): what a routes file and a handler file import
+- [The AsyncAPI document](https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/index.html#the-asyncapi-document): what the `asyncapi` feature reports
+- [Testing](https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/testing/index.html): the in-process broker behind the `testing` feature, driven by `TestApp`
+- [Operations](https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/index.html#operations): credentials, endpoints, the emulator and ordered delivery
+
+## Optional
+
+- [API reference](https://docs.rs/ruststream-gcp-pubsub): the full rustdoc of the crate
+- [RustStream llms.txt](https://powersemmi.github.io/ruststream/llms.txt): the index of the framework's own documentation
+- [Source](https://github.com/powersemmi/ruststream-gcp-pubsub): the crate's repository

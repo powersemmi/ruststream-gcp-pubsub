@@ -84,8 +84,8 @@ with a row published for another broker: the transports do different work per me
 The window a run measures opens at the first delivery and closes when the last one is settled, on
 both halves alike.
 
-The numbers are a snapshot of one machine on one day. They are re-measured on demand, never in CI:
-a shared runner's noise is larger than the difference this page is about.
+The numbers are a snapshot of one machine on one day. They are re-measured by hand, on a machine
+given to the run alone: the difference this page is about is smaller than the noise of a shared one.
 
 ## Running it yourself
 
