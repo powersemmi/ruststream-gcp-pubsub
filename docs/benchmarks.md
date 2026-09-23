@@ -75,11 +75,12 @@ which reads and parses the machine's root certificates, so that column depends o
 certificate store.
 
 The client acknowledges in batches and extends leases on timers, so a count moves a little from
-one run to the next: over three runs the instructions per message agreed within 1.1 percent, and
-the allocations of the longest run within 40. `just bench-code` fails on an allocation above the
-floor a scenario declares - the highest count seen plus a margin of 100 for those timers - and with
-`--baseline=main` on more than two percent more instructions, and a pull request that changes the
-cost cites its numbers.
+one run to the next: over four runs the instructions per message agreed within 1.2 percent, and
+the allocations of the longest run within 640 on the reply row and within 20 on the other two.
+`just bench-code` fails on an allocation above the floor a scenario declares - the highest count
+seen plus a margin at least as large as that spread, and a tenth of a percent at the least - and
+with `--baseline=main` on more than two percent more instructions, and a pull request that changes
+the cost cites its numbers.
 
 ## The machine
 
