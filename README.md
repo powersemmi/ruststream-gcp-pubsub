@@ -35,7 +35,7 @@
 - **Attributes carry headers directly** - no envelope format is invented, and a `#[derive(Serialized)]` payload leaves as its own bytes with no codec in the way, so non-Rust peers see plain Pub/Sub messages.
 - **Emulator as a supported target.** `PubSubBroker::new(p).emulator("localhost:8085")` wires the plaintext endpoint and anonymous credentials (the client does not honour `PUBSUB_EMULATOR_HOST` on its own), and `GooglePubSub::create_with_topic` creates the resources on subscribe for local development.
 - **AsyncAPI document** (feature `asyncapi`). The server reports the host clients dial under the `googlepubsub` protocol, and a mount site's fixed ordering key reaches the message binding; a password written into an endpoint reaches neither.
-- **In-process test broker** (feature `testing`). `PubSubTestBroker` reproduces this crate's routing with no server, a service mounts on it and runs under the `TestApp` harness, and it answers the way Pub/Sub does, which the crate's own tests hold it to.
+- **Tests on the production app** (feature `testing`). The framework's `TestApp` runs the app `main` runs with `PubSubBroker` connected in process - no emulator, no credentials - routing topics to their subscriptions and refusing what Pub/Sub refuses; `TestApp::start_live` runs the same test against the emulator.
 
 ## Install
 
@@ -65,7 +65,7 @@ struct Confirmation {
     order_id: u64,
 }
 
-#[subscriber("orders-workers")]
+#[subscriber(GooglePubSub::new("orders-workers").create_with_topic("orders"))]
 async fn handle(order: &Order, Out(out): Out<impl Publisher>) -> HandlerOutcome {
     if out
         .message(&Confirmation { order_id: order.id })
@@ -96,27 +96,20 @@ A plain name subscribes to a subscription that already exists. `GooglePubSub` go
 
 ## Test it
 
-The `testing` feature runs handlers against an in-process Pub/Sub stand-in - no server, same routing, same ladder. Swapping the broker at the mount site is the whole change: the declaration keeps its descriptor and `Publish` pairs against the stand-in as it pairs against Pub/Sub. The `TestApp` harness then drives the service through the dispatch path production uses:
+The app `main` runs, handed to the harness unchanged: `TestApp::start` connects `PubSubBroker` in process, with no emulator and no credentials, and the test addresses it by that type.
 
 ```rust
 use ruststream::testing::TestApp;
-use ruststream_gcp_pubsub::testing::PubSubTestBroker;
 
-let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-    PubSubTestBroker::new(),
-    |b| {
-        b.include(handle).out(DefaultSlot, Publish::default()).build();
-    },
-);
-let tb = TestApp::start(app).await?;
+let tb = TestApp::start(app()).await?;
 
-// Inject an order as an external producer would; the harness drives the handler to rest.
-tb.broker::<PubSubTestBroker>()
+// Publish an order to the topic; the subscription attached to it delivers, and `publish`
+// returns once the handler it woke has settled.
+tb.broker::<PubSubBroker>()
     .message(&Order { id: 42 })
-    .to("orders-workers")
+    .to("orders")
     .publish()
     .await?;
-tb.settle().await?;
 
 // The handler published the matching confirmation through its slot.
 tb.out::<DefaultSlot>()
@@ -127,7 +120,7 @@ tb.out::<DefaultSlot>()
 
 The harness puts an `Order` on the wire and reads a `Confirmation` back, so each model carries two derives more than the service alone needs: `Outgoing` and `Serialize` on the injected type, `Deserialize` and `PartialEq` on the asserted one. `with_options(&PubSubPublishOptions { .. })` on the same slot view reads back the ordering key a publish asked for, and `assert_options_default()` states that it took the mount site's.
 
-The stand-in routes by one address, the subscription name, so a test injects there rather than to a topic: it holds no topics, and the topic-to-subscription binding is the product's. Product behaviour (deadline extension, redelivery timing, ordered delivery) is not modelled either. Both are covered by the env-gated live suite instead: `just test-brokers` starts the emulator and runs the integration tests plus the framework conformance lifecycle against it.
+The in-process mode routes as Pub/Sub does: a publish to a topic reaches every subscription attached to it, and a subscription the service only names is taken to be attached to the topic of its own name. It settles, counts attempts and dead-letters as the subscription does, and refuses what the service refuses. Lease deadlines, flow control and ordered delivery are the service's own; `TestApp::start_live(app())` runs the same test against the emulator, and `just test-brokers` runs the live suites.
 
 ## Layout
 

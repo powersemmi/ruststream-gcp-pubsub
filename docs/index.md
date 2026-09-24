@@ -32,9 +32,9 @@ dead-letter topic named at the mount site become the subscription's own dead-let
 service publishes no retry copies.
 [Publishing](https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/index.html#publishing)
 adds one per-message setting, the ordering key, which a call site, a partition key header or the
-mount site may name. The
-[`testing` feature](https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/testing/index.html)
-runs a whole service in process, with no server.
+mount site may name. With the
+[`testing` feature](https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/index.html#testing),
+a test runs the app `main` runs, with `PubSubBroker` connected in process and no server.
 
 ## Where to go next
 

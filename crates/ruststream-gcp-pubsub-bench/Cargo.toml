@@ -14,8 +14,8 @@ workspace = true
 
 [features]
 default = []
-# A benchmark measures what ships, and the `testing` feature is not it: it compiles an in-process
-# stand-in into this crate and turns on the framework's harness. Nothing here enables it; it exists
+# A benchmark measures what ships, and the `testing` feature is not it: it compiles the in-process
+# mode into this crate and turns on the framework's harness. Nothing here enables it; it exists
 # so that asking for it is the compile error in `benches/paired.rs` rather than a number nobody can
 # trust.
 testing = ["ruststream-gcp-pubsub/testing"]
