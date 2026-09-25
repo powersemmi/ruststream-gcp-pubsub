@@ -5,12 +5,10 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use tokio::runtime::Handle;
-
 use super::project::{ConsumerId, HandedReceiver, Pending, Project};
 use crate::error::PubSubError;
 use crate::message::PubSubMessage;
-use crate::subscription::DeliveryScope;
+use crate::subscription::DeliveryLimits;
 
 /// One consumer of a subscription on the in-process transport, one delivery at a time: what the
 /// subscriber batches over, as it batches over a streaming pull.
@@ -20,7 +18,7 @@ pub(crate) struct Consumer {
     subscription: Arc<str>,
     id: ConsumerId,
     receiver: HandedReceiver,
-    scope: Arc<DeliveryScope>,
+    limits: DeliveryLimits,
 }
 
 impl Consumer {
@@ -29,14 +27,14 @@ impl Consumer {
         subscription: Arc<str>,
         id: ConsumerId,
         receiver: HandedReceiver,
-        scope: Arc<DeliveryScope>,
+        limits: DeliveryLimits,
     ) -> Self {
         Self {
             project,
             subscription,
             id,
             receiver,
-            scope,
+            limits,
         }
     }
 
@@ -61,7 +59,7 @@ impl Consumer {
                         reported,
                         counted: handed.counted,
                     },
-                    Arc::clone(&self.scope),
+                    self.limits,
                 ))
             })
         })
@@ -120,9 +118,8 @@ impl Settlement {
     /// Holds the delivery for `delay`, then rejects it, as the crate holds a delivery of the
     /// service. Under the harness the timer belongs to the coordinator, so the test's clock is the
     /// one the delay passes on; the delivery is released to the harness now, and the rejection
-    /// counts the redelivery when it fires. Otherwise the timer runs on `runtime`, the one the
-    /// broker connected on.
-    pub(crate) fn reject_after(mut self, delay: Duration, runtime: &Handle) {
+    /// counts the redelivery when it fires.
+    pub(crate) fn reject_after(mut self, delay: Duration) {
         let Some(pending) = self.pending.take() else {
             return;
         };
@@ -131,8 +128,10 @@ impl Settlement {
         let reject = move || project.reject(&subscription, pending);
         match self.project.coordinator() {
             Some(coordinator) => coordinator.schedule_redelivery(delay, reject),
+            // On the runtime the broker connected on, not the settling caller's: a handler on a
+            // dedicated thread settles from a runtime that may stop before the delay is out.
             None => {
-                runtime.spawn(async move {
+                self.project.runtime().spawn(async move {
                     tokio::time::sleep(delay).await;
                     reject();
                 });

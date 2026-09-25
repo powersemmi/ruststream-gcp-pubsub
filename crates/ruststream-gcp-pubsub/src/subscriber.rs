@@ -13,7 +13,6 @@
 //! [`GooglePubSub::batch_wait`](crate::GooglePubSub::batch_wait).
 
 use std::num::NonZeroUsize;
-use std::sync::Arc;
 #[cfg(feature = "testing")]
 use std::time::Duration;
 
@@ -29,7 +28,8 @@ use crate::error::{PubSubError, box_err};
 #[cfg(feature = "testing")]
 use crate::in_process::Consumer;
 use crate::message::PubSubMessage;
-use crate::subscription::{DeliveryScope, GooglePubSub};
+use crate::runtime_slot::RuntimeSlot;
+use crate::subscription::{DeliveryLimits, GooglePubSub};
 
 /// How many converted deliveries may sit between the pump and the consumer. Real prefetch is
 /// the client's own flow control (`max_outstanding`); this only decouples the two loops.
@@ -80,13 +80,8 @@ impl PubSubSubscriber {
         let stream = builder.build();
         let shutdown = stream.shutdown_token();
 
-        let scope = Arc::new(DeliveryScope {
-            limits,
-            runtime: runtime.clone(),
-        });
-
         let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
-        runtime.spawn(pump(stream, tx, name.clone(), scope));
+        runtime.spawn(pump(stream, tx, name.clone(), limits, core.runtime_slot()));
 
         Self {
             subscription: name,
@@ -196,13 +191,14 @@ async fn pump(
     mut stream: MessageStream,
     out: mpsc::Sender<Result<PubSubMessage, PubSubError>>,
     subscription: String,
-    scope: Arc<DeliveryScope>,
+    limits: DeliveryLimits,
+    runtime: RuntimeSlot,
 ) {
     while let Some(item) = stream.next().await {
         match item {
             Ok((message, handler)) => {
                 if out
-                    .send(Ok(PubSubMessage::new(message, handler, Arc::clone(&scope))))
+                    .send(Ok(PubSubMessage::new(message, handler, limits, runtime)))
                     .await
                     .is_err()
                 {

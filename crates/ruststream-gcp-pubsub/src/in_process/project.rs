@@ -17,7 +17,7 @@ use super::settle::Consumer;
 use crate::broker::{subscription_path, topic_path};
 use crate::error::PubSubError;
 use crate::message::PubSubMessage;
-use crate::subscription::{DeclaredRetries, DeliveryScope, GooglePubSub};
+use crate::subscription::{DeclaredRetries, GooglePubSub};
 
 /// One message on its way to a consumer of one subscription, with the delivery attempt the
 /// subscription is on for it, counting from one.
@@ -127,11 +127,14 @@ pub(crate) struct Project {
     /// keeps it over the service.
     declared_retries: DeclaredRetries,
     next_consumer: AtomicU64,
+    /// The runtime the broker connected on, which a delayed rejection waits on.
+    runtime: Handle,
 }
 
 impl Project {
-    pub(crate) fn new(id: String) -> Arc<Self> {
+    pub(crate) fn new(id: String, runtime: Handle) -> Arc<Self> {
         Arc::new(Self {
+            runtime,
             id,
             state: Mutex::new(State::default()),
             closed: AtomicBool::new(false),
@@ -139,6 +142,12 @@ impl Project {
             declared_retries: DeclaredRetries::default(),
             next_consumer: AtomicU64::new(0),
         })
+    }
+
+    /// The runtime the broker connected on: a task the transport starts on its own behalf runs
+    /// there, whichever thread settles the delivery that asked for it.
+    pub(crate) const fn runtime(&self) -> &Handle {
+        &self.runtime
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -194,12 +203,10 @@ impl Project {
     ///
     /// A subscription the descriptor creates is attached to the topic it names. One it only names
     /// is infrastructure the service expects to find, and the transport takes it to be attached
-    /// to the topic of its own name. A delayed rejection of one of its deliveries waits on
-    /// `runtime`, the one the broker connected on.
+    /// to the topic of its own name.
     pub(crate) fn open(
         self: &Arc<Self>,
         descriptor: &GooglePubSub,
-        runtime: &Handle,
     ) -> Result<Consumer, PubSubError> {
         let name = descriptor.subscription();
         let path = self.subscription_path(name);
@@ -253,10 +260,7 @@ impl Project {
             Arc::from(path),
             id,
             receiver,
-            Arc::new(DeliveryScope {
-                limits: descriptor.limits(),
-                runtime: runtime.clone(),
-            }),
+            descriptor.limits(),
         ))
     }
 

@@ -47,6 +47,7 @@ use crate::message::to_gcp_message;
 #[cfg(feature = "testing")]
 use crate::publisher::resolve_ordering_key;
 use crate::publisher::{PubSubPublish, PubSubPublisher};
+use crate::runtime_slot::{RuntimeRegistration, RuntimeSlot};
 use crate::subscriber::PubSubSubscriber;
 use crate::subscription::{DeclaredRetries, GooglePubSub};
 
@@ -96,6 +97,8 @@ pub(crate) struct Core {
     /// What the registrations mounted by a bare subscription name declared about their retries,
     /// taken at startup and applied when each subscription opens.
     pub(crate) declared_retries: DeclaredRetries,
+    /// Where a delivery of this connection finds the runtime `connect` ran on.
+    runtime: RuntimeRegistration,
     /// The topic each opened subscription is attached to, by full resource name, which is what
     /// a live test harness asks to learn which subscriptions a publish reaches.
     #[cfg(feature = "testing")]
@@ -108,6 +111,12 @@ impl Core {
             return Err(PubSubError::NotConnected);
         }
         Ok(())
+    }
+
+    /// The slot every delivery of this connection carries, which finds the runtime `connect`
+    /// ran on.
+    pub(crate) const fn runtime_slot(&self) -> RuntimeSlot {
+        self.runtime.slot()
     }
 
     /// Resolves a short topic id to a full resource name; full names pass through.
@@ -511,6 +520,7 @@ impl Broker for PubSubBroker {
                     closed: AtomicBool::new(false),
                     publishers: tokio::sync::Mutex::new(HashMap::new()),
                     declared_retries: DeclaredRetries::default(),
+                    runtime: RuntimeRegistration::new(Handle::current()),
                     #[cfg(feature = "testing")]
                     attached: Mutex::new(HashMap::new()),
                 })))
@@ -541,7 +551,7 @@ impl InProcess for PubSubBroker {
         // service filled it with a connection the harness cannot drive, and a test must not
         // publish to the service.
         let link = self.cell.get().cloned().unwrap_or_else(|| {
-            let project = Link::InProcess(Project::new(self.project.clone()));
+            let project = Link::InProcess(Project::new(self.project.clone(), Handle::current()));
             let _ = self.cell.set(project.clone());
             self.cell.get().cloned().unwrap_or(project)
         });
@@ -616,7 +626,7 @@ impl ConnectedPubSubBroker {
             Link::Service(core) => core,
             #[cfg(feature = "testing")]
             Link::InProcess(project) => {
-                return in_process::subscribe(project, &descriptor, &self.runtime);
+                return in_process::subscribe(project, &descriptor);
             }
         };
         core.subscribe(descriptor, &self.runtime).await

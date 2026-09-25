@@ -8,6 +8,7 @@ mod in_process;
 mod message;
 pub mod prelude;
 mod publisher;
+mod runtime_slot;
 mod subscriber;
 mod subscription;
 
