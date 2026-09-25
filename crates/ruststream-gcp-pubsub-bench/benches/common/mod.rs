@@ -67,7 +67,7 @@ use tokio::runtime::{Builder, Runtime};
 use tokio::sync::Notify;
 use tokio::time::timeout;
 
-// The code is counted as it ships. The `testing` feature compiles an in-process stand-in into this
+// The code is counted as it ships. The `testing` feature compiles the in-process mode into this
 // crate and turns on the framework's harness, and neither is in a deployed service.
 #[cfg(feature = "testing")]
 compile_error!(
