@@ -13,6 +13,7 @@ use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use ruststream::{BrokerMoves, DeclareRetryError, FromName, RetryDeclaration, SubscriptionSource};
+use tokio::runtime::Handle;
 
 use crate::broker::ConnectedPubSubBroker;
 use crate::error::PubSubError;
@@ -41,6 +42,19 @@ pub(crate) struct DeliveryLimits {
     /// nothing.
     pub(crate) max_delivery_attempts: Option<i32>,
     pub(crate) max_lease: Duration,
+}
+
+/// What every delivery of one subscription shares: the limits it is held to, and the runtime the
+/// broker connected on, which a delayed rejection waits on.
+///
+/// One allocation per subscription; a delivery carries a counted reference to it, the only
+/// count on the delivery path, in place of a copy of the limits.
+#[derive(Debug)]
+pub(crate) struct DeliveryScope {
+    pub(crate) limits: DeliveryLimits,
+    /// A handler on a dedicated thread settles from that thread's runtime, which may stop before
+    /// a held delivery's delay is out; the hold runs here instead.
+    pub(crate) runtime: Handle,
 }
 
 /// A subscription descriptor for one Pub/Sub subscription.

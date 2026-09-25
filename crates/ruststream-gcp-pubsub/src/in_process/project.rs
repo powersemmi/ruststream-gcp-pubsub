@@ -17,7 +17,7 @@ use super::settle::Consumer;
 use crate::broker::{subscription_path, topic_path};
 use crate::error::PubSubError;
 use crate::message::PubSubMessage;
-use crate::subscription::{DeclaredRetries, GooglePubSub};
+use crate::subscription::{DeclaredRetries, DeliveryScope, GooglePubSub};
 
 /// One message on its way to a consumer of one subscription, with the delivery attempt the
 /// subscription is on for it, counting from one.
@@ -203,10 +203,12 @@ impl Project {
     ///
     /// A subscription the descriptor creates is attached to the topic it names. One it only names
     /// is infrastructure the service expects to find, and the transport takes it to be attached
-    /// to the topic of its own name.
+    /// to the topic of its own name. A delayed rejection of one of its deliveries waits on
+    /// `runtime`, the one the broker connected on.
     pub(crate) fn open(
         self: &Arc<Self>,
         descriptor: &GooglePubSub,
+        runtime: &Handle,
     ) -> Result<Consumer, PubSubError> {
         let name = descriptor.subscription();
         let path = self.subscription_path(name);
@@ -260,7 +262,10 @@ impl Project {
             Arc::from(path),
             id,
             receiver,
-            descriptor.limits(),
+            Arc::new(DeliveryScope {
+                limits: descriptor.limits(),
+                runtime: runtime.clone(),
+            }),
         ))
     }
 

@@ -4,6 +4,7 @@
 //! `PUBSUB_TEST_HOST=127.0.0.1:8085 cargo test --all-features -- --test-threads=1`.
 
 use std::pin::pin;
+use std::thread;
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -17,6 +18,8 @@ use ruststream_gcp_pubsub::{
     ConnectedPubSubBroker, DELIVERY_ATTEMPT_HEADER, GooglePubSub, PARTITION_KEY_HEADER,
     PubSubBroker, PubSubError, PubSubOrdering, PubSubPublish, PubSubSubscriber,
 };
+use tokio::runtime;
+use tokio::sync::oneshot;
 
 mod live;
 
@@ -412,6 +415,76 @@ async fn a_delayed_nack_redelivers_after_the_delay() {
     again.ack().await.expect("ack succeeds");
 
     connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// A handler on a dedicated thread settles from that thread's own runtime, which may stop before
+/// the delay is out. The hold runs on the runtime the broker connected on, so the delivery still
+/// comes back after the delay, not at once when the settling runtime goes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_delayed_nack_from_a_stopped_runtime_still_waits_out_the_delay() {
+    let Some(host) = test_host() else { return };
+    let connected = connect(&host).await;
+
+    let name = unique("delayed-nack-foreign");
+    let mut subscriber = connected
+        .subscribe_descriptor(GooglePubSub::new(&name).create_with_topic(&name))
+        .await
+        .expect("subscription opens");
+    connected
+        .publisher()
+        .publish(OutgoingMessage::new(&name, b"later".as_slice()), None)
+        .await
+        .expect("publish succeeds");
+
+    let mut stream = pin!(subscriber.stream());
+    let first = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("delivery arrives")
+        .expect("stream is open")
+        .expect("delivery is ok");
+    on_foreign_runtime(async move || {
+        first
+            .nack_after(LIVE_RETRY_DELAY)
+            .await
+            .expect("the delivery is held");
+    })
+    .await;
+
+    assert!(
+        tokio::time::timeout(BEFORE_THE_DELAY, stream.next())
+            .await
+            .is_err(),
+        "a delivery held from a runtime that stopped must not come back before its delay is out",
+    );
+    let again = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("the held delivery comes back")
+        .expect("stream is open")
+        .expect("delivery is ok");
+    assert_eq!(again.payload(), b"later");
+    again.ack().await.expect("ack succeeds");
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// Runs `work` on a single-threaded runtime of its own thread, stopped as soon as `work` returns,
+/// the way a handler on a dedicated thread settles a delivery.
+async fn on_foreign_runtime<Output: Send + 'static>(
+    work: impl AsyncFnOnce() -> Output + Send + 'static,
+) -> Output {
+    let (done, finished) = oneshot::channel();
+    thread::spawn(move || {
+        let runtime = runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a current-thread runtime builds");
+        let output = runtime.block_on(work());
+        drop(runtime);
+        let _ = done.send(output);
+    });
+    finished
+        .await
+        .expect("the foreign runtime's work completes")
 }
 
 /// A delay the subscription cannot outlast is refused at the call, because the delivery would

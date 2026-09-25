@@ -163,7 +163,9 @@ to the dead-letter topic, so it is rejected rather than acknowledged, and a mess
 declaration asked to keep is kept.
 
 Pub/Sub has no delayed nack either, so `retry_after(delay)` is carried by the process: the crate
-holds the delivery for `delay` and then rejects it. The client goes on extending the ack deadline
+holds the delivery for `delay` and then rejects it. The wait runs on the runtime the broker
+connected on, so a handler on a dedicated thread may settle from a runtime that stops before the
+delay is out. The client goes on extending the ack deadline
 of a delivery nothing has settled, so a held delivery is leased rather than lost, and it still
 counts against `max_outstanding` while it waits. The budget is
 [`max_lease`](GooglePubSub::max_lease), and a longer delay is refused at the call with
