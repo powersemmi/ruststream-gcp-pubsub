@@ -5,10 +5,12 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use tokio::runtime::Handle;
+
 use super::project::{ConsumerId, HandedReceiver, Pending, Project};
 use crate::error::PubSubError;
 use crate::message::PubSubMessage;
-use crate::subscription::DeliveryLimits;
+use crate::subscription::DeliveryScope;
 
 /// One consumer of a subscription on the in-process transport, one delivery at a time: what the
 /// subscriber batches over, as it batches over a streaming pull.
@@ -18,7 +20,7 @@ pub(crate) struct Consumer {
     subscription: Arc<str>,
     id: ConsumerId,
     receiver: HandedReceiver,
-    limits: DeliveryLimits,
+    scope: Arc<DeliveryScope>,
 }
 
 impl Consumer {
@@ -27,14 +29,14 @@ impl Consumer {
         subscription: Arc<str>,
         id: ConsumerId,
         receiver: HandedReceiver,
-        limits: DeliveryLimits,
+        scope: Arc<DeliveryScope>,
     ) -> Self {
         Self {
             project,
             subscription,
             id,
             receiver,
-            limits,
+            scope,
         }
     }
 
@@ -59,7 +61,7 @@ impl Consumer {
                         reported,
                         counted: handed.counted,
                     },
-                    self.limits,
+                    Arc::clone(&self.scope),
                 ))
             })
         })
@@ -118,8 +120,9 @@ impl Settlement {
     /// Holds the delivery for `delay`, then rejects it, as the crate holds a delivery of the
     /// service. Under the harness the timer belongs to the coordinator, so the test's clock is the
     /// one the delay passes on; the delivery is released to the harness now, and the rejection
-    /// counts the redelivery when it fires.
-    pub(crate) fn reject_after(mut self, delay: Duration) {
+    /// counts the redelivery when it fires. Otherwise the timer runs on `runtime`, the one the
+    /// broker connected on.
+    pub(crate) fn reject_after(mut self, delay: Duration, runtime: &Handle) {
         let Some(pending) = self.pending.take() else {
             return;
         };
@@ -129,7 +132,7 @@ impl Settlement {
         match self.project.coordinator() {
             Some(coordinator) => coordinator.schedule_redelivery(delay, reject),
             None => {
-                tokio::spawn(async move {
+                runtime.spawn(async move {
                     tokio::time::sleep(delay).await;
                     reject();
                 });

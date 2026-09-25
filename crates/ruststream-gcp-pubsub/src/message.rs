@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::future::{Future, ready};
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
@@ -25,7 +26,7 @@ use tokio::time::sleep;
 use crate::error::{PubSubError, box_err};
 #[cfg(feature = "testing")]
 use crate::in_process::Settlement;
-use crate::subscription::DeliveryLimits;
+use crate::subscription::DeliveryScope;
 
 /// Header carrying the partition key, mapped onto the message's ordering key.
 ///
@@ -52,7 +53,7 @@ pub struct PubSubMessage {
     payload: Bytes,
     headers: HeaderMap,
     handler: Settle,
-    limits: DeliveryLimits,
+    scope: Arc<DeliveryScope>,
 }
 
 /// What settles a delivery: the client's handler, which carries the lease, or, under the `testing`
@@ -91,8 +92,8 @@ impl std::fmt::Debug for PubSubMessage {
 }
 
 impl PubSubMessage {
-    pub(crate) fn new(message: GcpMessage, handler: Handler, limits: DeliveryLimits) -> Self {
-        Self::delivered(message, Settle::Pull(handler), limits)
+    pub(crate) fn new(message: GcpMessage, handler: Handler, scope: Arc<DeliveryScope>) -> Self {
+        Self::delivered(message, Settle::Pull(handler), scope)
     }
 
     /// A delivery of the in-process transport, read off the message it holds with the same
@@ -101,12 +102,12 @@ impl PubSubMessage {
     pub(crate) fn in_process(
         message: GcpMessage,
         settlement: Settlement,
-        limits: DeliveryLimits,
+        scope: Arc<DeliveryScope>,
     ) -> Self {
-        Self::delivered(message, Settle::InProcess(settlement), limits)
+        Self::delivered(message, Settle::InProcess(settlement), scope)
     }
 
-    fn delivered(message: GcpMessage, handler: Settle, limits: DeliveryLimits) -> Self {
+    fn delivered(message: GcpMessage, handler: Settle, scope: Arc<DeliveryScope>) -> Self {
         let mut headers = headers_of(message.attributes, message.ordering_key, 1);
         if let Some(attempt) = handler.delivery_attempt() {
             headers.insert(
@@ -118,7 +119,7 @@ impl PubSubMessage {
             payload: message.data,
             headers,
             handler,
-            limits,
+            scope,
         }
     }
 
@@ -137,7 +138,7 @@ impl PubSubMessage {
     /// acknowledge.
     fn at_delivery_cap(&self) -> bool {
         match (
-            self.limits.max_delivery_attempts,
+            self.scope.limits.max_delivery_attempts,
             self.handler.delivery_attempt(),
         ) {
             (Some(cap), Some(attempt)) => attempt >= cap,
@@ -243,11 +244,11 @@ impl IncomingMessage for PubSubMessage {
     /// outlives the subscription's maximum lease, because the delivery would come back before it
     /// elapsed. The check is at the call because a handler names the delay while it runs.
     fn nack_after(self, delay: Duration) -> impl Future<Output = Result<(), AckError>> + Send {
-        if delay > self.limits.max_lease {
+        if delay > self.scope.limits.max_lease {
             return ready(Err(AckError::Broker(box_err(
                 PubSubError::DelayBeyondLease {
                     requested: delay,
-                    lease: self.limits.max_lease,
+                    lease: self.scope.limits.max_lease,
                 },
             ))));
         }
@@ -257,9 +258,10 @@ impl IncomingMessage for PubSubMessage {
         let this = match self {
             Self {
                 handler: Settle::InProcess(settlement),
+                scope,
                 ..
             } => {
-                settlement.reject_after(delay);
+                settlement.reject_after(delay, &scope.runtime);
                 return ready(Ok(()));
             }
             this => this,
@@ -267,9 +269,11 @@ impl IncomingMessage for PubSubMessage {
         #[cfg(not(feature = "testing"))]
         let this = self;
         // The handle travels into the task, so the client goes on extending the lease for the
-        // whole wait. A task that never gets to finish drops the handle, which rejects the
-        // delivery at once rather than stranding it.
-        tokio::spawn(async move {
+        // whole wait. The task runs on the runtime the broker connected on, not the settling
+        // caller's, which may stop before the delay is out. A task that never gets to finish drops
+        // the handle, which rejects the delivery at once rather than stranding it.
+        let runtime = this.scope.runtime.clone();
+        runtime.spawn(async move {
             sleep(delay).await;
             let _ = this.reject().await;
         });
