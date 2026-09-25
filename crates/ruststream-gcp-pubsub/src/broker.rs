@@ -145,7 +145,7 @@ impl Core {
                 .await?;
         }
         #[cfg(feature = "testing")]
-        self.learn_attachment(&descriptor).await;
+        self.learn_attachment(&descriptor).await?;
 
         Ok(PubSubSubscriber::open(self, &descriptor))
     }
@@ -155,10 +155,15 @@ impl Core {
     ///
     /// Only a test build asks: a live test harness waits on every subscription a publish reaches,
     /// and a subscription managed as infrastructure says which topic that is only to the service.
-    /// Where the service does not answer, the descriptor's own topic stands in, and a
-    /// subscription with neither is reached by no publish the harness waits on.
+    /// Where the service does not answer, the descriptor's own topic stands in.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PubSubError::Admin`] when the service refuses the lookup (a subscription it does
+    /// not know aside) and the descriptor names no topic: the harness would not wait for this
+    /// subscription, and a test would settle before its handler ran.
     #[cfg(feature = "testing")]
-    async fn learn_attachment(&self, descriptor: &GooglePubSub) {
+    async fn learn_attachment(&self, descriptor: &GooglePubSub) -> Result<(), PubSubError> {
         let name = self.subscription_name(descriptor.subscription());
         let reported = self
             .subscription_admin
@@ -166,16 +171,31 @@ impl Core {
             .set_subscription(name.clone())
             .send()
             .await
-            .ok()
-            .map(|subscription| subscription.topic)
-            .filter(|topic| !topic.is_empty());
-        let topic = reported.or_else(|| descriptor.create_topic_ref().map(|t| self.topic_name(t)));
-        if let Some(topic) = topic {
-            self.attached
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(name, topic);
-        }
+            .map(|subscription| subscription.topic);
+        let topic = match reported {
+            Ok(topic) if !topic.is_empty() => topic,
+            // A subscription that does not exist receives nothing, and its stream reports it.
+            Err(err) if err.http_status_code() == Some(404) => {
+                return Ok(());
+            }
+            reported => match descriptor.create_topic_ref() {
+                Some(topic) => self.topic_name(topic),
+                None => {
+                    return Err(PubSubError::Admin {
+                        name,
+                        source: reported.err().map_or_else(
+                            || Box::from("the service reports no topic for the subscription"),
+                            box_err,
+                        ),
+                    });
+                }
+            },
+        };
+        self.attached
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(name, topic);
+        Ok(())
     }
 
     /// The topic the subscription `subscription` is attached to, where a live test learned it.
@@ -510,13 +530,21 @@ impl InProcess for PubSubBroker {
     fn connect_in_process(
         self,
     ) -> impl Future<Output = Result<Self::Connected, Self::Error>> + Send {
-        // A clone of this broker that already connected shares the cell, and whatever it filled
-        // the cell with is the connection every handle of the broker speaks over.
+        // A clone of this broker that already connected in process shares the cell, and that
+        // transport is the one every handle of the broker speaks over. A clone connected to the
+        // service filled it with a connection the harness cannot drive, and a test must not
+        // publish to the service.
         let link = self.cell.get().cloned().unwrap_or_else(|| {
             let project = Link::InProcess(Project::new(self.project.clone()));
             let _ = self.cell.set(project.clone());
             self.cell.get().cloned().unwrap_or(project)
         });
+        if let Link::Service(_) = link {
+            return ready(Err(PubSubError::Connect(Box::from(
+                "a clone of this broker is connected to the service already, so it cannot \
+                 connect in process",
+            ))));
+        }
         ready(Ok(ConnectedPubSubBroker {
             link,
             cell: self.cell,

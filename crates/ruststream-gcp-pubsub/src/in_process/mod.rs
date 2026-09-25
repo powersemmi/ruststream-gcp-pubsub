@@ -69,6 +69,29 @@ pub(crate) mod limits {
     pub(crate) const MESSAGE: usize = 10 * 1024 * 1024;
 }
 
+/// Checks a project id against the rule the service applies: six to thirty lowercase letters,
+/// digits and hyphens, starting with a letter and not ending with a hyphen, with an optional
+/// `domain:` prefix for a domain-scoped project.
+fn check_project(project: &str) -> Result<(), String> {
+    let (domain, id) = project.rsplit_once(':').unwrap_or(("", project));
+    let domain_ok = domain
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-'));
+    let id_ok = (6..=30).contains(&id.len())
+        && id.starts_with(|c: char| c.is_ascii_lowercase())
+        && !id.ends_with('-')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if domain_ok && id_ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "the project {project:?}, which is not a project id"
+        ))
+    }
+}
+
 /// Checks `name`, a short id or a full resource name in `collection` (`topics` or
 /// `subscriptions`), against the rule the service applies to resource ids: three to 255
 /// characters, starting with a letter, made of letters, digits and `-_.~+%`, and not starting
@@ -79,9 +102,8 @@ pub(crate) fn check_resource_name(collection: &str, name: &str) -> Result<(), St
             let mut parts = rest.splitn(3, '/');
             let (project, kind, id) = (parts.next(), parts.next(), parts.next());
             match (project, kind, id) {
-                (Some(project), Some(kind), Some(id))
-                    if !project.is_empty() && kind == collection =>
-                {
+                (Some(project), Some(kind), Some(id)) if kind == collection => {
+                    check_project(project).map_err(|reason| format!("{name:?} names {reason}"))?;
                     id
                 }
                 _ => {
@@ -121,6 +143,7 @@ mod tests {
             "conformance.lifecycle.1f-2a-0",
             "a~b+c%d_e",
             "projects/my-project/topics/orders",
+            "projects/example.com:my-project/topics/orders",
         ] {
             assert!(check_resource_name("topics", name).is_ok(), "{name}");
         }
@@ -137,6 +160,10 @@ mod tests {
             "google-orders",
             "projects/my-project/subscriptions/orders",
             "projects//topics/orders",
+            "projects/!/topics/orders",
+            "projects/short/topics/orders",
+            "projects/My-Project/topics/orders",
+            "projects/my-project-/topics/orders",
             "projects/my-project/topics",
         ] {
             assert!(check_resource_name("topics", name).is_err(), "{name}");

@@ -23,7 +23,8 @@ use ruststream::codec::CborCodec;
 // `Outgoing` names the derive at the crate root and the publish pipeline's message type in
 // `runtime`; a publish transform takes the second one, and the two live in different namespaces.
 use ruststream::runtime::{Out, Outgoing, PublishContext};
-use ruststream::testing::TestApp;
+use ruststream::testing::{InProcess, TestApp};
+use ruststream::{Broker, ConnectedBroker};
 use ruststream::{HeaderMap, Outgoing};
 use ruststream_gcp_pubsub::prelude::*;
 use ruststream_gcp_pubsub::{DELIVERY_ATTEMPT_HEADER, PARTITION_KEY_HEADER};
@@ -1051,4 +1052,24 @@ async fn a_deferred_delivery_comes_back_live() {
         .await
         .expect("the harness starts the app against the emulator");
     a_deferred_delivery_comes_back(tb).await;
+}
+
+// A broker whose clone is connected to the service cannot also connect in process: a test would
+// publish to the service while the harness reads an in-process log that never fills.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_broker_connected_to_the_service_does_not_connect_in_process() {
+    let Some(host) = live::host("PUBSUB_TEST_HOST") else {
+        return;
+    };
+    let broker = PubSubBroker::new(EMULATOR_PROJECT).emulator(host);
+    let live = broker
+        .clone()
+        .connect()
+        .await
+        .expect("connect to the emulator");
+    assert!(
+        broker.connect_in_process().await.is_err(),
+        "the service connection was reused in process"
+    );
+    live.shutdown().await.expect("shutdown");
 }
