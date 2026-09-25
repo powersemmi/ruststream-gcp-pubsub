@@ -27,8 +27,6 @@ mod settle;
 
 use std::sync::Arc;
 
-use tokio::runtime::Handle;
-
 pub(crate) use project::Project;
 pub(crate) use settle::{Consumer, Settlement};
 
@@ -47,10 +45,9 @@ use crate::subscription::GooglePubSub;
 pub(crate) fn subscribe(
     project: &Arc<Project>,
     descriptor: &GooglePubSub,
-    runtime: &Handle,
 ) -> Result<PubSubSubscriber, PubSubError> {
     project.ensure_open()?;
-    let consumer = project.open(descriptor, runtime)?;
+    let consumer = project.open(descriptor)?;
     Ok(PubSubSubscriber::in_process(
         project.subscription_path(descriptor.subscription()),
         consumer,

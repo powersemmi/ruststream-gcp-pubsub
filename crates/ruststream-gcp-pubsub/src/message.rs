@@ -12,7 +12,6 @@
 
 use std::collections::HashMap;
 use std::future::{Future, ready};
-use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
@@ -26,7 +25,8 @@ use tokio::time::sleep;
 use crate::error::{PubSubError, box_err};
 #[cfg(feature = "testing")]
 use crate::in_process::Settlement;
-use crate::subscription::DeliveryScope;
+use crate::runtime_slot::RuntimeSlot;
+use crate::subscription::DeliveryLimits;
 
 /// Header carrying the partition key, mapped onto the message's ordering key.
 ///
@@ -53,7 +53,7 @@ pub struct PubSubMessage {
     payload: Bytes,
     headers: HeaderMap,
     handler: Settle,
-    scope: Arc<DeliveryScope>,
+    limits: DeliveryLimits,
 }
 
 /// What settles a delivery: the client's handler, which carries the lease, or, under the `testing`
@@ -62,21 +62,22 @@ pub struct PubSubMessage {
 /// Without the feature there is one variant, so the type is the client's handler itself and every
 /// `match` on it is irrefutable: a production delivery carries no second settlement path.
 enum Settle {
-    Pull(Handler),
+    /// The client's handler, and where the runtime the broker connected on is found.
+    Pull(Handler, RuntimeSlot),
     #[cfg(feature = "testing")]
     InProcess(Settlement),
 }
 
-// The zero-cost promise of the in-process mode: a delivery built without it settles through a
-// handle exactly the size of the client's own.
+// The zero-cost promise of the in-process mode: a delivery built without it settles through the
+// client's own handle and the slot beside it, and nothing more.
 #[cfg(not(feature = "testing"))]
-const _: () = assert!(size_of::<Settle>() == size_of::<Handler>());
+const _: () = assert!(size_of::<Settle>() == size_of::<(Handler, RuntimeSlot)>());
 
 impl Settle {
     /// The delivery attempt the subscription reports, present only under a dead-letter policy.
     fn delivery_attempt(&self) -> Option<i32> {
         match self {
-            Self::Pull(handler) => handler.delivery_attempt(),
+            Self::Pull(handler, _) => handler.delivery_attempt(),
             #[cfg(feature = "testing")]
             Self::InProcess(settlement) => settlement.delivery_attempt(),
         }
@@ -92,8 +93,13 @@ impl std::fmt::Debug for PubSubMessage {
 }
 
 impl PubSubMessage {
-    pub(crate) fn new(message: GcpMessage, handler: Handler, scope: Arc<DeliveryScope>) -> Self {
-        Self::delivered(message, Settle::Pull(handler), scope)
+    pub(crate) fn new(
+        message: GcpMessage,
+        handler: Handler,
+        limits: DeliveryLimits,
+        runtime: RuntimeSlot,
+    ) -> Self {
+        Self::delivered(message, Settle::Pull(handler, runtime), limits)
     }
 
     /// A delivery of the in-process transport, read off the message it holds with the same
@@ -102,12 +108,12 @@ impl PubSubMessage {
     pub(crate) fn in_process(
         message: GcpMessage,
         settlement: Settlement,
-        scope: Arc<DeliveryScope>,
+        limits: DeliveryLimits,
     ) -> Self {
-        Self::delivered(message, Settle::InProcess(settlement), scope)
+        Self::delivered(message, Settle::InProcess(settlement), limits)
     }
 
-    fn delivered(message: GcpMessage, handler: Settle, scope: Arc<DeliveryScope>) -> Self {
+    fn delivered(message: GcpMessage, handler: Settle, limits: DeliveryLimits) -> Self {
         let mut headers = headers_of(message.attributes, message.ordering_key, 1);
         if let Some(attempt) = handler.delivery_attempt() {
             headers.insert(
@@ -119,7 +125,7 @@ impl PubSubMessage {
             payload: message.data,
             headers,
             handler,
-            scope,
+            limits,
         }
     }
 
@@ -138,7 +144,7 @@ impl PubSubMessage {
     /// acknowledge.
     fn at_delivery_cap(&self) -> bool {
         match (
-            self.scope.limits.max_delivery_attempts,
+            self.limits.max_delivery_attempts,
             self.handler.delivery_attempt(),
         ) {
             (Some(cap), Some(attempt)) => attempt >= cap,
@@ -149,7 +155,7 @@ impl PubSubMessage {
     /// Rejects the delivery, in the form the subscription's delivery guarantee asks for.
     async fn reject(self) -> Result<(), AckError> {
         let handler = match self.handler {
-            Settle::Pull(handler) => handler,
+            Settle::Pull(handler, _) => handler,
             #[cfg(feature = "testing")]
             Settle::InProcess(settlement) => {
                 settlement.reject();
@@ -198,7 +204,7 @@ impl IncomingMessage for PubSubMessage {
 
     async fn ack(self) -> Result<(), AckError> {
         let handler = match self.handler {
-            Settle::Pull(handler) => handler,
+            Settle::Pull(handler, _) => handler,
             #[cfg(feature = "testing")]
             Settle::InProcess(settlement) => {
                 settlement.ack();
@@ -244,35 +250,44 @@ impl IncomingMessage for PubSubMessage {
     /// outlives the subscription's maximum lease, because the delivery would come back before it
     /// elapsed. The check is at the call because a handler names the delay while it runs.
     fn nack_after(self, delay: Duration) -> impl Future<Output = Result<(), AckError>> + Send {
-        if delay > self.scope.limits.max_lease {
+        if delay > self.limits.max_lease {
             return ready(Err(AckError::Broker(box_err(
                 PubSubError::DelayBeyondLease {
                     requested: delay,
-                    lease: self.scope.limits.max_lease,
+                    lease: self.limits.max_lease,
                 },
             ))));
         }
         // The in-process transport holds the delivery on its own clock, which is the harness's
         // under a test, so the delay passes when the test advances it.
         #[cfg(feature = "testing")]
-        let this = match self {
+        let (this, slot) = match self {
             Self {
                 handler: Settle::InProcess(settlement),
-                scope,
                 ..
             } => {
-                settlement.reject_after(delay, &scope.runtime);
+                settlement.reject_after(delay);
                 return ready(Ok(()));
             }
-            this => this,
+            this @ Self {
+                handler: Settle::Pull(_, slot),
+                ..
+            } => (this, slot),
         };
         #[cfg(not(feature = "testing"))]
-        let this = self;
+        let (this, slot) = {
+            let Settle::Pull(_, slot) = self.handler;
+            (self, slot)
+        };
         // The handle travels into the task, so the client goes on extending the lease for the
         // whole wait. The task runs on the runtime the broker connected on, not the settling
-        // caller's, which may stop before the delay is out. A task that never gets to finish drops
-        // the handle, which rejects the delivery at once rather than stranding it.
-        let runtime = this.scope.runtime.clone();
+        // caller's, which may stop before the delay is out. A task that never gets to finish
+        // drops the handle, which rejects the delivery at once rather than stranding it, and so
+        // does a delivery whose connection is already gone.
+        let Some(runtime) = slot.runtime() else {
+            drop(this);
+            return ready(Ok(()));
+        };
         runtime.spawn(async move {
             sleep(delay).await;
             let _ = this.reject().await;
