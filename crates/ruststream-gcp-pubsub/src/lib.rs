@@ -3,13 +3,13 @@
 
 mod broker;
 mod error;
+#[cfg(feature = "testing")]
+mod in_process;
 mod message;
 pub mod prelude;
 mod publisher;
 mod subscriber;
 mod subscription;
-#[cfg(feature = "testing")]
-pub mod testing;
 
 pub use broker::{ConnectedPubSubBroker, PubSubBroker};
 pub use error::PubSubError;

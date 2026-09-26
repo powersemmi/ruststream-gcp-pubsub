@@ -1,27 +1,19 @@
-//! Five things a service asserts on the stand-in: the ordering step through an `Out` slot, a
-//! batch handler, where a returned reply lands, the subscription descriptor it declares its
-//! handlers with, and what happens to a delivery whose retries run out.
+//! What a service asserts when its tests run the production app, `PubSubBroker` connected in
+//! process: the ordering step through an `Out` slot, a batch handler, where a returned reply lands,
+//! the subscription descriptor it declares its handlers with, how a topic reaches its
+//! subscriptions, and what happens to a delivery whose retries run out.
 //!
 //! The step is a position on the publish builder, so a keyed publish is still the slot's: it keeps
 //! the slot's attribution, the codec the mount site named, and the key the call asked for. A step
 //! that wrapped the publisher instead would lose all three, which is what the codec case pins.
 //!
-//! The batch handler is the other half: the stand-in assembles batches the way the real subscriber
-//! does, so a `&[T]` body is unit-testable here rather than only against the emulator.
+//! A publish goes to a topic, and every subscription attached to that topic receives it. A
+//! descriptor that creates its subscription says which topic that is; a subscription the service
+//! only names is taken to be attached to the topic of its own name.
 //!
-//! A reply destination is resolved from the reply type, and the resolution runs through this
-//! crate's default publish policy, so both spellings are checked against real Pub/Sub wiring.
-//!
-//! The routes file is what the cases at the end are about, and the point is that it needs no
-//! editing to be mounted here: the same `GooglePubSub` that opens a streaming pull opens an
-//! in-process subscription, and the same `Publish` policy that reaches Pub/Sub pairs with the
-//! stand-in.
-//!
-//! The retries a message gets are the last one: the mount site declares the cap and the
-//! destination, and the subscription's own dead-letter policy carries a spent delivery away.
-//!
-//! A reply has no call site to name its key, so a transform on the reply position writes the
-//! setting instead, and the harness reads back what it wrote.
+//! The retries a message gets are the last group: the mount site declares the cap and the
+//! destination, and the subscription's own dead-letter policy carries a spent delivery away. One
+//! of them runs twice with the same body, in process and against the emulator.
 
 #![cfg(feature = "testing")]
 
@@ -30,13 +22,27 @@ use std::time::Duration;
 use ruststream::codec::CborCodec;
 // `Outgoing` names the derive at the crate root and the publish pipeline's message type in
 // `runtime`; a publish transform takes the second one, and the two live in different namespaces.
-use ruststream::runtime::{Out, Outgoing, PublishContext, PublishError};
-use ruststream::testing::TestApp;
-use ruststream::{ConnectedBroker as _, HeaderMap, Outgoing, SubscriptionSource as _};
+use ruststream::runtime::{Out, Outgoing, PublishContext};
+use ruststream::testing::{InProcess, TestApp};
+use ruststream::{Broker, ConnectedBroker};
+use ruststream::{HeaderMap, Outgoing};
 use ruststream_gcp_pubsub::prelude::*;
-use ruststream_gcp_pubsub::testing::PubSubTestBroker;
-use ruststream_gcp_pubsub::{DELIVERY_ATTEMPT_HEADER, PARTITION_KEY_HEADER, PubSubError};
+use ruststream_gcp_pubsub::{DELIVERY_ATTEMPT_HEADER, PARTITION_KEY_HEADER};
 use serde::{Deserialize, Serialize};
+
+mod live;
+
+/// The project the service's broker is built with. The in-process mode dials nothing and reads no
+/// credentials, so no project has to exist.
+const PROJECT: &str = "my-project";
+
+/// The project the emulator of `just test-brokers` is started with.
+const EMULATOR_PROJECT: &str = "ruststream-test";
+
+/// The broker `main` builds, which every app here is built on.
+fn broker() -> PubSubBroker {
+    PubSubBroker::new(PROJECT)
+}
 
 /// The order the harness injects.
 #[derive(Debug, PartialEq, Serialize, Deserialize, Outgoing)]
@@ -46,7 +52,7 @@ struct Order {
 
 /// Forwards every order under its own ordering key. The body names a per-message setting, so it
 /// imports this crate's prelude and bounds its slot on this broker's settings type.
-#[subscriber("orders-workers")]
+#[subscriber(GooglePubSub::new("orders-workers").create_with_topic("orders"))]
 async fn forward(
     order: &Order,
     Out(out): Out<impl Publisher<Options = PubSubPublishOptions>>,
@@ -66,28 +72,25 @@ async fn forward(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_ordering_step_on_a_slot_keeps_the_key_and_its_attribution() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        PubSubTestBroker::new(),
-        |b| {
-            b.include(forward)
-                .out(DefaultSlot, Publish::default())
-                .build();
-        },
-    );
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
+        b.include(forward)
+            .out(DefaultSlot, Publish::default())
+            .build();
+    });
     let tb = TestApp::start(app)
         .await
         .expect("the harness starts the app");
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .message(&Order { id: 7 })
-        .to("orders-workers")
+        .to("orders")
         .publish()
         .await
         .expect("the harness accepts the injection");
     tb.settle().await.expect("the handler settles");
 
-    // The key reached the wire: the stand-in reports it where a delivery off Pub/Sub does.
-    tb.broker::<PubSubTestBroker>()
+    // The key reached the wire: the log reports it where a delivery off Pub/Sub does.
+    tb.broker::<PubSubBroker>()
         .published::<Order>("confirmations")
         .assert_called_once()
         .with(&Order { id: 7 })
@@ -108,22 +111,19 @@ async fn the_ordering_step_on_a_slot_keeps_the_key_and_its_attribution() {
 /// adapter this crate shipped before, this message left as JSON.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_keyed_publish_keeps_the_codec_the_mount_site_named() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        PubSubTestBroker::new(),
-        |b| {
-            b.include(forward)
-                .out(DefaultSlot, Publish::default())
-                .codec(CborCodec)
-                .build();
-        },
-    );
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
+        b.include(forward)
+            .out(DefaultSlot, Publish::default())
+            .codec(CborCodec)
+            .build();
+    });
     let tb = TestApp::start(app)
         .await
         .expect("the harness starts the app");
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .message(&Order { id: 7 })
-        .to("orders-workers")
+        .to("orders")
         .publish()
         .await
         .expect("the harness accepts the injection");
@@ -155,19 +155,16 @@ async fn audit_trail(order: &Order, Out(out): Out<impl Publisher>) -> HandlerOut
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_mount_sites_key_applies_where_the_call_names_none() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        PubSubTestBroker::new(),
-        |b| {
-            b.include(audit_trail)
-                .out(DefaultSlot, Publish::default().ordering_key("audit"))
-                .build();
-        },
-    );
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
+        b.include(audit_trail)
+            .out(DefaultSlot, Publish::default().ordering_key("audit"))
+            .build();
+    });
     let tb = TestApp::start(app)
         .await
         .expect("the harness starts the app");
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .message(&Order { id: 7 })
         .to("orders-audit")
         .publish()
@@ -175,7 +172,7 @@ async fn the_mount_sites_key_applies_where_the_call_names_none() {
         .expect("the harness accepts the injection");
     tb.settle().await.expect("the handler settles");
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .published::<Order>("audit-trail")
         .assert_called_once()
         .with_header(PARTITION_KEY_HEADER, "audit");
@@ -198,19 +195,16 @@ async fn settle(orders: &[Order]) -> HandlerOutcome {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_batch_handler_runs_against_the_stand_in() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        PubSubTestBroker::new(),
-        |b| {
-            b.include(settle.batch(nonzero!(4)));
-        },
-    );
+async fn a_batch_handler_runs_in_process() {
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
+        b.include(settle.batch(nonzero!(4)));
+    });
     let tb = TestApp::start(app)
         .await
         .expect("the harness starts the app");
 
     for id in 1..=4 {
-        tb.broker::<PubSubTestBroker>()
+        tb.broker::<PubSubBroker>()
             .message(&Order { id })
             .to("orders-batches")
             .publish()
@@ -222,7 +216,7 @@ async fn a_batch_handler_runs_against_the_stand_in() {
     // How the four split across batches is the buffer's business (its deadline against the
     // injection timing); that every order reached the body is the contract.
     let received: Vec<u64> = tb
-        .broker::<PubSubTestBroker>()
+        .broker::<PubSubBroker>()
         .subscriber("orders-batches")
         .received::<Order>()
         .into_iter()
@@ -249,17 +243,14 @@ async fn receipt(order: &Order) -> Receipt {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reply_type_that_declares_a_topic_is_published_there() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        PubSubTestBroker::new(),
-        |b| {
-            b.include(receipt);
-        },
-    );
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
+        b.include(receipt);
+    });
     let tb = TestApp::start(app)
         .await
         .expect("the harness starts the app");
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .message(&Order { id: 7 })
         .to("orders-receipts")
         .publish()
@@ -267,7 +258,7 @@ async fn a_reply_type_that_declares_a_topic_is_published_there() {
         .expect("the harness accepts the injection");
     tb.settle().await.expect("the handler settles");
 
-    let broker = tb.broker::<PubSubTestBroker>();
+    let broker = tb.broker::<PubSubBroker>();
     broker.subscriber("orders-receipts").assert_called_once();
     broker
         .published::<Receipt>("receipts")
@@ -292,17 +283,14 @@ async fn audit(order: &Order) -> Audited {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reply_type_without_a_topic_is_published_where_the_mount_site_says() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        PubSubTestBroker::new(),
-        |b| {
-            b.include(audit);
-        },
-    );
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
+        b.include(audit);
+    });
     let tb = TestApp::start(app)
         .await
         .expect("the harness starts the app");
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .message(&Order { id: 11 })
         .to("orders-audit")
         .publish()
@@ -310,7 +298,7 @@ async fn a_reply_type_without_a_topic_is_published_where_the_mount_site_says() {
         .expect("the harness accepts the injection");
     tb.settle().await.expect("the handler settles");
 
-    let broker = tb.broker::<PubSubTestBroker>();
+    let broker = tb.broker::<PubSubBroker>();
     broker.subscriber("orders-audit").assert_called_once();
     broker
         .published::<Audited>("audit-eu")
@@ -321,7 +309,7 @@ async fn a_reply_type_without_a_topic_is_published_where_the_mount_site_says() {
 }
 
 /// The declaration a service ships, carrying the options a production subscription is opened
-/// with. Nothing about it is test-shaped, and nothing about it needs to be.
+/// with.
 #[subscriber(GooglePubSub::new("orders-descriptor")
     .create_with_topic("orders")
     .max_outstanding(500)
@@ -331,47 +319,127 @@ async fn confirm(order: &Order) -> HandlerOutcome {
     HandlerOutcome::ack()
 }
 
+/// The descriptor creates its subscription attached to `orders`, so a publish to that topic reaches
+/// the handler and a publish to the subscription's own name reaches nothing: Pub/Sub publishes to
+/// topics, never to a subscription.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_production_descriptor_mounts_on_the_stand_in() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        PubSubTestBroker::new(),
-        |b| {
-            b.include(confirm);
-        },
-    );
+async fn the_production_descriptor_is_reached_through_its_topic() {
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
+        b.include(confirm);
+    });
     let tb = TestApp::start(app)
         .await
         .expect("the harness starts the app");
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .message(&Order { id: 11 })
-        .to("orders-descriptor")
+        .to("orders")
         .publish()
         .await
         .expect("the harness accepts the injection");
-    tb.settle().await.expect("the handler settles");
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .subscriber("orders-descriptor")
         .assert_called_once()
         .with(&Order { id: 11 })
         .settled(HandlerOutcome::ack());
 
-    // The stand-in routes by the subscription name and holds no topics, so `create_with_topic`
-    // names no second address to reach this handler by. Documented on the source impl, pinned
-    // here so it reads as a decision: the topic-to-subscription hop is the emulator's to prove.
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .message(&Order { id: 12 })
+        .to("orders-descriptor")
+        .publish()
+        .await
+        .expect("a topic nothing is attached to still takes the publish");
+    tb.broker::<PubSubBroker>()
+        .subscriber("orders-descriptor")
+        .assert_called_once();
+
+    tb.shutdown().await.expect("graceful shutdown");
+}
+
+/// Bills an order. Attached to the same topic as [`ship`], through a subscription of its own.
+#[subscriber(GooglePubSub::new("orders-billing").create_with_topic("orders"))]
+async fn bill(order: &Order) -> HandlerOutcome {
+    let _ = order.id;
+    HandlerOutcome::ack()
+}
+
+/// Ships an order, off its own subscription to the same topic.
+#[subscriber(GooglePubSub::new("orders-shipping").create_with_topic("orders"))]
+async fn ship(order: &Order) -> HandlerOutcome {
+    let _ = order.id;
+    HandlerOutcome::ack()
+}
+
+/// Every subscription attached to a topic receives every message published to it, each once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_topic_reaches_every_subscription_attached_to_it() {
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
+        b.include(bill);
+        b.include(ship);
+    });
+    let tb = TestApp::start(app)
+        .await
+        .expect("the harness starts the app");
+
+    tb.broker::<PubSubBroker>()
+        .message(&Order { id: 21 })
         .to("orders")
         .publish()
         .await
         .expect("the harness accepts the injection");
-    tb.settle()
+
+    let broker = tb.broker::<PubSubBroker>();
+    broker
+        .subscriber("orders-billing")
+        .assert_called_once()
+        .with(&Order { id: 21 });
+    broker
+        .subscriber("orders-shipping")
+        .assert_called_once()
+        .with(&Order { id: 21 });
+
+    tb.shutdown().await.expect("graceful shutdown");
+}
+
+/// One half of a pair of workers on one subscription.
+#[subscriber(GooglePubSub::new("orders-pool").create_with_topic("orders"))]
+async fn first_worker(order: &Order) -> HandlerOutcome {
+    let _ = order.id;
+    HandlerOutcome::ack()
+}
+
+/// The other half, on the same subscription.
+#[subscriber(GooglePubSub::new("orders-pool").create_with_topic("orders"))]
+async fn second_worker(order: &Order) -> HandlerOutcome {
+    let _ = order.id;
+    HandlerOutcome::ack()
+}
+
+/// Two consumers of one subscription compete for its messages: each message is handled once, by
+/// one of them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn consumers_of_one_subscription_share_its_messages() {
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
+        b.include(first_worker);
+        b.include(second_worker);
+    });
+    let tb = TestApp::start(app)
         .await
-        .expect("a publish nothing subscribes to settles on the spot");
-    tb.broker::<PubSubTestBroker>()
-        .subscriber("orders-descriptor")
-        .assert_called_once();
+        .expect("the harness starts the app");
+
+    for id in [31, 32] {
+        tb.broker::<PubSubBroker>()
+            .message(&Order { id })
+            .to("orders")
+            .publish()
+            .await
+            .expect("the harness accepts the injection");
+    }
+
+    tb.broker::<PubSubBroker>()
+        .subscriber("orders-pool")
+        .assert_called(2);
 
     tb.shutdown().await.expect("graceful shutdown");
 }
@@ -389,12 +457,11 @@ async fn plan(order: &Order) -> PlanItem {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_routes_file_a_service_ships_mounts_on_the_stand_in() {
+async fn the_routes_file_a_service_ships_runs_in_process() {
     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        PubSubTestBroker::new(),
-        // Character for character what a routes file writes against the real broker: the
-        // descriptor on the subscribe side, the policy under its mount-site name on the publish
-        // side. Neither has a test-only spelling to swap in.
+        broker(),
+        // The descriptor on the subscribe side, the policy under its mount-site name on the
+        // publish side, as the routes file writes them.
         |b| {
             b.include(plan).out_reply(Publish::default());
         },
@@ -403,7 +470,7 @@ async fn the_routes_file_a_service_ships_mounts_on_the_stand_in() {
         .await
         .expect("the harness starts the app");
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .message(&Order { id: 5 })
         .to("orders-plan")
         .publish()
@@ -411,7 +478,7 @@ async fn the_routes_file_a_service_ships_mounts_on_the_stand_in() {
         .expect("the harness accepts the injection");
     tb.settle().await.expect("the handler settles");
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .published::<PlanItem>("plan-items")
         .assert_called_once()
         .with(&PlanItem { order_id: 5 });
@@ -429,19 +496,16 @@ async fn settle_descriptor(orders: &[Order]) -> HandlerOutcome {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_descriptor_mounted_batch_handler_runs_against_the_stand_in() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        PubSubTestBroker::new(),
-        |b| {
-            b.include(settle_descriptor.batch(nonzero!(4)));
-        },
-    );
+async fn a_descriptor_mounted_batch_handler_runs_in_process() {
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
+        b.include(settle_descriptor.batch(nonzero!(4)));
+    });
     let tb = TestApp::start(app)
         .await
         .expect("the harness starts the app");
 
     for id in 1..=4 {
-        tb.broker::<PubSubTestBroker>()
+        tb.broker::<PubSubBroker>()
             .message(&Order { id })
             .to("orders-descriptor-batches")
             .publish()
@@ -451,7 +515,7 @@ async fn a_descriptor_mounted_batch_handler_runs_against_the_stand_in() {
     tb.settle().await.expect("the batches settle");
 
     let received: Vec<u64> = tb
-        .broker::<PubSubTestBroker>()
+        .broker::<PubSubBroker>()
         .subscriber("orders-descriptor-batches")
         .received::<Order>()
         .into_iter()
@@ -462,55 +526,28 @@ async fn a_descriptor_mounted_batch_handler_runs_against_the_stand_in() {
     tb.shutdown().await.expect("graceful shutdown");
 }
 
-/// The stand-in runs the descriptor's own check rather than a looser one, so a descriptor that
-/// names no subscription fails here exactly where it fails against the product: before any
-/// subscription is opened.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_empty_descriptor_is_rejected_by_the_stand_in() {
-    let broker = PubSubTestBroker::new()
-        .connect()
-        .await
-        .expect("the stand-in connects");
-
-    let err = GooglePubSub::new("")
-        .subscribe(&broker)
-        .await
-        .expect_err("a descriptor naming no subscription must not open one");
-
-    assert!(
-        matches!(err, PubSubError::InvalidDescriptor(_)),
-        "got {err}"
-    );
+/// Subscribes to a subscription with no name, which the descriptor refuses.
+#[subscriber(GooglePubSub::new(""))]
+async fn nameless(order: &Order) -> HandlerOutcome {
+    let _ = order.id;
+    HandlerOutcome::ack()
 }
 
-/// The ladder makes owner-side misuse a compile error; a publisher that outlived the shutdown is
-/// what stays checkable at runtime, and the real policy pairs here now, so a service can write
-/// this test against the stand-in.
-///
-/// That the publish fails at all is the framework's contract, pinned by `harness::lifecycle` in
-/// `tests/conformance_pubsub.rs`. What this adds is the answer's shape: the variant a service
-/// matches on is the broker's own, the same one the real publisher reports.
+/// The in-process mode runs the descriptor's own check, so a descriptor that names no subscription
+/// fails to start exactly where it fails against Pub/Sub: before any subscription is opened.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn publishing_after_shutdown_errors() {
-    let broker = PubSubTestBroker::new()
-        .connect()
-        .await
-        .expect("the stand-in connects");
-    let publisher = broker.publisher();
-    broker.shutdown().await.expect("graceful shutdown");
+async fn an_empty_descriptor_does_not_start() {
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
+        b.include(nameless);
+    });
 
-    let err = publisher
-        .message(&Order { id: 1 })
-        .to("orders")
-        .publish()
+    let err = TestApp::start(app)
         .await
-        .expect_err("a publish through the closed transport must error");
-
-    // The broker's own variant, through the builder's wrapper: the same answer the real
-    // publisher gives once its connection cell is closed.
+        .expect_err("a descriptor naming no subscription must not open one");
+    let reported = format!("{err:#}");
     assert!(
-        matches!(err, PublishError::Publish(PubSubError::NotConnected)),
-        "got {err}"
+        reported.contains("subscription name must be non-empty"),
+        "the refusal must say what is missing: {reported}",
     );
 }
 
@@ -585,19 +622,16 @@ async fn always_defers(payment: &Payment) -> HandlerOutcome {
 /// `advance` returns the delivery that is due instead of waiting two seconds for it.
 #[tokio::test(start_paused = true)]
 async fn a_deferred_delivery_comes_back_when_the_delay_is_out() {
-    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
-        PubSubTestBroker::new(),
-        |b| {
-            b.include(defers_the_first_delivery)
-                .max_attempts(nonzero!(MAX_ATTEMPTS))
-                .dead_letter(DEAD_LETTER);
-        },
-    );
+    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker(), |b| {
+        b.include(defers_the_first_delivery)
+            .max_attempts(nonzero!(MAX_ATTEMPTS))
+            .dead_letter(DEAD_LETTER);
+    });
     let tb = TestApp::start(app)
         .await
         .expect("the harness starts the app");
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .message(&Payment { id: 5 })
         .to("payments-workers")
         .publish()
@@ -608,7 +642,7 @@ async fn a_deferred_delivery_comes_back_when_the_delay_is_out() {
     tb.advance(JUST_SHORT_OF_IT)
         .await
         .expect("nothing is due yet");
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .subscriber("payments-workers")
         .assert_called(1);
 
@@ -616,7 +650,7 @@ async fn a_deferred_delivery_comes_back_when_the_delay_is_out() {
     tb.advance(THE_LAST_TICK)
         .await
         .expect("the held delivery comes back");
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .subscriber("payments-workers")
         .assert_called(2)
         .settled(HandlerOutcome::ack());
@@ -625,22 +659,20 @@ async fn a_deferred_delivery_comes_back_when_the_delay_is_out() {
 }
 
 /// A delayed retry spends the same attempts an immediate one does, so a handler that only ever
-/// defers still ends at the dead-letter topic rather than holding the message forever.
+/// defers still ends at the dead-letter topic rather than holding the message forever. The last
+/// delivery leaves once its own delay is out.
 #[tokio::test(start_paused = true)]
 async fn a_deferred_delivery_still_runs_out_of_attempts() {
-    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
-        PubSubTestBroker::new(),
-        |b| {
-            b.include(always_defers)
-                .max_attempts(nonzero!(MAX_ATTEMPTS))
-                .dead_letter(DEAD_LETTER);
-        },
-    );
+    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker(), |b| {
+        b.include(always_defers)
+            .max_attempts(nonzero!(MAX_ATTEMPTS))
+            .dead_letter(DEAD_LETTER);
+    });
     let tb = TestApp::start(app)
         .await
         .expect("the harness starts the app");
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .message(&Payment { id: 9 })
         .to("payments-workers")
         .publish()
@@ -652,10 +684,22 @@ async fn a_deferred_delivery_still_runs_out_of_attempts() {
             .expect("the held delivery comes back");
     }
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .subscriber("payments-workers")
         .assert_called(MAX_ATTEMPTS as usize);
-    tb.broker::<PubSubTestBroker>()
+    // The last delivery is held for its delay like every other: the crate rejects it only when the
+    // delay is out, and the rejection is what the subscription dead-letters.
+    tb.broker::<PubSubBroker>()
+        .published::<Payment>(DEAD_LETTER)
+        .assert_not_called();
+
+    tb.advance(RETRY_DELAY)
+        .await
+        .expect("the last held delivery is rejected");
+    tb.broker::<PubSubBroker>()
+        .subscriber("payments-workers")
+        .assert_called(MAX_ATTEMPTS as usize);
+    tb.broker::<PubSubBroker>()
         .published::<Payment>(DEAD_LETTER)
         .assert_called(1)
         .with(&Payment { id: 9 });
@@ -668,19 +712,16 @@ async fn a_deferred_delivery_still_runs_out_of_attempts() {
 /// the service, which is why `.out_retry(..)` does not compile over this descriptor.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_spent_delivery_leaves_for_the_declared_dead_letter_topic() {
-    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
-        PubSubTestBroker::new(),
-        |b| {
-            b.include(never_settles)
-                .max_attempts(nonzero!(MAX_ATTEMPTS))
-                .dead_letter(DEAD_LETTER);
-        },
-    );
+    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker(), |b| {
+        b.include(never_settles)
+            .max_attempts(nonzero!(MAX_ATTEMPTS))
+            .dead_letter(DEAD_LETTER);
+    });
     let tb = TestApp::start(app)
         .await
         .expect("the harness starts the app");
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .message(&Payment { id: 3 })
         .to("payments-workers")
         .publish()
@@ -689,12 +730,12 @@ async fn a_spent_delivery_leaves_for_the_declared_dead_letter_topic() {
     tb.settle().await.expect("the retries run out");
 
     // Five deliveries, the declared cap, and not a sixth.
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .subscriber("payments-workers")
         .assert_called(MAX_ATTEMPTS as usize);
 
     // The payment itself is on the dead-letter topic, as it arrived.
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .published::<Payment>(DEAD_LETTER)
         .assert_called(1)
         .with(&Payment { id: 3 });
@@ -707,19 +748,16 @@ async fn a_spent_delivery_leaves_for_the_declared_dead_letter_topic() {
 /// it decided to discard.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_dropped_delivery_does_not_reach_the_dead_letter_topic() {
-    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
-        PubSubTestBroker::new(),
-        |b| {
-            b.include(drops_the_first_delivery)
-                .max_attempts(nonzero!(MAX_ATTEMPTS))
-                .dead_letter(DEAD_LETTER);
-        },
-    );
+    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker(), |b| {
+        b.include(drops_the_first_delivery)
+            .max_attempts(nonzero!(MAX_ATTEMPTS))
+            .dead_letter(DEAD_LETTER);
+    });
     let tb = TestApp::start(app)
         .await
         .expect("the harness starts the app");
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .message(&Payment { id: 11 })
         .to("payments-workers")
         .publish()
@@ -727,11 +765,11 @@ async fn a_dropped_delivery_does_not_reach_the_dead_letter_topic() {
         .expect("the harness accepts the injection");
     tb.settle().await.expect("the handler drops the delivery");
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .subscriber("payments-workers")
         .assert_called(1);
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .published::<Payment>(DEAD_LETTER)
         .assert_called(0);
 
@@ -743,19 +781,16 @@ async fn a_dropped_delivery_does_not_reach_the_dead_letter_topic() {
 /// dead-letter topic.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_delivery_reports_which_attempt_it_is() {
-    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
-        PubSubTestBroker::new(),
-        |b| {
-            b.include(settles_on_the_third_attempt)
-                .max_attempts(nonzero!(MAX_ATTEMPTS))
-                .dead_letter(DEAD_LETTER);
-        },
-    );
+    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker(), |b| {
+        b.include(settles_on_the_third_attempt)
+            .max_attempts(nonzero!(MAX_ATTEMPTS))
+            .dead_letter(DEAD_LETTER);
+    });
     let tb = TestApp::start(app)
         .await
         .expect("the harness starts the app");
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .message(&Payment { id: 7 })
         .to("payments-workers")
         .publish()
@@ -763,12 +798,12 @@ async fn a_delivery_reports_which_attempt_it_is() {
         .expect("the harness accepts the injection");
     tb.settle().await.expect("the third delivery settles");
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .subscriber("payments-workers")
         .assert_called(3)
         .settled(HandlerOutcome::ack());
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .published::<Payment>(DEAD_LETTER)
         .assert_called(0);
 
@@ -817,21 +852,18 @@ async fn keyed_receipt(order: &Order) -> KeyedReceipt {
 /// to the setting rather than to a header that happens to travel.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_transform_on_the_reply_names_the_ordering_key() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        PubSubTestBroker::new(),
-        |b| {
-            b.include(keyed_receipt)
-                .out_reply(Publish::default())
-                .transform(ReplyUnderTheOrdersKey);
-        },
-    );
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
+        b.include(keyed_receipt)
+            .out_reply(Publish::default())
+            .transform(ReplyUnderTheOrdersKey);
+    });
     let tb = TestApp::start(app)
         .await
         .expect("the harness starts the app");
 
     let mut headers = HeaderMap::new();
     headers.insert(PARTITION_KEY_HEADER, "order-7");
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .message(&Order { id: 7 })
         .with_headers(headers)
         .to("orders-keyed")
@@ -840,14 +872,14 @@ async fn a_transform_on_the_reply_names_the_ordering_key() {
         .expect("the harness accepts the injection");
     tb.settle().await.expect("the handler settles");
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .published::<KeyedReceipt>("order-receipts")
         .assert_called_once()
         .with(&KeyedReceipt { id: 7 })
         .with_options(&PubSubPublishOptions {
             ordering_key: Some("order-7".to_owned()),
         })
-        // And the publisher resolved it: the stand-in reports the key where a delivery does.
+        // And the publisher resolved it: the log reports the key where a delivery does.
         .with_header(PARTITION_KEY_HEADER, "order-7");
 
     tb.shutdown().await.expect("graceful shutdown");
@@ -870,19 +902,16 @@ async fn never_settles_by_name(payment: &Payment) -> HandlerOutcome {
 /// a cap reaches.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_bare_name_opens_with_the_declared_dead_letter_policy() {
-    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
-        PubSubTestBroker::new(),
-        |b| {
-            b.include(never_settles_by_name)
-                .max_attempts(nonzero!(MAX_ATTEMPTS))
-                .dead_letter(DEAD_LETTER);
-        },
-    );
+    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker(), |b| {
+        b.include(never_settles_by_name)
+            .max_attempts(nonzero!(MAX_ATTEMPTS))
+            .dead_letter(DEAD_LETTER);
+    });
     let tb = TestApp::start(app)
         .await
         .expect("the harness starts the app");
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .message(&Payment { id: 13 })
         .to(BY_NAME)
         .publish()
@@ -890,10 +919,10 @@ async fn a_bare_name_opens_with_the_declared_dead_letter_policy() {
         .expect("the harness accepts the injection");
     tb.settle().await.expect("the retries run out");
 
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .subscriber(BY_NAME)
         .assert_called(MAX_ATTEMPTS as usize);
-    tb.broker::<PubSubTestBroker>()
+    tb.broker::<PubSubBroker>()
         .published::<Payment>(DEAD_LETTER)
         .assert_called(1)
         .with(&Payment { id: 13 });
@@ -906,13 +935,10 @@ async fn a_bare_name_opens_with_the_declared_dead_letter_policy() {
 /// start without the cap it asked for.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_bare_name_refuses_half_a_declaration() {
-    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
-        PubSubTestBroker::new(),
-        |b| {
-            b.include(never_settles_by_name)
-                .max_attempts(nonzero!(MAX_ATTEMPTS));
-        },
-    );
+    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker(), |b| {
+        b.include(never_settles_by_name)
+            .max_attempts(nonzero!(MAX_ATTEMPTS));
+    });
 
     let err = TestApp::start(app)
         .await
@@ -928,14 +954,11 @@ async fn a_bare_name_refuses_half_a_declaration() {
 /// comes at startup rather than from the admin call that would reject the policy.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_bare_name_refuses_a_cap_outside_the_services_range() {
-    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
-        PubSubTestBroker::new(),
-        |b| {
-            b.include(never_settles_by_name)
-                .max_attempts(nonzero!(3u32))
-                .dead_letter(DEAD_LETTER);
-        },
-    );
+    let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker(), |b| {
+        b.include(never_settles_by_name)
+            .max_attempts(nonzero!(3u32))
+            .dead_letter(DEAD_LETTER);
+    });
 
     let err = TestApp::start(app)
         .await
@@ -945,4 +968,108 @@ async fn a_bare_name_refuses_a_cap_outside_the_services_range() {
         reported.contains("max_attempts(3)"),
         "the refusal must name the cap: {reported}",
     );
+}
+
+// --- One test body, in process and against the emulator. ---
+
+/// Long enough for the emulator to hold nothing back early, short enough for a live run.
+const WAITED: Duration = Duration::from_secs(1);
+
+/// Names unique to this process, so a run against an emulator that kept an earlier run's
+/// subscriptions starts on fresh ones.
+fn dual_name(role: &str) -> String {
+    format!("dual-{role}-{}", std::process::id())
+}
+
+/// Asks for the first delivery back after [`WAITED`], and acknowledges the redelivery, which the
+/// subscription counts as the second attempt. The subscription is created with its topic, as a
+/// service creates the topology it owns.
+#[subscriber(GooglePubSub::new(dual_name("workers")).create_with_topic(dual_name("payments")))]
+async fn defer_once(payment: &Payment, ctx: &mut Context<'_>) -> HandlerOutcome {
+    let _ = payment.id;
+    if attempt_of(ctx.headers()) == Some(1) {
+        return HandlerOutcome::retry_after(WAITED);
+    }
+    HandlerOutcome::ack()
+}
+
+/// The app `main` runs, on the broker it is handed: the production builder, unchanged in either
+/// mode.
+fn dual_app(broker: PubSubBroker) -> RustStream {
+    RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker, |b| {
+        b.include(defer_once)
+            .max_attempts(nonzero!(MAX_ATTEMPTS))
+            .dead_letter(dual_name("dead"));
+    })
+}
+
+/// The body both modes run: the first delivery asks to come back, the crate holds it for the
+/// delay and rejects it, and the subscription's redelivery is handled and acknowledged.
+async fn a_deferred_delivery_comes_back(tb: TestApp<()>) {
+    let topic = dual_name("payments");
+    let subscription = dual_name("workers");
+    tb.broker::<PubSubBroker>()
+        .message(&Payment { id: 42 })
+        .to(&topic)
+        .publish()
+        .await
+        .expect("publish drives the first delivery to its settlement");
+    tb.broker::<PubSubBroker>()
+        .subscriber(&subscription)
+        .assert_called_once()
+        .settled(HandlerOutcome::retry_after(WAITED));
+
+    tb.advance(WAITED)
+        .await
+        .expect("the held delivery comes back");
+
+    tb.broker::<PubSubBroker>()
+        .subscriber(&subscription)
+        .assert_called(2)
+        .settled(HandlerOutcome::ack());
+    tb.broker::<PubSubBroker>()
+        .published::<Payment>(&topic)
+        .assert_called_once()
+        .with(&Payment { id: 42 });
+
+    tb.shutdown().await.expect("graceful shutdown");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_deferred_delivery_comes_back_in_process() {
+    let tb = TestApp::start(dual_app(broker()))
+        .await
+        .expect("the harness starts the app");
+    a_deferred_delivery_comes_back(tb).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deferred_delivery_comes_back_live() {
+    let Some(host) = live::host("PUBSUB_TEST_HOST") else {
+        return;
+    };
+    let tb = TestApp::start_live(dual_app(PubSubBroker::new(EMULATOR_PROJECT).emulator(host)))
+        .await
+        .expect("the harness starts the app against the emulator");
+    a_deferred_delivery_comes_back(tb).await;
+}
+
+// A broker whose clone is connected to the service cannot also connect in process: a test would
+// publish to the service while the harness reads an in-process log that never fills.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_broker_connected_to_the_service_does_not_connect_in_process() {
+    let Some(host) = live::host("PUBSUB_TEST_HOST") else {
+        return;
+    };
+    let broker = PubSubBroker::new(EMULATOR_PROJECT).emulator(host);
+    let live = broker
+        .clone()
+        .connect()
+        .await
+        .expect("connect to the emulator");
+    assert!(
+        broker.connect_in_process().await.is_err(),
+        "the service connection was reused in process"
+    );
+    live.shutdown().await.expect("shutdown");
 }

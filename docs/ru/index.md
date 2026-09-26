@@ -32,9 +32,10 @@ serde = { version = "1", features = ["derive"] }
 dead-letter этой подписки, поэтому сервис не публикует копий для повторной доставки.
 [Публикация](https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/index.html#publishing)
 добавляет одну настройку на сообщение - ключ упорядочивания, - и назвать его может место вызова,
-заголовок с ключом партиционирования или точка монтирования. Возможность
-[`testing`](https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/testing/index.html)
-запускает сервис целиком внутрипроцессно, без сервера.
+заголовок с ключом партиционирования или точка монтирования. С возможностью
+[`testing`](https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/index.html#testing)
+тест запускает то же приложение, что и `main`: `PubSubBroker` подключается внутри процесса, без
+сервера.
 
 ## Куда идти дальше {#where-to-go-next}
 

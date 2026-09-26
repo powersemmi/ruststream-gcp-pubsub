@@ -28,8 +28,8 @@ serde = { version = "1", features = ["derive"] }
 多久不被结算。在挂载点写下的重试上限和死信主题，会变成这条订阅自己的死信策略，因此服务不会再发
 布任何用于重新投递的副本。[发布](https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/index.html#publishing)
 只多出一项逐条消息的设置，也就是排序键，它可以由调用处、分区键请求头或挂载点给出。
-[`testing`](https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/testing/index.html)
-特性让整个服务在进程内运行，不需要服务器。
+启用 [`testing`](https://docs.rs/ruststream-gcp-pubsub/latest/ruststream_gcp_pubsub/index.html#testing)
+特性后，测试运行的就是 `main` 所用的同一个应用：`PubSubBroker` 在进程内连接，不需要服务器。
 
 ## 接下来读什么 { #where-to-go-next }
 

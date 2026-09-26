@@ -93,7 +93,7 @@ use tokio::runtime::{Builder, Runtime};
 use tokio::sync::Notify;
 use tokio::time::{sleep, timeout};
 
-// A benchmark measures what ships. The `testing` feature compiles an in-process stand-in into this
+// A benchmark measures what ships. The `testing` feature compiles the in-process mode into this
 // crate and turns on the framework's harness, and neither is in a deployed service. Nothing here
 // enables it; the feature exists so that asking for it is the compile error below rather than a
 // number nobody can trust. The benchmark lives in a package of its own for the same reason:

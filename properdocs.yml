@@ -1,5 +1,5 @@
 site_name: ruststream-gcp-pubsub
-site_description: The Google Cloud Pub/Sub broker for RustStream - streaming pull subscriptions, exactly-once acknowledgement, ordering keys, and an in-process test broker.
+site_description: The Google Cloud Pub/Sub broker for RustStream - streaming pull subscriptions, exactly-once acknowledgement, ordering keys, and an in-process mode that runs the production app in tests.
 site_url: https://powersemmi.github.io/ruststream-gcp-pubsub/
 repo_url: https://github.com/powersemmi/ruststream-gcp-pubsub
 repo_name: powersemmi/ruststream-gcp-pubsub
