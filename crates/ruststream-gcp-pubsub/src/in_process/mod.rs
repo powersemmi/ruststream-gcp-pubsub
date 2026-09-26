@@ -73,10 +73,16 @@ pub(crate) mod limits {
 /// digits and hyphens, starting with a letter and not ending with a hyphen, with an optional
 /// `domain:` prefix for a domain-scoped project.
 fn check_project(project: &str) -> Result<(), String> {
-    let (domain, id) = project.rsplit_once(':').unwrap_or(("", project));
-    let domain_ok = domain
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-'));
+    // A colon names a domain, so what precedes it is a domain and never empty.
+    let (domain_ok, id) = project
+        .rsplit_once(':')
+        .map_or((true, project), |(domain, id)| {
+            let domain_ok = !domain.is_empty()
+                && domain.chars().all(|c| {
+                    c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-')
+                });
+            (domain_ok, id)
+        });
     let id_ok = (6..=30).contains(&id.len())
         && id.starts_with(|c: char| c.is_ascii_lowercase())
         && !id.ends_with('-')
@@ -164,6 +170,7 @@ mod tests {
             "projects/short/topics/orders",
             "projects/My-Project/topics/orders",
             "projects/my-project-/topics/orders",
+            "projects/:my-project/topics/orders",
             "projects/my-project/topics",
         ] {
             assert!(check_resource_name("topics", name).is_err(), "{name}");
