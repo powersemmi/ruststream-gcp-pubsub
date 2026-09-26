@@ -17,8 +17,8 @@
 //! * **adapter** drives this crate and nothing above it: [`PubSubBroker`], [`GooglePubSub`], the
 //!   [`Subscriber`] stream it yields, the [`IncomingMessage`] it delivers and its `ack`, and
 //!   [`PubSubPublisher`] on the way in. No handler, no app, no dispatch.
-//!   * **framework** is the whole service a user writes: a `#[subscriber]` handler, the app, the
-//!     runtime.
+//! * **framework** is the whole service a user writes: a `#[subscriber]` handler, the app, the
+//!   runtime.
 //!
 //! `adapter` less `raw` is what this crate's own consumer and publisher cost over the client they
 //! wrap. `framework` less `adapter` is what the runtime costs on top of them, over this broker in
@@ -42,9 +42,10 @@
 //! set from it, so a measured run lasts at least [`SECONDS`] on whatever machine it is taken on.
 //!
 //! Rounds are interleaved - raw, adapter, framework, raw, adapter, framework - and each loop
-//! reports its best round: noise only ever slows a run down, so the fastest round is the closest
-//! to the undisturbed cost. Running one loop to the end and then the next would charge every
-//! drift of the machine to whichever ran last.
+//! reports its best, median and worst round. The best is the headline: noise only ever slows a
+//! run down, so the fastest round is the closest to the undisturbed cost. The distance between
+//! the best and the worst is the noise a difference has to clear. Running one loop to the end and
+//! then the next would charge every drift of the machine to whichever ran last.
 //!
 //! # What the numbers do not say
 //!
@@ -120,7 +121,7 @@ const MARGIN: f64 = 1.25;
 /// The ceiling on a calibrated count, so a machine an order faster does not turn a run into an
 /// afternoon.
 const MAX_MESSAGES: usize = 4_000_000;
-/// Rounds run. The best of them is reported.
+/// Rounds run. Each loop reports its best, median and worst round.
 const PAIRS: usize = 3;
 /// Worker threads both halves are driven on.
 const WORKERS: usize = 4;
@@ -701,22 +702,33 @@ impl Scenario {
     }
 }
 
-/// Best and worst of the rounds.
+/// Best, median and worst of the rounds.
 ///
 /// Noise on the machine only ever slows a run down, so the fastest round is the closest to the
-/// undisturbed cost, and the slowest says how far from quiet the machine was.
+/// undisturbed cost, the median is the typical one, and the slowest says how far from quiet the
+/// machine was.
 #[derive(Clone, Copy, Debug)]
 struct Stats {
     best: f64,
+    median: f64,
     worst: f64,
 }
 
 impl Stats {
     fn of(rates: &[f64]) -> Self {
         assert!(!rates.is_empty(), "no round was run");
+        let mut sorted = rates.to_vec();
+        sorted.sort_by(f64::total_cmp);
+        let middle = sorted.len() / 2;
+        let median = if sorted.len() % 2 == 1 {
+            sorted[middle]
+        } else {
+            f64::midpoint(sorted[middle - 1], sorted[middle])
+        };
         Self {
-            best: rates.iter().copied().fold(f64::MIN, f64::max),
-            worst: rates.iter().copied().fold(f64::MAX, f64::min),
+            best: sorted[sorted.len() - 1],
+            median,
+            worst: sorted[0],
         }
     }
 
@@ -831,9 +843,9 @@ fn document(measured: &[Measured], round_trip: Duration) -> String {
                 "      \"unit\": \"msg/s\",\n",
                 "      \"messages\": {messages},\n",
                 "      \"pairs\": {pairs},\n",
-                "      \"raw\": {{ \"best\": {raw_best:.0}, \"worst\": {raw_worst:.0} }},\n",
-                "      \"adapter\": {{ \"best\": {ad_best:.0}, \"worst\": {ad_worst:.0} }},\n",
-                "      \"framework\": {{ \"best\": {fw_best:.0}, \"worst\": {fw_worst:.0} }},\n",
+                "      \"raw\": {{ \"best\": {raw_best:.0}, \"median\": {raw_median:.0}, \"worst\": {raw_worst:.0} }},\n",
+                "      \"adapter\": {{ \"best\": {ad_best:.0}, \"median\": {ad_median:.0}, \"worst\": {ad_worst:.0} }},\n",
+                "      \"framework\": {{ \"best\": {fw_best:.0}, \"median\": {fw_median:.0}, \"worst\": {fw_worst:.0} }},\n",
                 "      \"overhead_percent\": {overhead:.1},\n",
                 "      \"adapter_overhead_percent\": {adapter_overhead:.1},\n",
                 "      \"verdict\": \"{verdict}\",\n",
@@ -845,10 +857,13 @@ fn document(measured: &[Measured], round_trip: Duration) -> String {
             messages = row.messages,
             pairs = row.pairs,
             raw_best = row.raw.best,
+            raw_median = row.raw.median,
             raw_worst = row.raw.worst,
             ad_best = row.adapter.best,
+            ad_median = row.adapter.median,
             ad_worst = row.adapter.worst,
             fw_best = row.framework.best,
+            fw_median = row.framework.median,
             fw_worst = row.framework.worst,
             overhead = row.overhead_percent,
             adapter_overhead = row.adapter_overhead_percent,
