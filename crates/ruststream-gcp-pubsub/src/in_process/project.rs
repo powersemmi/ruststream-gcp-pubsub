@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use google_cloud_pubsub::model::Message as GcpMessage;
 use ruststream::RawMessage;
 use ruststream::testing::Coordinator;
+use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
 use super::check_resource_name;
@@ -126,11 +127,14 @@ pub(crate) struct Project {
     /// keeps it over the service.
     declared_retries: DeclaredRetries,
     next_consumer: AtomicU64,
+    /// The runtime the broker connected on, which a delayed rejection waits on.
+    runtime: Handle,
 }
 
 impl Project {
-    pub(crate) fn new(id: String) -> Arc<Self> {
+    pub(crate) fn new(id: String, runtime: Handle) -> Arc<Self> {
         Arc::new(Self {
+            runtime,
             id,
             state: Mutex::new(State::default()),
             closed: AtomicBool::new(false),
@@ -138,6 +142,12 @@ impl Project {
             declared_retries: DeclaredRetries::default(),
             next_consumer: AtomicU64::new(0),
         })
+    }
+
+    /// The runtime the broker connected on: a task the transport starts on its own behalf runs
+    /// there, whichever thread settles the delivery that asked for it.
+    pub(crate) const fn runtime(&self) -> &Handle {
+        &self.runtime
     }
 
     fn state(&self) -> MutexGuard<'_, State> {

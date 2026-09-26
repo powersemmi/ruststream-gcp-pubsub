@@ -128,8 +128,10 @@ impl Settlement {
         let reject = move || project.reject(&subscription, pending);
         match self.project.coordinator() {
             Some(coordinator) => coordinator.schedule_redelivery(delay, reject),
+            // On the runtime the broker connected on, not the settling caller's: a handler on a
+            // dedicated thread settles from a runtime that may stop before the delay is out.
             None => {
-                tokio::spawn(async move {
+                self.project.runtime().spawn(async move {
                     tokio::time::sleep(delay).await;
                     reject();
                 });

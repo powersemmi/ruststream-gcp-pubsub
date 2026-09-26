@@ -36,6 +36,7 @@ use ruststream::{
 };
 #[cfg(feature = "testing")]
 use ruststream::{OutgoingMessage, RawMessage};
+use tokio::runtime::Handle;
 use tokio::sync::OnceCell;
 
 use crate::error::{PubSubError, box_err};
@@ -46,6 +47,7 @@ use crate::message::to_gcp_message;
 #[cfg(feature = "testing")]
 use crate::publisher::resolve_ordering_key;
 use crate::publisher::{PubSubPublish, PubSubPublisher};
+use crate::runtime_slot::{RuntimeRegistration, RuntimeSlot};
 use crate::subscriber::PubSubSubscriber;
 use crate::subscription::{DeclaredRetries, GooglePubSub};
 
@@ -95,6 +97,8 @@ pub(crate) struct Core {
     /// What the registrations mounted by a bare subscription name declared about their retries,
     /// taken at startup and applied when each subscription opens.
     pub(crate) declared_retries: DeclaredRetries,
+    /// Where a delivery of this connection finds the runtime `connect` ran on.
+    runtime: RuntimeRegistration,
     /// The topic each opened subscription is attached to, by full resource name, which is what
     /// a live test harness asks to learn which subscriptions a publish reaches.
     #[cfg(feature = "testing")]
@@ -109,6 +113,12 @@ impl Core {
         Ok(())
     }
 
+    /// The slot every delivery of this connection carries, which finds the runtime `connect`
+    /// ran on.
+    pub(crate) const fn runtime_slot(&self) -> RuntimeSlot {
+        self.runtime.slot()
+    }
+
     /// Resolves a short topic id to a full resource name; full names pass through.
     pub(crate) fn topic_name(&self, topic: &str) -> String {
         topic_path(&self.project, topic)
@@ -120,8 +130,12 @@ impl Core {
     }
 
     /// Opens the subscription `descriptor` describes against the service, creating its topology
-    /// first where the descriptor opts in.
-    async fn subscribe(&self, descriptor: GooglePubSub) -> Result<PubSubSubscriber, PubSubError> {
+    /// first where the descriptor opts in. The subscription's own tasks run on `runtime`.
+    async fn subscribe(
+        &self,
+        descriptor: GooglePubSub,
+        runtime: &Handle,
+    ) -> Result<PubSubSubscriber, PubSubError> {
         self.ensure_open()?;
 
         let policy = descriptor.dead_letter_policy();
@@ -147,7 +161,7 @@ impl Core {
         #[cfg(feature = "testing")]
         self.learn_attachment(&descriptor).await?;
 
-        Ok(PubSubSubscriber::open(self, &descriptor))
+        Ok(PubSubSubscriber::open(self, &descriptor, runtime))
     }
 
     /// Records the topic the subscription `descriptor` opens is attached to, as the service
@@ -506,6 +520,7 @@ impl Broker for PubSubBroker {
                     closed: AtomicBool::new(false),
                     publishers: tokio::sync::Mutex::new(HashMap::new()),
                     declared_retries: DeclaredRetries::default(),
+                    runtime: RuntimeRegistration::new(Handle::current()),
                     #[cfg(feature = "testing")]
                     attached: Mutex::new(HashMap::new()),
                 })))
@@ -515,6 +530,7 @@ impl Broker for PubSubBroker {
         Ok(ConnectedPubSubBroker {
             link,
             cell: self.cell,
+            runtime: Handle::current(),
         })
     }
 }
@@ -535,7 +551,7 @@ impl InProcess for PubSubBroker {
         // service filled it with a connection the harness cannot drive, and a test must not
         // publish to the service.
         let link = self.cell.get().cloned().unwrap_or_else(|| {
-            let project = Link::InProcess(Project::new(self.project.clone()));
+            let project = Link::InProcess(Project::new(self.project.clone(), Handle::current()));
             let _ = self.cell.set(project.clone());
             self.cell.get().cloned().unwrap_or(project)
         });
@@ -548,6 +564,8 @@ impl InProcess for PubSubBroker {
         ready(Ok(ConnectedPubSubBroker {
             link,
             cell: self.cell,
+            // Taken when the transition is called, which is on the runtime that awaits it.
+            runtime: Handle::current(),
         }))
     }
 }
@@ -579,6 +597,10 @@ pub struct ConnectedPubSubBroker {
     link: Link,
     // Keeps the cell of publishers handed out before connect alive and filled.
     cell: CoreCell,
+    /// The runtime `connect` ran on. Every task the broker starts runs here: a subscription's
+    /// pump and a delayed rejection, whichever thread opens the subscription or settles the
+    /// delivery.
+    runtime: Handle,
 }
 
 impl ConnectedPubSubBroker {
@@ -603,9 +625,11 @@ impl ConnectedPubSubBroker {
         let core = match &self.link {
             Link::Service(core) => core,
             #[cfg(feature = "testing")]
-            Link::InProcess(project) => return in_process::subscribe(project, &descriptor),
+            Link::InProcess(project) => {
+                return in_process::subscribe(project, &descriptor);
+            }
         };
-        core.subscribe(descriptor).await
+        core.subscribe(descriptor, &self.runtime).await
     }
 }
 

@@ -20,6 +20,7 @@ use futures::Stream;
 
 use google_cloud_pubsub::subscriber::{MessageStream, ShutdownToken};
 use ruststream::{BatchSubscriber, BufferedSubscriber, Subscriber};
+use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
 use crate::broker::Core;
@@ -27,6 +28,7 @@ use crate::error::{PubSubError, box_err};
 #[cfg(feature = "testing")]
 use crate::in_process::Consumer;
 use crate::message::PubSubMessage;
+use crate::runtime_slot::RuntimeSlot;
 use crate::subscription::{DeliveryLimits, GooglePubSub};
 
 /// How many converted deliveries may sit between the pump and the consumer. Real prefetch is
@@ -60,8 +62,9 @@ impl PubSubSubscriber {
         &self.subscription
     }
 
-    /// Opens the stream synchronously (the client connects lazily) and spawns the pump.
-    pub(crate) fn open(core: &Core, descriptor: &GooglePubSub) -> Self {
+    /// Opens the stream synchronously (the client connects lazily) and spawns the pump on
+    /// `runtime`, the one the broker connected on.
+    pub(crate) fn open(core: &Core, descriptor: &GooglePubSub, runtime: &Handle) -> Self {
         let name = core.subscription_name(descriptor.subscription());
         let mut builder = core.subscriber.subscribe(name.clone());
         if let Some(messages) = descriptor.max_outstanding_value() {
@@ -78,12 +81,16 @@ impl PubSubSubscriber {
         let shutdown = stream.shutdown_token();
 
         let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
-        tokio::spawn(pump(stream, tx, name.clone(), limits));
+        runtime.spawn(pump(stream, tx, name.clone(), limits, core.runtime_slot()));
 
         Self {
             subscription: name,
-            buffer: BufferedSubscriber::new(Deliveries::Pull(Pull { rx, shutdown }))
-                .max_wait(descriptor.batch_wait_value()),
+            buffer: BufferedSubscriber::new(Deliveries::Pull(Pull {
+                rx,
+                shutdown,
+                runtime: runtime.clone(),
+            }))
+            .max_wait(descriptor.batch_wait_value()),
         }
     }
 
@@ -143,23 +150,24 @@ enum Deliveries {
 #[cfg(not(feature = "testing"))]
 const _: () = assert!(size_of::<Deliveries>() == size_of::<Pull>());
 
-/// The streaming pull: the pump's output channel and the token that stops the client's stream.
+/// The streaming pull: the pump's output channel, the token that stops the client's stream, and
+/// the runtime the pump runs on.
 struct Pull {
     rx: mpsc::Receiver<Result<PubSubMessage, PubSubError>>,
     shutdown: ShutdownToken,
+    runtime: Handle,
 }
 
 impl Drop for Pull {
     fn drop(&mut self) {
         // `shutdown` is async and destructors are sync; the spawned signal drains the stream,
-        // which ends the pump task. Best effort by design: if the runtime is already gone, the
-        // pump dies with it.
+        // which ends the pump task. It runs beside the pump, on the runtime the broker connected
+        // on, whichever thread drops the subscriber. Best effort by design: if that runtime is
+        // already gone, the pump died with it.
         let token = self.shutdown.clone();
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                token.shutdown().await;
-            });
-        }
+        self.runtime.spawn(async move {
+            token.shutdown().await;
+        });
     }
 }
 
@@ -184,12 +192,13 @@ async fn pump(
     out: mpsc::Sender<Result<PubSubMessage, PubSubError>>,
     subscription: String,
     limits: DeliveryLimits,
+    runtime: RuntimeSlot,
 ) {
     while let Some(item) = stream.next().await {
         match item {
             Ok((message, handler)) => {
                 if out
-                    .send(Ok(PubSubMessage::new(message, handler, limits)))
+                    .send(Ok(PubSubMessage::new(message, handler, limits, runtime)))
                     .await
                     .is_err()
                 {
