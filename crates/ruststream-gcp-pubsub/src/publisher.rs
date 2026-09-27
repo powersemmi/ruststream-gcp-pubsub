@@ -8,7 +8,6 @@
     allow(clippy::infallible_destructuring_match)
 )]
 
-use std::borrow::Cow;
 use std::fmt;
 use std::future::{Future, ready};
 use std::sync::Arc;
@@ -24,7 +23,7 @@ use serde::Serialize;
 
 use crate::broker::{ConnectedPubSubBroker, Core, CoreCell, Link};
 use crate::error::{PubSubError, box_err};
-use crate::message::{PARTITION_KEY_HEADER, to_gcp_message};
+use crate::message::{PARTITION_KEY_HEADER, header_text, to_gcp_message};
 
 /// The settings one Pub/Sub message may differ from the next by.
 ///
@@ -117,18 +116,23 @@ impl PubSubPublisher {
 /// the position the message leaves through. Next comes the framework's `partition-key` header,
 /// which is the portable spelling of the same key and keeps a service that names no broker able to
 /// order its messages. What neither named is what the policy fixed for the mount site.
+///
+/// # Errors
+///
+/// Returns the reason when the key comes from a header that is not UTF-8: an ordering key is text,
+/// and a rewritten one would order the message under a key nobody named.
 pub(crate) fn resolve_ordering_key<'a>(
     headers: &'a HeaderMap,
     options: Option<&'a PubSubPublishOptions>,
     policy: Option<&'a str>,
-) -> Option<Cow<'a, str>> {
+) -> Result<Option<&'a str>, String> {
     if let Some(key) = options.and_then(|options| options.ordering_key.as_deref()) {
-        return Some(Cow::Borrowed(key));
+        return Ok(Some(key));
     }
     if let Some(value) = headers.get(PARTITION_KEY_HEADER) {
-        return Some(String::from_utf8_lossy(value));
+        return header_text(PARTITION_KEY_HEADER, value).map(Some);
     }
-    policy.map(Cow::Borrowed)
+    Ok(policy)
 }
 
 impl Publisher for PubSubPublisher {
@@ -149,24 +153,35 @@ impl Publisher for PubSubPublisher {
             #[cfg(feature = "testing")]
             Link::InProcess(project) => {
                 let (name, payload, headers) = msg.into_parts();
+                let refused = |reason: String| PubSubError::Publish {
+                    topic: project.topic_path(name),
+                    source: reason.into(),
+                };
                 let key =
-                    resolve_ordering_key(&headers, options, self.default_ordering_key.as_deref());
-                return project.publish(name, &to_gcp_message(payload, &headers, key.as_deref()));
+                    resolve_ordering_key(&headers, options, self.default_ordering_key.as_deref())
+                        .map_err(refused)?;
+                let message = to_gcp_message(payload, &headers, key).map_err(refused)?;
+                return project.publish(name, &message);
             }
         };
         core.ensure_open()?;
         let name = msg.name();
-        let publisher = self.publisher_for(core, name).await;
         let (_, payload, headers) = msg.into_parts();
-        let key = resolve_ordering_key(&headers, options, self.default_ordering_key.as_deref());
-        let message = to_gcp_message(payload, &headers, key.as_deref());
+        let refused = |reason: String| PubSubError::Publish {
+            topic: core.topic_name(name),
+            source: reason.into(),
+        };
+        let key = resolve_ordering_key(&headers, options, self.default_ordering_key.as_deref())
+            .map_err(refused)?;
+        let message = to_gcp_message(payload, &headers, key).map_err(refused)?;
+        let publisher = self.publisher_for(core, name).await;
         match publisher.publish(message).await {
             Ok(_message_id) => Ok(()),
             Err(err) => {
                 // An error on an ordered key pauses the key; resume so the pause cannot wedge
                 // every later publish on this key, and let the caller see this failure.
                 if let Some(key) = key {
-                    publisher.resume_publish(key.into_owned());
+                    publisher.resume_publish(key.to_owned());
                 }
                 Err(PubSubError::Publish {
                     topic: core.topic_name(name),
@@ -327,6 +342,7 @@ struct PubSubMessageBinding<'a> {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
     use ruststream::HeaderMap;
 
     use super::*;
@@ -348,7 +364,7 @@ mod tests {
         let headers = keyed_header("header");
 
         let key = resolve_ordering_key(&headers, Some(&options), Some("policy"));
-        assert_eq!(key.as_deref(), Some("step"));
+        assert_eq!(key, Ok(Some("step")));
     }
 
     /// A handler that names no broker still orders its messages: the framework's header is the
@@ -358,7 +374,7 @@ mod tests {
         let headers = keyed_header("header");
 
         let key = resolve_ordering_key(&headers, None, Some("policy"));
-        assert_eq!(key.as_deref(), Some("header"));
+        assert_eq!(key, Ok(Some("header")));
     }
 
     /// What no call site named is what the mount site fixed.
@@ -367,7 +383,7 @@ mod tests {
         let headers = HeaderMap::new();
 
         let key = resolve_ordering_key(&headers, None, Some("policy"));
-        assert_eq!(key.as_deref(), Some("policy"));
+        assert_eq!(key, Ok(Some("policy")));
     }
 
     /// Nothing anywhere means an unordered publish, which is Pub/Sub's own default.
@@ -375,6 +391,18 @@ mod tests {
     fn a_publish_with_no_key_anywhere_is_unordered() {
         let headers = HeaderMap::new();
 
-        assert!(resolve_ordering_key(&headers, None, None).is_none());
+        assert_eq!(resolve_ordering_key(&headers, None, None), Ok(None));
+    }
+
+    /// An ordering key is text, so a binary `partition-key` header is refused rather than
+    /// ordering the message under a rewritten key.
+    #[test]
+    fn a_partition_key_header_that_is_not_text_is_refused() {
+        let mut headers = HeaderMap::new();
+        headers.insert(PARTITION_KEY_HEADER, Bytes::from_static(&[0x80, 0xff]));
+
+        let refused = resolve_ordering_key(&headers, None, Some("policy"))
+            .expect_err("a non-UTF-8 key has no ordering-key form");
+        assert!(refused.contains(PARTITION_KEY_HEADER), "{refused}");
     }
 }

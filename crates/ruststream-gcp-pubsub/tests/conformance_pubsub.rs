@@ -7,8 +7,8 @@
 //! runs on every `cargo test`; the emulator leg is what proves the in-process mode is not passing
 //! by lying, and the suites that compare the two transports run there.
 //!
-//! Which suites those are follows from what the crate implements: a shutdown that finishes what
-//! was handed to it; the settlement meanings; [`capabilities::batches`] because the subscriber
+//! Which suites those are follows from what the crate implements: the lifecycle everywhere,
+//! with a shutdown that finishes what was handed to it; the settlement meanings; [`capabilities::batches`] because the subscriber
 //! is a `BatchSubscriber`; [`retry::broker_moves`] because a Pub/Sub subscription moves a spent
 //! delivery itself, so both the descriptor and a bare name declare `Copies = BrokerMoves`; the
 //! keyed order and the per-message options because a publish carries an ordering key; and the
@@ -102,6 +102,31 @@ fn keyed(key: &[u8], _headers: &mut HeaderMap) -> Option<PubSubPublishOptions> {
 // In every check below `make_source` / `make_publisher` must stay closures: their bounds are
 // higher-ranked (`Fn(&str) -> _` / `Fn(&B) -> _`), so a bare method path - which binds one
 // concrete lifetime - would not type-check.
+
+/// The ladder contract, in process, over the descriptor the emulator leg opens.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_passes_lifecycle() {
+    harness::lifecycle(
+        in_process,
+        |name| created(name),
+        |connected| connected.publisher(),
+    )
+    .await;
+}
+
+/// The same ladder over the bare-string form, which resolves through `Subscribe` rather than
+/// through the crate's descriptor.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_passes_lifecycle_by_name() {
+    harness::lifecycle(
+        in_process,
+        |name| Name::new(name.to_owned()),
+        |connected| connected.publisher(),
+    )
+    .await;
+}
 
 /// The in-process mode batches the way a streaming pull does, over the same buffer, so it owes the
 /// same contract: a batch never carries more than the size the subscription was opened with.

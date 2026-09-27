@@ -9,8 +9,8 @@
 //! the service mounts, and it frames a publish with the same conversion a publish to the service
 //! goes through. It never succeeds where the service fails. A publish, a subscription or a
 //! declaration the service refuses (a resource name it does not accept, a message with nothing in
-//! it, an attribute or an ordering key past its limits, a handle outliving its connection) is
-//! refused here with the same error variant.
+//! it, an attribute or an ordering key past its limits or not UTF-8, a handle outliving its
+//! connection) is refused here with the same error variant.
 //!
 //! What it models: topics and subscriptions as separate resources, a subscription attached to one
 //! topic and holding every message published to that topic after it was created, whether or not a

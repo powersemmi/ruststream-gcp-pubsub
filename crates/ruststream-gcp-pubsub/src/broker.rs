@@ -701,13 +701,15 @@ impl TestableBroker for ConnectedPubSubBroker {
         let project = self.project("inject");
         // An external producer publishes the bytes with the headers as attributes, and names the
         // ordering key the way this crate's own publisher reads it.
-        let key = resolve_ordering_key(message.headers(), None, None);
-        let wire = to_gcp_message(
-            BytesMut::from(message.payload()),
-            message.headers(),
-            key.as_deref(),
-        );
-        if let Err(err) = project.publish(message.name(), &wire) {
+        let wire = resolve_ordering_key(message.headers(), None, None)
+            .and_then(|key| {
+                to_gcp_message(BytesMut::from(message.payload()), message.headers(), key)
+            })
+            .map_err(|reason| PubSubError::Publish {
+                topic: project.topic_path(message.name()),
+                source: reason.into(),
+            });
+        if let Err(err) = wire.and_then(|wire| project.publish(message.name(), &wire)) {
             panic!(
                 "the injected message to {:?} is not one Pub/Sub takes: {err}",
                 message.name()
