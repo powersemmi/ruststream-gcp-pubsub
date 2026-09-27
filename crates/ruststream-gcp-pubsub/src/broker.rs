@@ -681,7 +681,9 @@ impl DefaultPublish for ConnectedPubSubBroker {
 /// Pub/Sub routes by attachment: a message published to a topic reaches every subscription
 /// attached to that topic, each once, and no other. [`routes`](TestableBroker::routes) answers
 /// that rule over the topic each subscription is attached to, in both modes: in process from the
-/// transport's own record, live from what the service reported when the subscription opened.
+/// transport's own record, live from what the service reported when the subscription opened. In
+/// process it also names which consumer of a subscription opened more than once takes the
+/// message, the one whose turn is next; live, the service picks it.
 ///
 /// # Panics
 ///
@@ -722,22 +724,15 @@ impl TestableBroker for ConnectedPubSubBroker {
     }
 
     fn routes(&self, destination: &str, subscriptions: &[&str]) -> Vec<usize> {
-        let (topic, attached): (String, Vec<Option<String>>) = match &self.link {
-            Link::Service(core) => (
-                core.topic_name(destination),
-                subscriptions
-                    .iter()
-                    .map(|name| core.attached_topic(name))
-                    .collect(),
-            ),
-            Link::InProcess(project) => (
-                project.topic_path(destination),
-                subscriptions
-                    .iter()
-                    .map(|name| project.attached_topic(name))
-                    .collect(),
-            ),
+        let core = match &self.link {
+            Link::Service(core) => core,
+            Link::InProcess(project) => return project.routes(destination, subscriptions),
         };
+        let topic = core.topic_name(destination);
+        let attached: Vec<Option<String>> = subscriptions
+            .iter()
+            .map(|name| core.attached_topic(name))
+            .collect();
         attached
             .iter()
             .enumerate()
