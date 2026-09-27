@@ -209,6 +209,20 @@ fn pubsub_broker_describes_itself_without_credentials() {
     );
 }
 
+/// The ladder against the product, where `connect` authenticates, the subscription is a streaming
+/// pull, and the publisher's connection cell is what goes dead on shutdown.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pubsub_broker_passes_lifecycle() {
+    let Some(host) = test_host() else { return };
+    harness::lifecycle(
+        move || PubSubBroker::new(TEST_PROJECT).emulator(host.clone()),
+        |name| created(name),
+        |connected| connected.publisher(),
+    )
+    .await;
+}
+
 /// An acknowledgement and a publish made right before `shutdown` are finished by it. The
 /// subscription is a resource that outlives the connection and keeps what reaches its topic, so
 /// the second connection reads the same subscription after the shutdown.

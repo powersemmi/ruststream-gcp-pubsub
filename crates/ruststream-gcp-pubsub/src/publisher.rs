@@ -20,6 +20,7 @@ use ruststream::runtime::{PublishBuilder, PublishSink};
 use ruststream::{HeaderMap, OutgoingMessage, PairError, PublishPolicy, Publisher, Take};
 #[cfg(feature = "asyncapi")]
 use serde::Serialize;
+use tokio::runtime::Handle;
 
 use crate::broker::{ConnectedPubSubBroker, Core, CoreCell, Link};
 use crate::error::{PubSubError, box_err};
@@ -102,8 +103,14 @@ impl PubSubPublisher {
             return publisher.clone();
         }
         // Sync and infallible off the connected BasePublisher; the network work happened in
-        // connect.
-        let publisher = core.base_publisher.publisher(name.clone()).build();
+        // connect. The client starts the topic's batching worker on the runtime `build` runs in,
+        // and the first publish may come from a runtime that stops right after (a handler on a
+        // dedicated thread), so the worker is started on the runtime the broker connected on.
+        let publisher = {
+            let connect_runtime = core.runtime_slot().runtime();
+            let _entered = connect_runtime.as_ref().map(Handle::enter);
+            core.base_publisher.publisher(name.clone()).build()
+        };
         publishers.insert(name, publisher.clone());
         publisher
     }
