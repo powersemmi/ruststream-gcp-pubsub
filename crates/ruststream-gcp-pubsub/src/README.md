@@ -163,7 +163,9 @@ to the dead-letter topic, so it is rejected rather than acknowledged, and a mess
 declaration asked to keep is kept.
 
 Pub/Sub has no delayed nack either, so `retry_after(delay)` is carried by the process: the crate
-holds the delivery for `delay` and then rejects it. The client goes on extending the ack deadline
+holds the delivery for `delay` and then rejects it. The wait runs on the runtime the broker
+connected on, so a handler on a dedicated thread may settle from a runtime that stops before the
+delay is out. The client goes on extending the ack deadline
 of a delivery nothing has settled, so a held delivery is leased rather than lost, and it still
 counts against `max_outstanding` while it waits. The budget is
 [`max_lease`](GooglePubSub::max_lease), and a longer delay is refused at the call with
@@ -193,7 +195,9 @@ Pub/Sub sends the count only where the subscription has a dead-letter policy, an
 without one. Nothing in the process counts alongside it and nothing in the process applies the cap:
 the subscription's policy is what ends the message, whether the handler asked for the next attempt
 at once or after a delay, and the count is there for a handler to read. Every other attribute is a
-header, in both directions, with no envelope around it.
+header, in both directions, with no envelope around it. An attribute and an ordering key are text,
+so a publish whose header value is not UTF-8 fails with `PubSubError::Publish` rather than
+reaching the subscriber rewritten.
 
 There is no log to seek in: a Pub/Sub subscription has no client-addressable position, so this
 crate implements neither `Seekable` nor `Positioned` and `.start_at(..)` does not compile.
@@ -430,7 +434,7 @@ reports them in [`DELIVERY_ATTEMPT_HEADER`], and publishes a spent message to th
 topic. A delayed retry holds the delivery for its delay and then rejects it; under a paused clock,
 `tb.advance(delay)` lets the delay pass. A publish the service refuses is refused here with the
 same error: a topic id Pub/Sub does not accept, a message with neither data nor attributes, an
-attribute or an ordering key past its limit, a publish after shutdown.
+attribute or an ordering key past its limit or not UTF-8, a publish after shutdown.
 
 What is the service's alone runs against the emulator: lease deadlines and their extension, flow
 control, ordered delivery by key, exactly-once delivery and retention.

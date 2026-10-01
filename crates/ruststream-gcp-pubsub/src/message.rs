@@ -25,6 +25,7 @@ use tokio::time::sleep;
 use crate::error::{PubSubError, box_err};
 #[cfg(feature = "testing")]
 use crate::in_process::Settlement;
+use crate::runtime_slot::RuntimeSlot;
 use crate::subscription::DeliveryLimits;
 
 /// Header carrying the partition key, mapped onto the message's ordering key.
@@ -61,21 +62,22 @@ pub struct PubSubMessage {
 /// Without the feature there is one variant, so the type is the client's handler itself and every
 /// `match` on it is irrefutable: a production delivery carries no second settlement path.
 enum Settle {
-    Pull(Handler),
+    /// The client's handler, and where the runtime the broker connected on is found.
+    Pull(Handler, RuntimeSlot),
     #[cfg(feature = "testing")]
     InProcess(Settlement),
 }
 
-// The zero-cost promise of the in-process mode: a delivery built without it settles through a
-// handle exactly the size of the client's own.
+// The zero-cost promise of the in-process mode: a delivery built without it settles through the
+// client's own handle and the slot beside it, and nothing more.
 #[cfg(not(feature = "testing"))]
-const _: () = assert!(size_of::<Settle>() == size_of::<Handler>());
+const _: () = assert!(size_of::<Settle>() == size_of::<(Handler, RuntimeSlot)>());
 
 impl Settle {
     /// The delivery attempt the subscription reports, present only under a dead-letter policy.
     fn delivery_attempt(&self) -> Option<i32> {
         match self {
-            Self::Pull(handler) => handler.delivery_attempt(),
+            Self::Pull(handler, _) => handler.delivery_attempt(),
             #[cfg(feature = "testing")]
             Self::InProcess(settlement) => settlement.delivery_attempt(),
         }
@@ -91,8 +93,13 @@ impl std::fmt::Debug for PubSubMessage {
 }
 
 impl PubSubMessage {
-    pub(crate) fn new(message: GcpMessage, handler: Handler, limits: DeliveryLimits) -> Self {
-        Self::delivered(message, Settle::Pull(handler), limits)
+    pub(crate) fn new(
+        message: GcpMessage,
+        handler: Handler,
+        limits: DeliveryLimits,
+        runtime: RuntimeSlot,
+    ) -> Self {
+        Self::delivered(message, Settle::Pull(handler, runtime), limits)
     }
 
     /// A delivery of the in-process transport, read off the message it holds with the same
@@ -148,7 +155,7 @@ impl PubSubMessage {
     /// Rejects the delivery, in the form the subscription's delivery guarantee asks for.
     async fn reject(self) -> Result<(), AckError> {
         let handler = match self.handler {
-            Settle::Pull(handler) => handler,
+            Settle::Pull(handler, _) => handler,
             #[cfg(feature = "testing")]
             Settle::InProcess(settlement) => {
                 settlement.reject();
@@ -197,7 +204,7 @@ impl IncomingMessage for PubSubMessage {
 
     async fn ack(self) -> Result<(), AckError> {
         let handler = match self.handler {
-            Settle::Pull(handler) => handler,
+            Settle::Pull(handler, _) => handler,
             #[cfg(feature = "testing")]
             Settle::InProcess(settlement) => {
                 settlement.ack();
@@ -254,7 +261,7 @@ impl IncomingMessage for PubSubMessage {
         // The in-process transport holds the delivery on its own clock, which is the harness's
         // under a test, so the delay passes when the test advances it.
         #[cfg(feature = "testing")]
-        let this = match self {
+        let (this, slot) = match self {
             Self {
                 handler: Settle::InProcess(settlement),
                 ..
@@ -262,14 +269,26 @@ impl IncomingMessage for PubSubMessage {
                 settlement.reject_after(delay);
                 return ready(Ok(()));
             }
-            this => this,
+            this @ Self {
+                handler: Settle::Pull(_, slot),
+                ..
+            } => (this, slot),
         };
         #[cfg(not(feature = "testing"))]
-        let this = self;
+        let (this, slot) = {
+            let Settle::Pull(_, slot) = self.handler;
+            (self, slot)
+        };
         // The handle travels into the task, so the client goes on extending the lease for the
-        // whole wait. A task that never gets to finish drops the handle, which rejects the
-        // delivery at once rather than stranding it.
-        tokio::spawn(async move {
+        // whole wait. The task runs on the runtime the broker connected on, not the settling
+        // caller's, which may stop before the delay is out. A task that never gets to finish
+        // drops the handle, which rejects the delivery at once rather than stranding it, and so
+        // does a delivery whose connection is already gone.
+        let Some(runtime) = slot.runtime() else {
+            drop(this);
+            return ready(Ok(()));
+        };
+        runtime.spawn(async move {
             sleep(delay).await;
             let _ = this.reject().await;
         });
@@ -312,23 +331,44 @@ fn headers_of(
     headers
 }
 
+/// The text of the header `name`, which a Pub/Sub attribute or ordering key carries.
+///
+/// Both are strings on the wire, so a value that is not UTF-8 has no faithful form there: it is
+/// refused with the reason, rather than rewritten into a value the subscriber was never sent.
+///
+/// # Errors
+///
+/// Returns the reason when `value` is not UTF-8.
+pub(crate) fn header_text<'a>(name: &str, value: &'a [u8]) -> Result<&'a str, String> {
+    str::from_utf8(value).map_err(|_| {
+        format!(
+            "header {name:?} is not UTF-8, and a Pub/Sub attribute or ordering key carries text \
+             only"
+        )
+    })
+}
+
 /// Builds the Pub/Sub message for an outgoing publish under `ordering_key`, the key the publisher
 /// resolved for it.
 ///
 /// The `partition-key` header never travels as an attribute: it is the portable spelling of the
 /// ordering key, the publisher has already read it, and a delivery reports the key back under that
 /// same name.
+///
+/// # Errors
+///
+/// Returns the reason when a header value is not UTF-8 (see [`header_text`]).
 pub(crate) fn to_gcp_message(
     payload: BytesMut,
     headers: &HeaderMap,
     ordering_key: Option<&str>,
-) -> GcpMessage {
+) -> Result<GcpMessage, String> {
     let mut attributes: Vec<(String, String)> = Vec::with_capacity(headers.len());
     for (name, value) in headers.iter() {
         if name == PARTITION_KEY_HEADER {
             continue;
         }
-        attributes.push((name.to_owned(), String::from_utf8_lossy(value).into_owned()));
+        attributes.push((name.to_owned(), header_text(name, value)?.to_owned()));
     }
 
     let mut message = GcpMessage::new().set_data(payload);
@@ -338,7 +378,7 @@ pub(crate) fn to_gcp_message(
     if let Some(key) = ordering_key {
         message = message.set_ordering_key(key);
     }
-    message
+    Ok(message)
 }
 
 #[cfg(test)]
@@ -350,7 +390,8 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(PARTITION_KEY_HEADER, "user-42");
         headers.insert("x-tenant", "acme");
-        let message = to_gcp_message(BytesMut::from(&b"{}"[..]), &headers, Some("user-42"));
+        let message = to_gcp_message(BytesMut::from(&b"{}"[..]), &headers, Some("user-42"))
+            .expect("text headers are attributes");
         assert_eq!(message.ordering_key, "user-42");
         assert_eq!(
             message.attributes.get("x-tenant").map(String::as_str),
@@ -366,7 +407,8 @@ mod tests {
         let payload = BytesMut::from(&br#"{"id":1}"#[..]);
         let written_at = payload.as_ptr();
 
-        let message = to_gcp_message(payload, &HeaderMap::new(), None);
+        let message =
+            to_gcp_message(payload, &HeaderMap::new(), None).expect("no headers to refuse");
 
         assert_eq!(
             message.data.as_ptr(),
@@ -378,7 +420,19 @@ mod tests {
 
     #[test]
     fn plain_messages_carry_no_ordering_key() {
-        let message = to_gcp_message(BytesMut::from(&b"{}"[..]), &HeaderMap::new(), None);
+        let message = to_gcp_message(BytesMut::from(&b"{}"[..]), &HeaderMap::new(), None)
+            .expect("no headers to refuse");
         assert!(message.ordering_key.is_empty());
+    }
+
+    /// An attribute is text, so a binary header value is refused, never rewritten.
+    #[test]
+    fn a_header_that_is_not_text_is_refused() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-binary", Bytes::from_static(&[0x00, 0x80, 0xff]));
+
+        let refused = to_gcp_message(BytesMut::from(&b"{}"[..]), &headers, None)
+            .expect_err("a non-UTF-8 value has no attribute form");
+        assert!(refused.contains("x-binary"), "{refused}");
     }
 }

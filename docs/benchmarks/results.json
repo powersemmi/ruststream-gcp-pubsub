@@ -3,7 +3,7 @@
   "crate": "ruststream-gcp-pubsub",
   "crate_version": "0.7.0",
   "core_version": "0.7.0-rc.9",
-  "measured_at": "2026-09-21",
+  "measured_at": "2026-09-23",
   "environment": {
     "cpu": "AMD Ryzen 9 7900X 12-Core Processor",
     "architecture": "x86_64",
@@ -13,58 +13,106 @@
     "memory_speed": "unknown",
     "os": "Linux 7.2.6-x64v3-xanmod1-1",
     "broker": "Pub/Sub emulator, gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators, Google Cloud SDK 578.0.0, in Docker on localhost",
-    "round_trip": "0.258 ms (20000 GetSubscription calls on one connection); a delivery is charged 1 of them",
+    "round_trip": "0.282 ms (20000 GetSubscription calls on one connection); a delivery is charged 1 of them",
     "rustc": "1.98.1",
     "profile": "bench, inheriting release (opt-level = 3, lto = false, codegen-units = 16)",
     "features": "ruststream-gcp-pubsub default (none), ruststream macros,json; google-cloud-pubsub 1.3.0",
-    "rustflags": "none (the recipe clears RUSTFLAGS, so the numbers are not tied to this CPU)"
+    "rustflags": "none (the recipe clears RUSTFLAGS, so the numbers are not tied to this CPU)",
+    "valgrind": "3.25.1"
   },
   "scenarios": [
     {
       "name": "Streaming pull, 512 B JSON, ack each",
       "unit": "msg/s",
-      "messages": 11489,
+      "messages": 11542,
       "pairs": 3,
       "raw": {
-        "best": 1827,
-        "worst": 1818
+        "best": 1822,
+        "median": 1815,
+        "worst": 1809
       },
       "adapter": {
-        "best": 1834,
-        "worst": 1827
+        "best": 1827,
+        "median": 1827,
+        "worst": 1822
       },
       "framework": {
-        "best": 1849,
-        "worst": 1836
+        "best": 1838,
+        "median": 1828,
+        "worst": 1826
       },
-      "overhead_percent": -1.2,
-      "adapter_overhead_percent": -0.4,
+      "overhead_percent": -0.9,
+      "adapter_overhead_percent": -0.3,
       "verdict": "measured",
       "adapter_verdict": "indistinguishable",
-      "broker_bound": false
+      "broker_bound": true
     },
     {
       "name": "Streaming pull with ordering keys, 512 B JSON, ack each",
       "unit": "msg/s",
-      "messages": 12548,
+      "messages": 12540,
       "pairs": 3,
       "raw": {
-        "best": 1997,
-        "worst": 1996
+        "best": 1994,
+        "median": 1994,
+        "worst": 1994
       },
       "adapter": {
-        "best": 1997,
-        "worst": 1996
+        "best": 1993,
+        "median": 1993,
+        "worst": 1993
       },
       "framework": {
-        "best": 1998,
-        "worst": 1996
+        "best": 1994,
+        "median": 1993,
+        "worst": 1993
       },
-      "overhead_percent": -0.0,
-      "adapter_overhead_percent": -0.0,
+      "overhead_percent": 0.0,
+      "adapter_overhead_percent": 0.0,
       "verdict": "indistinguishable",
       "adapter_verdict": "indistinguishable",
       "broker_bound": true
+    }
+  ],
+  "code": [
+    {
+      "name": "consume, JSON decode into a small struct, ack each",
+      "messages": 1000,
+      "framework": {
+        "instructions": 13227.7,
+        "allocations": 5.3
+      },
+      "cold": {
+        "instructions": 91123146,
+        "allocations": 7533
+      },
+      "gated": true
+    },
+    {
+      "name": "reply to a declared topic, each confirmed before the next delivery",
+      "messages": 1000,
+      "framework": {
+        "instructions": 134591.4,
+        "allocations": 90.5
+      },
+      "cold": {
+        "instructions": 91134341,
+        "allocations": 7555
+      },
+      "gated": true
+    },
+    {
+      "name": "consume in batches of 64, assembled on the client",
+      "messages": 1000,
+      "framework": {
+        "instructions": 13130.4,
+        "allocations": 5.4
+      },
+      "cold": {
+        "instructions": 91139168,
+        "allocations": 7537
+      },
+      "gated": true
     }
   ]
 }
