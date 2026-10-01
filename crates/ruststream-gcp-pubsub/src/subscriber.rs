@@ -77,7 +77,13 @@ impl PubSubSubscriber {
         // descriptor reports and the value the client honours have to be the same one.
         let limits = descriptor.limits();
         builder = builder.set_max_lease(limits.max_lease);
-        let stream = builder.build();
+        // The client starts the subscription's lease loop on the runtime `build` runs in, and
+        // the subscription may be opened from a runtime that stops right after (a dedicated
+        // thread): the loop belongs beside the pump, on the runtime the broker connected on.
+        let stream = {
+            let _connect_runtime = runtime.enter();
+            builder.build()
+        };
         let shutdown = stream.shutdown_token();
 
         let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
