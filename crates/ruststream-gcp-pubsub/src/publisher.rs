@@ -1,6 +1,13 @@
 //! [`PubSubPublisher`], its [`PubSubPublish`] policy, the [`PubSubPublishOptions`] a single
 //! message may differ by, and the [`PubSubOrdering`] step that names one.
 
+// Without the `testing` feature a link has one variant, so a `match` on it has a single arm; the
+// match stays so that the in-process arm has its place when the feature is on.
+#![cfg_attr(
+    not(feature = "testing"),
+    allow(clippy::infallible_destructuring_match)
+)]
+
 use std::borrow::Cow;
 use std::fmt;
 use std::future::{Future, ready};
@@ -15,7 +22,7 @@ use ruststream::{HeaderMap, OutgoingMessage, PairError, PublishPolicy, Publisher
 #[cfg(feature = "asyncapi")]
 use serde::Serialize;
 
-use crate::broker::{ConnectedPubSubBroker, Core, CoreCell};
+use crate::broker::{ConnectedPubSubBroker, Core, CoreCell, Link};
 use crate::error::{PubSubError, box_err};
 use crate::message::{PARTITION_KEY_HEADER, to_gcp_message};
 
@@ -83,10 +90,9 @@ impl PubSubPublisher {
         self
     }
 
-    fn core(&self) -> Result<&Core, PubSubError> {
-        let core = self.cell.get().ok_or(PubSubError::NotConnected)?;
-        core.ensure_open()?;
-        Ok(core)
+    /// What this handle speaks over, once `connect` has filled the shared cell.
+    fn link(&self) -> Result<&Link, PubSubError> {
+        self.cell.get().ok_or(PubSubError::NotConnected)
     }
 
     /// The per-topic client publisher, created on first use and cached on the core.
@@ -138,7 +144,17 @@ impl Publisher for PubSubPublisher {
         msg: OutgoingMessage<'_, BytesMut>,
         options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
-        let core = self.core()?;
+        let core = match self.link()? {
+            Link::Service(core) => core,
+            #[cfg(feature = "testing")]
+            Link::InProcess(project) => {
+                let (name, payload, headers) = msg.into_parts();
+                let key =
+                    resolve_ordering_key(&headers, options, self.default_ordering_key.as_deref());
+                return project.publish(name, &to_gcp_message(payload, &headers, key.as_deref()));
+            }
+        };
+        core.ensure_open()?;
         let name = msg.name();
         let publisher = self.publisher_for(core, name).await;
         let (_, payload, headers) = msg.into_parts();

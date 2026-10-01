@@ -3,16 +3,28 @@
 //! Message attributes carry headers directly - no envelope format is invented - and the partition
 //! key rides the message's ordering key in both directions.
 
+// Without the `testing` feature a settlement handle has one variant, so a `match` on it has a
+// single arm; the matches stay so that the in-process arm has its place when the feature is on.
+#![cfg_attr(
+    not(feature = "testing"),
+    allow(clippy::infallible_destructuring_match)
+)]
+
+use std::collections::HashMap;
 use std::future::{Future, ready};
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
 use google_cloud_pubsub::model::Message as GcpMessage;
 use google_cloud_pubsub::subscriber::handler::Handler;
+#[cfg(feature = "testing")]
+use ruststream::RawMessage;
 use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned, Str};
 use tokio::time::sleep;
 
 use crate::error::{PubSubError, box_err};
+#[cfg(feature = "testing")]
+use crate::in_process::Settlement;
 use crate::subscription::DeliveryLimits;
 
 /// Header carrying the partition key, mapped onto the message's ordering key.
@@ -39,8 +51,35 @@ pub const DELIVERY_ATTEMPT_HEADER: &str = "pubsub-delivery-attempt";
 pub struct PubSubMessage {
     payload: Bytes,
     headers: HeaderMap,
-    handler: Handler,
+    handler: Settle,
     limits: DeliveryLimits,
+}
+
+/// What settles a delivery: the client's handler, which carries the lease, or, under the `testing`
+/// feature, the in-process transport's settlement.
+///
+/// Without the feature there is one variant, so the type is the client's handler itself and every
+/// `match` on it is irrefutable: a production delivery carries no second settlement path.
+enum Settle {
+    Pull(Handler),
+    #[cfg(feature = "testing")]
+    InProcess(Settlement),
+}
+
+// The zero-cost promise of the in-process mode: a delivery built without it settles through a
+// handle exactly the size of the client's own.
+#[cfg(not(feature = "testing"))]
+const _: () = assert!(size_of::<Settle>() == size_of::<Handler>());
+
+impl Settle {
+    /// The delivery attempt the subscription reports, present only under a dead-letter policy.
+    fn delivery_attempt(&self) -> Option<i32> {
+        match self {
+            Self::Pull(handler) => handler.delivery_attempt(),
+            #[cfg(feature = "testing")]
+            Self::InProcess(settlement) => settlement.delivery_attempt(),
+        }
+    }
 }
 
 impl std::fmt::Debug for PubSubMessage {
@@ -53,15 +92,22 @@ impl std::fmt::Debug for PubSubMessage {
 
 impl PubSubMessage {
     pub(crate) fn new(message: GcpMessage, handler: Handler, limits: DeliveryLimits) -> Self {
-        let mut headers = HeaderMap::with_capacity(message.attributes.len() + 2);
-        // The attributes are moved, not copied: a header key and a header value are both shared
-        // buffers, and a `String` becomes one without touching its bytes.
-        for (name, value) in message.attributes {
-            headers.insert(name, value);
-        }
-        if !message.ordering_key.is_empty() {
-            headers.insert(Str::from_static(PARTITION_KEY_HEADER), message.ordering_key);
-        }
+        Self::delivered(message, Settle::Pull(handler), limits)
+    }
+
+    /// A delivery of the in-process transport, read off the message it holds with the same
+    /// mapping a delivery off the service goes through.
+    #[cfg(feature = "testing")]
+    pub(crate) fn in_process(
+        message: GcpMessage,
+        settlement: Settlement,
+        limits: DeliveryLimits,
+    ) -> Self {
+        Self::delivered(message, Settle::InProcess(settlement), limits)
+    }
+
+    fn delivered(message: GcpMessage, handler: Settle, limits: DeliveryLimits) -> Self {
+        let mut headers = headers_of(message.attributes, message.ordering_key, 1);
         if let Some(attempt) = handler.delivery_attempt() {
             headers.insert(
                 Str::from_static(DELIVERY_ATTEMPT_HEADER),
@@ -74,6 +120,14 @@ impl PubSubMessage {
             handler,
             limits,
         }
+    }
+
+    /// What the in-process transport's publish log records for `message` published to `topic`:
+    /// its data, and the headers a delivery of it reports.
+    #[cfg(feature = "testing")]
+    pub(crate) fn published(topic: &str, message: GcpMessage) -> RawMessage {
+        let headers = headers_of(message.attributes, message.ordering_key, 0);
+        RawMessage::new(topic, message.data).with_headers(headers)
     }
 
     /// Whether this is the last delivery the subscription's dead-letter policy allows.
@@ -93,7 +147,15 @@ impl PubSubMessage {
 
     /// Rejects the delivery, in the form the subscription's delivery guarantee asks for.
     async fn reject(self) -> Result<(), AckError> {
-        match self.handler {
+        let handler = match self.handler {
+            Settle::Pull(handler) => handler,
+            #[cfg(feature = "testing")]
+            Settle::InProcess(settlement) => {
+                settlement.reject();
+                return Ok(());
+            }
+        };
+        match handler {
             Handler::ExactlyOnce(handler) => handler
                 .confirmed_nack()
                 .await
@@ -134,7 +196,15 @@ impl IncomingMessage for PubSubMessage {
     }
 
     async fn ack(self) -> Result<(), AckError> {
-        match self.handler {
+        let handler = match self.handler {
+            Settle::Pull(handler) => handler,
+            #[cfg(feature = "testing")]
+            Settle::InProcess(settlement) => {
+                settlement.ack();
+                return Ok(());
+            }
+        };
+        match handler {
             // Only the confirmed form guarantees no redelivery on an exactly-once
             // subscription; the plain form is fire-and-forget.
             Handler::ExactlyOnce(handler) => handler
@@ -181,12 +251,27 @@ impl IncomingMessage for PubSubMessage {
                 },
             ))));
         }
+        // The in-process transport holds the delivery on its own clock, which is the harness's
+        // under a test, so the delay passes when the test advances it.
+        #[cfg(feature = "testing")]
+        let this = match self {
+            Self {
+                handler: Settle::InProcess(settlement),
+                ..
+            } => {
+                settlement.reject_after(delay);
+                return ready(Ok(()));
+            }
+            this => this,
+        };
+        #[cfg(not(feature = "testing"))]
+        let this = self;
         // The handle travels into the task, so the client goes on extending the lease for the
         // whole wait. A task that never gets to finish drops the handle, which rejects the
         // delivery at once rather than stranding it.
         tokio::spawn(async move {
             sleep(delay).await;
-            let _ = self.reject().await;
+            let _ = this.reject().await;
         });
         ready(Ok(()))
     }
@@ -206,6 +291,25 @@ impl IncomingMessage for PubSubMessage {
     fn partition_key(&self) -> Option<&[u8]> {
         Partitioned::partition_key(self)
     }
+}
+
+/// The headers a delivery of a message with `attributes` and `ordering_key` reports, with room for
+/// `spare` more.
+fn headers_of(
+    attributes: HashMap<String, String>,
+    ordering_key: String,
+    spare: usize,
+) -> HeaderMap {
+    let mut headers = HeaderMap::with_capacity(attributes.len() + 1 + spare);
+    // The attributes are moved, not copied: a header key and a header value are both shared
+    // buffers, and a `String` becomes one without touching its bytes.
+    for (name, value) in attributes {
+        headers.insert(name, value);
+    }
+    if !ordering_key.is_empty() {
+        headers.insert(Str::from_static(PARTITION_KEY_HEADER), ordering_key);
+    }
+    headers
 }
 
 /// Builds the Pub/Sub message for an outgoing publish under `ordering_key`, the key the publisher

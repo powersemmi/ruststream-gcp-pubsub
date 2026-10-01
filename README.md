@@ -37,7 +37,7 @@ codecs and middleware come from the framework; this crate is the transport.
 - **The emulator as a target,** with topics and subscriptions created on subscribe for local
   development.
 - **AsyncAPI** under the `googlepubsub` protocol, behind the `asyncapi` feature.
-- **Tests without a server:** handlers run against an in-process Pub/Sub.
+- **Tests on the production app:** `TestApp` runs it with `PubSubBroker` connected in process.
 
 ## Install
 
@@ -67,7 +67,7 @@ struct Confirmation {
     order_id: u64,
 }
 
-#[subscriber("orders-workers")]
+#[subscriber(GooglePubSub::new("orders-workers").create_with_topic("orders"))]
 async fn handle(order: &Order, Out(out): Out<impl Publisher>) -> HandlerOutcome {
     if out
         .message(&Confirmation { order_id: order.id })
@@ -97,23 +97,16 @@ name subscribes to a subscription that already exists; `GooglePubSub` describes 
 
 ## Test it
 
-`TestApp` runs the handlers against an in-process Pub/Sub, with no server.
+`TestApp` runs the app `main` runs with `PubSubBroker` connected in process, with no server.
 
 ```rust
 use ruststream::testing::TestApp;
-use ruststream_gcp_pubsub::testing::PubSubTestBroker;
 
-let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-    PubSubTestBroker::new(),
-    |b| {
-        b.include(handle).out(DefaultSlot, Publish::default()).build();
-    },
-);
-let tb = TestApp::start(app).await?;
+let tb = TestApp::start(app()).await?;
 
-tb.broker::<PubSubTestBroker>()
+tb.broker::<PubSubBroker>()
     .message(&Order { id: 42 })
-    .to("orders-workers")
+    .to("orders")
     .publish()
     .await?;
 
