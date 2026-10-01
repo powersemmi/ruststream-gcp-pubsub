@@ -681,7 +681,9 @@ impl DefaultPublish for ConnectedPubSubBroker {
 /// Pub/Sub routes by attachment: a message published to a topic reaches every subscription
 /// attached to that topic, each once, and no other. [`routes`](TestableBroker::routes) answers
 /// that rule over the topic each subscription is attached to, in both modes: in process from the
-/// transport's own record, live from what the service reported when the subscription opened.
+/// transport's own record, live from what the service reported when the subscription opened. In
+/// process it also names which consumer of a subscription opened more than once takes the
+/// message, the one whose turn is next; live, the service picks it.
 ///
 /// # Panics
 ///
@@ -701,13 +703,15 @@ impl TestableBroker for ConnectedPubSubBroker {
         let project = self.project("inject");
         // An external producer publishes the bytes with the headers as attributes, and names the
         // ordering key the way this crate's own publisher reads it.
-        let key = resolve_ordering_key(message.headers(), None, None);
-        let wire = to_gcp_message(
-            BytesMut::from(message.payload()),
-            message.headers(),
-            key.as_deref(),
-        );
-        if let Err(err) = project.publish(message.name(), &wire) {
+        let wire = resolve_ordering_key(message.headers(), None, None)
+            .and_then(|key| {
+                to_gcp_message(BytesMut::from(message.payload()), message.headers(), key)
+            })
+            .map_err(|reason| PubSubError::Publish {
+                topic: project.topic_path(message.name()),
+                source: reason.into(),
+            });
+        if let Err(err) = wire.and_then(|wire| project.publish(message.name(), &wire)) {
             panic!(
                 "the injected message to {:?} is not one Pub/Sub takes: {err}",
                 message.name()
@@ -720,22 +724,15 @@ impl TestableBroker for ConnectedPubSubBroker {
     }
 
     fn routes(&self, destination: &str, subscriptions: &[&str]) -> Vec<usize> {
-        let (topic, attached): (String, Vec<Option<String>>) = match &self.link {
-            Link::Service(core) => (
-                core.topic_name(destination),
-                subscriptions
-                    .iter()
-                    .map(|name| core.attached_topic(name))
-                    .collect(),
-            ),
-            Link::InProcess(project) => (
-                project.topic_path(destination),
-                subscriptions
-                    .iter()
-                    .map(|name| project.attached_topic(name))
-                    .collect(),
-            ),
+        let core = match &self.link {
+            Link::Service(core) => core,
+            Link::InProcess(project) => return project.routes(destination, subscriptions),
         };
+        let topic = core.topic_name(destination);
+        let attached: Vec<Option<String>> = subscriptions
+            .iter()
+            .map(|name| core.attached_topic(name))
+            .collect();
         attached
             .iter()
             .enumerate()

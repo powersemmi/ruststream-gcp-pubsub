@@ -1,6 +1,6 @@
 [package]
 name = "ruststream-gcp-pubsub-bench"
-description = "The paired raw-versus-framework benchmark for ruststream-gcp-pubsub. Never published."
+description = "The benchmarks of ruststream-gcp-pubsub: the paired raw-versus-framework comparison and the code-cost scenarios. Never published."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,11 +16,11 @@ workspace = true
 default = []
 # A benchmark measures what ships, and the `testing` feature is not it: it compiles the in-process
 # mode into this crate and turns on the framework's harness. Nothing here enables it; it exists
-# so that asking for it is the compile error in `benches/paired.rs` rather than a number nobody can
-# trust.
+# so that asking for it is a compile error in every benchmark (`benches/paired.rs`,
+# `benches/common`) rather than a number nobody can trust.
 testing = ["ruststream-gcp-pubsub/testing"]
 
-# The benchmark lives in its own package so that the measured binary links this crate with the
+# The benchmarks live in their own package so that every measured binary links this crate with the
 # feature set a service ships. `ruststream-gcp-pubsub`'s own dev-dependencies pull
 # `ruststream/conformance`, which enables `ruststream/testing`, and a benchmark inside that package
 # would be built against it.
@@ -31,6 +31,8 @@ ruststream-gcp-pubsub.workspace = true
 ruststream = { workspace = true, features = ["macros", "json"] }
 google-cloud-pubsub.workspace = true
 google-cloud-auth.workspace = true
+# The code-cost benchmarks: callgrind and DHAT through the runner the core pins.
+gungraun = "=0.19.4"
 bytes.workspace = true
 futures.workspace = true
 serde = { version = "1", features = ["derive"] }
@@ -39,4 +41,19 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "ti
 
 [[bench]]
 name = "paired"
+harness = false
+
+# The code-cost benchmarks: one scenario per binary, each a service on the production broker
+# against the emulator. `just bench-code` runs them under valgrind; `benches/common` is the shared
+# setup.
+[[bench]]
+name = "consume"
+harness = false
+
+[[bench]]
+name = "reply"
+harness = false
+
+[[bench]]
+name = "batch"
 harness = false
