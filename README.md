@@ -21,21 +21,23 @@
 
 ---
 
-`ruststream-gcp-pubsub` implements the RustStream broker contract over the official [`google-cloud-pubsub`](https://crates.io/crates/google-cloud-pubsub) client. Handlers, routers, codecs, and middleware come from the framework; this crate supplies the transport - and nothing broker-specific leaks back into the framework.
+`ruststream-gcp-pubsub` connects a RustStream service to Google Cloud Pub/Sub over the official
+[`google-cloud-pubsub`](https://crates.io/crates/google-cloud-pubsub) client. Handlers, routing,
+codecs and middleware come from the framework; this crate is the transport.
 
 ## Features
 
-- **Lazy startup contract.** `PubSubBroker::new(project)` is synchronous and does no I/O (Application Default Credentials by default; explicit `credentials`, a regional `endpoint`, or a local `emulator` as builder options); the runtime connects once at startup, so the broker composes with `#[ruststream::app]`.
-- **Streaming pull as the message stream.** Each subscription is a `Stream` of deliveries; the client extends ack deadlines in the background while a handler runs, so a slow handler does not cause redelivery.
-- **Batches for slice handlers.** A `&[T]` handler names its batch size at the mount site (`.batch(nonzero!(50))`) like on any broker; the pull hands over one delivery at a time, so the batches are assembled on the client, with `GooglePubSub::batch_wait` closing a partial one.
-- **Native acknowledgement.** `HandlerOutcome::ack()` and `retry()` map onto the product directly (with the confirmed forms on exactly-once subscriptions). `drop()` acknowledges: Pub/Sub has no drop-without-redelivery verb.
-- **Delayed retries carried by the process.** Pub/Sub has no delayed nack, so `retry_after(delay)` holds the delivery under its lease (the client keeps extending the ack deadline) and rejects it when the delay is out. `GooglePubSub::max_lease` is the budget, an hour by default, and a longer delay is refused at the call.
-- **Retries capped on the subscription.** `.max_attempts(nonzero!(5)).dead_letter("orders-dead")` at the mount site becomes the subscription's own dead-letter policy, so the service publishes no retry copies and Pub/Sub carries a spent delivery away itself. Every delivery then reports which attempt it is, as a header.
-- **Ordering keys as a per-message setting.** A mount site fixes one key for a whole slot with `Publish::default().ordering_key(..)`, a single publish names its own with the `ordering_key` step on the publish builder, and either way the key reaches the client as the message's own field. A delivery reports it back as its partition key (feeding `Partitioned`).
-- **Attributes carry headers directly** - no envelope format is invented, and a `#[derive(Serialized)]` payload leaves as its own bytes with no codec in the way, so non-Rust peers see plain Pub/Sub messages.
-- **Emulator as a supported target.** `PubSubBroker::new(p).emulator("localhost:8085")` wires the plaintext endpoint and anonymous credentials (the client does not honour `PUBSUB_EMULATOR_HOST` on its own), and `GooglePubSub::create_with_topic` creates the resources on subscribe for local development.
-- **AsyncAPI document** (feature `asyncapi`). The server reports the host clients dial under the `googlepubsub` protocol, and a mount site's fixed ordering key reaches the message binding; a password written into an endpoint reaches neither.
-- **Tests on the production app** (feature `testing`). The framework's `TestApp` runs the app `main` runs with `PubSubBroker` connected in process - no emulator, no credentials - routing topics to their subscriptions and refusing what Pub/Sub refuses; `TestApp::start_live` runs the same test against the emulator.
+- **Streaming pull** with ack deadlines extended in the background while a handler runs.
+- **Native acknowledgement,** with the confirmed forms on exactly-once subscriptions.
+- **Retry caps as the subscription's own dead-letter policy,** and delayed retries held under the
+  delivery's lease.
+- **Ordering keys** as a per-message setting.
+- **Plain Pub/Sub messages:** headers ride attributes, with no envelope.
+- **Batches** assembled on the client.
+- **The emulator as a target,** with topics and subscriptions created on subscribe for local
+  development.
+- **AsyncAPI** under the `googlepubsub` protocol, behind the `asyncapi` feature.
+- **Tests on the production app:** `TestApp` runs it with `PubSubBroker` connected in process.
 
 ## Install
 
@@ -90,60 +92,42 @@ fn app() -> impl App {
 }
 ```
 
-`ruststream_gcp_pubsub::prelude` is the whole import list: the framework's own prelude plus this crate's surface. `Publish` in it is this crate's publish policy under the uniform mount-site name, so `.out(marker, Publish::default())` reads the same whichever broker it runs on; the handler body states a capability instead (`Out<impl Publisher>`) and names no broker at all. The exception is a body that sets an ordering key per message: it names the `ordering_key` step, so it imports this prelude too and bounds its slot `Out<impl Publisher<Options = PubSubPublishOptions>>`.
-
-A plain name subscribes to a subscription that already exists. `GooglePubSub` goes in the same slot when the subscription needs options - `#[subscriber(GooglePubSub::new("orders-workers").max_outstanding(1_000))]` sets flow control, `ack_extension` the deadline reach, `batch_wait` how long a partial batch waits, and `create_with_topic("orders")` creates the subscription (and topic) on subscribe, which the emulator workflow needs.
+`#[ruststream::app]` generates `main`, so the binary understands `run` and `asyncapi gen`. A plain
+name subscribes to a subscription that already exists; `GooglePubSub` describes one with options.
 
 ## Test it
 
-The app `main` runs, handed to the harness unchanged: `TestApp::start` connects `PubSubBroker` in process, with no emulator and no credentials, and the test addresses it by that type.
+`TestApp` runs the app `main` runs with `PubSubBroker` connected in process, with no server.
 
 ```rust
 use ruststream::testing::TestApp;
 
 let tb = TestApp::start(app()).await?;
 
-// Publish an order to the topic; the subscription attached to it delivers, and `publish`
-// returns once the handler it woke has settled.
 tb.broker::<PubSubBroker>()
     .message(&Order { id: 42 })
     .to("orders")
     .publish()
     .await?;
 
-// The handler published the matching confirmation through its slot.
 tb.out::<DefaultSlot>()
     .assert_called_once()
     .decoded_as::<Confirmation>()
     .with(&Confirmation { order_id: 42 });
 ```
 
-The harness puts an `Order` on the wire and reads a `Confirmation` back, so each model carries two derives more than the service alone needs: `Outgoing` and `Serialize` on the injected type, `Deserialize` and `PartialEq` on the asserted one. `with_options(&PubSubPublishOptions { .. })` on the same slot view reads back the ordering key a publish asked for, and `assert_options_default()` states that it took the mount site's.
+## Documentation
 
-The in-process mode routes as Pub/Sub does: a publish to a topic reaches every subscription attached to it, and a subscription the service only names is taken to be attached to the topic of its own name. It settles, counts attempts and dead-letters as the subscription does, and refuses what the service refuses. Lease deadlines, flow control and ordered delivery are the service's own; `TestApp::start_live(app())` runs the same test against the emulator, and `just test-brokers` runs the live suites.
+- This crate: <https://docs.rs/ruststream-gcp-pubsub>
+- The framework: <https://powersemmi.github.io/ruststream/latest>
 
-## Layout
+## Minimum supported Rust version
 
-```
-ruststream-gcp-pubsub/
-├── crates/
-│   └── ruststream-gcp-pubsub/  the published crate
-│       └── examples/           runnable pubsub_* examples (docs-site snippet sources)
-├── docs/                       the documentation site (properdocs + Material)
-├── docker-compose.test.yml     the Pub/Sub emulator for the live suite
-├── properdocs.yml              docs site config
-└── Cargo.toml                  workspace
-```
-
-The Pub/Sub reference - the descriptor and its settings, acknowledgement, the retry cap, ordering keys, the emulator and the in-process test broker - is the crate's own documentation on [docs.rs](https://docs.rs/ruststream-gcp-pubsub); [powersemmi.github.io/ruststream-gcp-pubsub](https://powersemmi.github.io/ruststream-gcp-pubsub/) is the entry page. Framework concepts (subscribers, routing, codecs, middleware, the CLI) live in the [RustStream docs](https://docs.rs/ruststream/latest/ruststream/runtime/index.html).
+The MSRV is **1.88**, edition 2024.
 
 ## Contributing
 
-```bash
-just check          # fmt, clippy, feature checks
-just test           # handler-stub tests, no server
-just test-brokers   # live integration + conformance against the emulator
-```
+See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## License
 
