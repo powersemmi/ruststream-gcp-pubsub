@@ -36,6 +36,8 @@ use ruststream::{
 };
 #[cfg(feature = "testing")]
 use ruststream::{OutgoingMessage, RawMessage};
+#[cfg(feature = "testing")]
+use tokio::runtime::Handle;
 use tokio::sync::OnceCell;
 
 use crate::error::{PubSubError, box_err};
@@ -535,7 +537,7 @@ impl InProcess for PubSubBroker {
         // service filled it with a connection the harness cannot drive, and a test must not
         // publish to the service.
         let link = self.cell.get().cloned().unwrap_or_else(|| {
-            let project = Link::InProcess(Project::new(self.project.clone()));
+            let project = Link::InProcess(Project::new(self.project.clone(), Handle::current()));
             let _ = self.cell.set(project.clone());
             self.cell.get().cloned().unwrap_or(project)
         });
