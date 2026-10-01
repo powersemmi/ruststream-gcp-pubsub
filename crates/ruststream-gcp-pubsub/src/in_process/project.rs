@@ -190,12 +190,49 @@ impl Project {
         subscription_path(&self.id, subscription)
     }
 
-    /// The topic the subscription `subscription` is attached to, once it exists.
-    pub(crate) fn attached_topic(&self, subscription: &str) -> Option<String> {
-        self.state()
-            .subscriptions
-            .get(&self.subscription_path(subscription))
-            .map(|subscription| subscription.topic.clone())
+    /// Which of `subscriptions` a publish to `destination` reaches, by position: each
+    /// subscription attached to the topic gets the message once, and of the consumers open on one
+    /// subscription, the one whose turn is next receives it.
+    ///
+    /// A name listed more than once is one subscription with a consumer per listing, opened in the
+    /// order listed, which is the order the rotation serves them in.
+    pub(crate) fn routes(&self, destination: &str, subscriptions: &[&str]) -> Vec<usize> {
+        let topic = self.topic_path(destination);
+        let paths: Vec<String> = subscriptions
+            .iter()
+            .map(|name| self.subscription_path(name))
+            .collect();
+        let state = self.state();
+        let mut routed = Vec::new();
+        for (first, path) in paths.iter().enumerate() {
+            // Each subscription is answered once, at its first listing.
+            if paths[..first].contains(path) {
+                continue;
+            }
+            let Some(subscription) = state
+                .subscriptions
+                .get(path)
+                .filter(|subscription| subscription.topic == topic)
+            else {
+                continue;
+            };
+            let listed: Vec<usize> = paths
+                .iter()
+                .enumerate()
+                .filter(|(_, listed)| *listed == path)
+                .map(|(position, _)| position)
+                .collect();
+            let turn = match subscription.consumers.len() {
+                // Held until a consumer opens, and the first one to open takes it.
+                0 => 0,
+                open => subscription.turn % open,
+            };
+            // A turn past the listings belongs to a consumer the caller did not list.
+            routed.extend(listed.get(turn));
+        }
+        drop(state);
+        routed.sort_unstable();
+        routed
     }
 
     /// Opens a consumer on the subscription `descriptor` names, creating the subscription where it

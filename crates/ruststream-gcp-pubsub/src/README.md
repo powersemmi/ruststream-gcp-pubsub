@@ -195,7 +195,9 @@ Pub/Sub sends the count only where the subscription has a dead-letter policy, an
 without one. Nothing in the process counts alongside it and nothing in the process applies the cap:
 the subscription's policy is what ends the message, whether the handler asked for the next attempt
 at once or after a delay, and the count is there for a handler to read. Every other attribute is a
-header, in both directions, with no envelope around it.
+header, in both directions, with no envelope around it. An attribute and an ordering key are text,
+so a publish whose header value is not UTF-8 fails with `PubSubError::Publish` rather than
+reaching the subscriber rewritten.
 
 There is no log to seek in: a Pub/Sub subscription has no client-addressable position, so this
 crate implements neither `Seekable` nor `Positioned` and `.start_at(..)` does not compile.
@@ -432,7 +434,7 @@ reports them in [`DELIVERY_ATTEMPT_HEADER`], and publishes a spent message to th
 topic. A delayed retry holds the delivery for its delay and then rejects it; under a paused clock,
 `tb.advance(delay)` lets the delay pass. A publish the service refuses is refused here with the
 same error: a topic id Pub/Sub does not accept, a message with neither data nor attributes, an
-attribute or an ordering key past its limit, a publish after shutdown.
+attribute or an ordering key past its limit or not UTF-8, a publish after shutdown.
 
 What is the service's alone runs against the emulator: lease deadlines and their extension, flow
 control, ordered delivery by key, exactly-once delivery and retention.

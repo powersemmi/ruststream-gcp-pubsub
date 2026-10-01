@@ -7,8 +7,8 @@
 //! runs on every `cargo test`; the emulator leg is what proves the in-process mode is not passing
 //! by lying, and the suites that compare the two transports run there.
 //!
-//! Which suites those are follows from what the crate implements: a shutdown that finishes what
-//! was handed to it; the settlement meanings; [`capabilities::batches`] because the subscriber
+//! Which suites those are follows from what the crate implements: the routing suite and the
+//! lifecycle everywhere; the settlement meanings; [`capabilities::batches`] because the subscriber
 //! is a `BatchSubscriber`; [`retry::broker_moves`] because a Pub/Sub subscription moves a spent
 //! delivery itself, so both the descriptor and a bare name declare `Copies = BrokerMoves`; the
 //! keyed order and the per-message options because a publish carries an ordering key; and the
@@ -103,6 +103,39 @@ fn keyed(key: &[u8], _headers: &mut HeaderMap) -> Option<PubSubPublishOptions> {
 // higher-ranked (`Fn(&str) -> _` / `Fn(&B) -> _`), so a bare method path - which binds one
 // concrete lifetime - would not type-check.
 
+/// The routing contract over bare names. A subscription the service names without creating is
+/// infrastructure the in-process mode takes to be attached to the topic of its own name, which is
+/// the name the suite publishes to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_in_process_mode_passes_conformance_suite() {
+    harness::run_suite(|| PubSubBroker::new(TEST_PROJECT)).await;
+}
+
+/// The ladder contract, in process, over the descriptor the emulator leg opens.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_passes_lifecycle() {
+    harness::lifecycle(
+        in_process,
+        |name| created(name),
+        |connected| connected.publisher(),
+    )
+    .await;
+}
+
+/// The same ladder over the bare-string form, which resolves through `Subscribe` rather than
+/// through the crate's descriptor.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_passes_lifecycle_by_name() {
+    harness::lifecycle(
+        in_process,
+        |name| Name::new(name.to_owned()),
+        |connected| connected.publisher(),
+    )
+    .await;
+}
+
 /// The in-process mode batches the way a streaming pull does, over the same buffer, so it owes the
 /// same contract: a batch never carries more than the size the subscription was opened with.
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
@@ -182,6 +215,20 @@ fn pubsub_broker_describes_itself_without_credentials() {
         &GooglePubSub::new("orders-workers"),
         "hunter2",
     );
+}
+
+/// The ladder against the product, where `connect` authenticates, the subscription is a streaming
+/// pull, and the publisher's connection cell is what goes dead on shutdown.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pubsub_broker_passes_lifecycle() {
+    let Some(host) = test_host() else { return };
+    harness::lifecycle(
+        move || PubSubBroker::new(TEST_PROJECT).emulator(host.clone()),
+        |name| created(name),
+        |connected| connected.publisher(),
+    )
+    .await;
 }
 
 /// An acknowledgement and a publish made right before `shutdown` are finished by it. The
