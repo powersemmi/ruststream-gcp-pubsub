@@ -97,7 +97,7 @@ name subscribes to a subscription that already exists; `GooglePubSub` describes 
 
 ## Test it
 
-`TestApp` runs the app `main` runs with `PubSubBroker` connected in process, with no server.
+`TestApp` runs the service's own app with `PubSubBroker` in process, with no emulator and no credentials.
 
 ```rust
 use ruststream::testing::TestApp;
