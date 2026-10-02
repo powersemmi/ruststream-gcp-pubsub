@@ -49,13 +49,36 @@ pub(crate) struct DeliveryLimits {
 /// `#[subscriber(..)]` decorator, and the declaration a service ships is the one its tests run:
 ///
 /// ```
+/// # mod demo {
 /// use std::time::Duration;
-/// use ruststream_gcp_pubsub::GooglePubSub;
 ///
-/// let source = GooglePubSub::new("orders-workers")
-///     .max_outstanding(1_000)
-///     .ack_extension(Duration::from_secs(60));
-/// # let _ = source;
+/// use ruststream_gcp_pubsub::prelude::*;
+/// use serde::Deserialize;
+///
+/// #[derive(Debug, Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[subscriber(
+///     GooglePubSub::new("orders-workers")
+///         .max_outstanding(1_000)
+///         .ack_extension(Duration::from_secs(60))
+/// )]
+/// async fn handle(order: &Order) -> HandlerOutcome {
+///     println!("got order {}", order.id);
+///     HandlerOutcome::ack()
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+///         .with_broker(PubSubBroker::new("my-project"), |b| {
+///             b.include(handle);
+///         })
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]
@@ -132,12 +155,39 @@ impl GooglePubSub {
     /// because the subscription would redeliver before it elapsed.
     ///
     /// ```
+    /// # mod demo {
     /// use std::time::Duration;
-    /// use ruststream_gcp_pubsub::GooglePubSub;
     ///
-    /// // Handlers here may defer a delivery by up to two hours.
-    /// let source = GooglePubSub::new("orders-workers").max_lease(Duration::from_secs(2 * 60 * 60));
-    /// # let _ = source;
+    /// use ruststream_gcp_pubsub::prelude::*;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Debug, Deserialize)]
+    /// struct Invoice {
+    ///     id: u64,
+    ///     ready: bool,
+    /// }
+    ///
+    /// /// An invoice that is not ready yet comes back in ninety minutes, inside the lease.
+    /// #[subscriber(
+    ///     GooglePubSub::new("invoices-workers").max_lease(Duration::from_secs(2 * 60 * 60))
+    /// )]
+    /// async fn send(invoice: &Invoice) -> HandlerOutcome {
+    ///     if !invoice.ready {
+    ///         return HandlerOutcome::retry_after(Duration::from_secs(90 * 60));
+    ///     }
+    ///     println!("sent invoice {}", invoice.id);
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     RustStream::new(AppInfo::new("invoices", "0.1.0"))
+    ///         .with_broker(PubSubBroker::new("my-project"), |b| {
+    ///             b.include(send);
+    ///         })
+    /// }
+    /// # }
+    /// # fn main() {}
     /// ```
     pub fn max_lease(mut self, lease: Duration) -> Self {
         self.max_lease = lease;
@@ -153,12 +203,34 @@ impl GooglePubSub {
     /// what it has.
     ///
     /// ```
+    /// # mod demo {
     /// use std::time::Duration;
-    /// use ruststream_gcp_pubsub::GooglePubSub;
     ///
-    /// let source = GooglePubSub::new("orders-workers")
-    ///     .batch_wait(Duration::from_millis(200));
-    /// # let _ = source;
+    /// use ruststream_gcp_pubsub::prelude::*;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Debug, Deserialize)]
+    /// struct Order {
+    ///     id: u64,
+    /// }
+    ///
+    /// #[subscriber(GooglePubSub::new("orders-workers").batch_wait(Duration::from_millis(200)))]
+    /// async fn index(orders: &[Order]) -> HandlerOutcome {
+    ///     let ids: Vec<u64> = orders.iter().map(|order| order.id).collect();
+    ///     println!("indexed {ids:?}");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+    ///         .with_broker(PubSubBroker::new("my-project"), |b| {
+    ///             // Up to 100 orders per call, or whatever arrived within 200ms of the first.
+    ///             b.include(index.batch(nonzero!(100)));
+    ///         })
+    /// }
+    /// # }
+    /// # fn main() {}
     /// ```
     pub fn batch_wait(mut self, wait: Duration) -> Self {
         self.batch_wait = wait;
@@ -281,13 +353,31 @@ impl GooglePubSub {
 /// # Examples
 ///
 /// ```
-/// use ruststream::FromName;
-/// use ruststream_gcp_pubsub::GooglePubSub;
+/// # mod demo {
+/// use ruststream_gcp_pubsub::prelude::*;
+/// use serde::Deserialize;
 ///
-/// assert_eq!(
-///     GooglePubSub::from_name("orders-workers"),
-///     GooglePubSub::new("orders-workers"),
-/// );
+/// #[derive(Debug, Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[subscriber(GooglePubSub)]
+/// async fn handle(order: &Order) -> HandlerOutcome {
+///     println!("got order {}", order.id);
+///     HandlerOutcome::ack()
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+///         .with_broker(PubSubBroker::new("my-project"), |b| {
+///             // The deployment names the subscription; every other setting is the default.
+///             b.include(handle.name("orders-workers"));
+///         })
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 impl FromName for GooglePubSub {
     fn from_name(name: impl Into<Cow<'static, str>>) -> Self {

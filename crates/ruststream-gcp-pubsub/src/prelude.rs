@@ -20,28 +20,36 @@
 //!
 //! # Examples
 //!
-//! ```
-//! use ruststream_gcp_pubsub::prelude::*;
-//! use serde::Deserialize;
+//! A routes file: the broker, the descriptor and the policy all come from the one glob.
 //!
-//! #[derive(Debug, Deserialize)]
+//! ```
+//! # mod demo {
+//! use ruststream_gcp_pubsub::prelude::*;
+//! use serde::{Deserialize, Serialize};
+//!
+//! #[derive(Debug, Deserialize, Serialize, Outgoing)]
 //! struct Order {
 //!     id: u64,
 //! }
 //!
+//! /// The body names no broker: its slot is bounded by the framework's capability alone.
 //! #[subscriber(GooglePubSub::new("orders-workers"))]
-//! async fn handle(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
-//!     let _ = (order.id, ctx.name());
-//!     HandlerOutcome::ack()
+//! async fn confirm(order: &Order, Out(out): Out<impl Publisher>) -> HandlerOutcome {
+//!     match out.message(order).to("confirmations").publish().await {
+//!         Ok(_) => HandlerOutcome::ack(),
+//!         Err(_) => HandlerOutcome::retry(),
+//!     }
 //! }
 //!
-//! fn key_of(delivery: &impl IncomingMessage) -> Option<&[u8]> {
-//!     delivery.partition_key()
+//! #[ruststream::app]
+//! fn app() -> impl App {
+//!     RustStream::new(AppInfo::new("orders", "0.1.0"))
+//!         .with_broker(PubSubBroker::new("my-project"), |b| {
+//!             b.include(confirm).out(DefaultSlot, Publish::default()).build();
+//!         })
 //! }
-//!
-//! // What a mount site attaches, under the name every broker's prelude gives its publish policy.
-//! let policy: Publish = Publish::default();
-//! # let _ = policy;
+//! # }
+//! # fn main() {}
 //! ```
 
 pub use crate::PubSubPublish as Publish;

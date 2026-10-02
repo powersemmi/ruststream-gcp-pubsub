@@ -39,12 +39,71 @@ use crate::message::{PARTITION_KEY_HEADER, header_text, to_gcp_message};
 /// # Examples
 ///
 /// ```
-/// use ruststream_gcp_pubsub::PubSubPublishOptions;
+/// # #[cfg(feature = "testing")]
+/// # mod demo {
+/// use std::error::Error;
 ///
-/// let options = PubSubPublishOptions {
-///     ordering_key: Some("order-42".to_owned()),
-/// };
-/// assert_eq!(options.ordering_key.as_deref(), Some("order-42"));
+/// use ruststream::testing::TestApp;
+/// use ruststream_gcp_pubsub::prelude::*;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Debug, Deserialize, Serialize, Outgoing)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[subscriber("orders-workers")]
+/// async fn confirm(
+///     order: &Order,
+///     Out(out): Out<impl Publisher<Options = PubSubPublishOptions>>,
+/// ) -> HandlerOutcome {
+///     let sent = out
+///         .message(order)
+///         .to("confirmations")
+///         .ordering_key(format!("order-{}", order.id))
+///         .publish()
+///         .await;
+///     if sent.is_err() {
+///         return HandlerOutcome::retry();
+///     }
+///     HandlerOutcome::ack()
+/// }
+///
+/// /// The app `main` runs, and the one the test hands the harness.
+/// pub fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+///         .with_broker(PubSubBroker::new("my-project"), |b| {
+///             b.include(confirm).out(DefaultSlot, Publish::default()).build();
+///         })
+/// }
+///
+/// pub async fn each_confirmation_carries_its_orders_key() -> Result<(), Box<dyn Error>> {
+///     let tb = TestApp::start(app()).await?;
+///
+///     // A subscription the service only names is attached to the topic of its own name.
+///     tb.broker::<PubSubBroker>()
+///         .message(&Order { id: 42 })
+///         .to("orders-workers")
+///         .publish()
+///         .await?;
+///     tb.settle().await?;
+///
+///     tb.out::<DefaultSlot>()
+///         .assert_called(1)
+///         .with_options(&PubSubPublishOptions {
+///             ordering_key: Some("order-42".to_owned()),
+///         });
+///     tb.shutdown().await?;
+///     Ok(())
+/// }
+/// # }
+/// # #[cfg(feature = "testing")]
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// #     demo::each_confirmation_carries_its_orders_key().await
+/// # }
+/// # #[cfg(not(feature = "testing"))]
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PubSubPublishOptions {
@@ -216,22 +275,44 @@ impl Publisher for PubSubPublisher {
 /// # Examples
 ///
 /// ```
-/// use ruststream::runtime::PublishExt;
-/// use ruststream::{Outgoing, Serialized};
-/// use ruststream_gcp_pubsub::{PubSubOrdering, PubSubPublisher};
+/// # mod demo {
+/// use ruststream_gcp_pubsub::prelude::*;
+/// use serde::{Deserialize, Serialize};
 ///
-/// #[derive(Outgoing, Serialized)]
-/// struct OrderEvent(Vec<u8>);
-///
-/// async fn seed(publisher: &PubSubPublisher) -> Result<(), Box<dyn std::error::Error>> {
-///     publisher
-///         .message(&OrderEvent(b"created".to_vec()))
-///         .to("orders")
-///         .ordering_key("order-42")
-///         .publish()
-///         .await?;
-///     Ok(())
+/// #[derive(Debug, Deserialize, Serialize, Outgoing)]
+/// struct Shipment {
+///     order_id: u64,
+///     warehouse: String,
 /// }
+///
+/// /// Every update of one order travels under that order's key, so a consumer of
+/// /// `shipment-updates` sees them in the order they were sent.
+/// #[subscriber("shipments-workers")]
+/// async fn track(
+///     shipment: &Shipment,
+///     Out(out): Out<impl Publisher<Options = PubSubPublishOptions>>,
+/// ) -> HandlerOutcome {
+///     let sent = out
+///         .message(shipment)
+///         .to("shipment-updates")
+///         .ordering_key(format!("order-{}", shipment.order_id))
+///         .publish()
+///         .await;
+///     match sent {
+///         Ok(_) => HandlerOutcome::ack(),
+///         Err(_) => HandlerOutcome::retry(),
+///     }
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("shipments", "0.1.0"))
+///         .with_broker(PubSubBroker::new("my-project"), |b| {
+///             b.include(track).out(DefaultSlot, Publish::default()).build();
+///         })
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 pub trait PubSubOrdering {
     /// Sends this one message under `key`, whatever the mount site's default is.
@@ -262,11 +343,36 @@ where
 /// # Examples
 ///
 /// ```
-/// use ruststream_gcp_pubsub::PubSubPublish;
+/// # mod demo {
+/// use ruststream_gcp_pubsub::prelude::*;
+/// use serde::{Deserialize, Serialize};
 ///
-/// // Every message this mount site sends is ordered under one key.
-/// let policy = PubSubPublish::default().ordering_key("order-42");
-/// # let _ = policy;
+/// #[derive(Debug, Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "receipts")]
+/// struct Receipt {
+///     order_id: u64,
+/// }
+///
+/// #[subscriber("orders-receipts", publish)]
+/// async fn receipt(order: &Order) -> Receipt {
+///     Receipt { order_id: order.id }
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+///         .with_broker(PubSubBroker::new("my-project"), |b| {
+///             // A reply has no call site, so every receipt is ordered under the policy's key.
+///             b.include(receipt).out_reply(Publish::default().ordering_key("receipts"));
+///         })
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[must_use]
