@@ -163,7 +163,9 @@ to the dead-letter topic, so it is rejected rather than acknowledged, and a mess
 declaration asked to keep is kept.
 
 Pub/Sub has no delayed nack either, so `retry_after(delay)` is carried by the process: the crate
-holds the delivery for `delay` and then rejects it. The client goes on extending the ack deadline
+holds the delivery for `delay` and then rejects it. The wait runs on the runtime the broker
+connected on, so a handler on a dedicated thread may settle from a runtime that stops before the
+delay is out. The client goes on extending the ack deadline
 of a delivery nothing has settled, so a held delivery is leased rather than lost, and it still
 counts against `max_outstanding` while it waits. The budget is
 [`max_lease`](GooglePubSub::max_lease), and a longer delay is refused at the call with
@@ -193,7 +195,9 @@ Pub/Sub sends the count only where the subscription has a dead-letter policy, an
 without one. Nothing in the process counts alongside it and nothing in the process applies the cap:
 the subscription's policy is what ends the message, whether the handler asked for the next attempt
 at once or after a delay, and the count is there for a handler to read. Every other attribute is a
-header, in both directions, with no envelope around it.
+header, in both directions, with no envelope around it. An attribute and an ordering key are text,
+so a publish whose header value is not UTF-8 fails with `PubSubError::Publish` rather than
+reaching the subscriber rewritten.
 
 There is no log to seek in: a Pub/Sub subscription has no client-addressable position, so this
 crate implements neither `Seekable` nor `Positioned` and `.start_at(..)` does not compile.
@@ -352,12 +356,90 @@ framework's republishing fallback is unreachable from here.
 
 # Testing
 
-The `testing` feature ships an in-process transport, `PubSubTestBroker`, that a service mounts on
-as it ships: the same [`GooglePubSub`] opens an in-process subscription, and the same `Publish`
-policy pairs with it. The framework's
-[`TestApp`](https://docs.rs/ruststream/latest/ruststream/testing/index.html) harness then drives
-the real dispatch path. What the stand-in reproduces and what it leaves to the emulator is in the
-[`testing`](crate::testing) module overview.
+A test runs the app `main` runs. With the `testing` feature, the framework's
+[`TestApp`](https://docs.rs/ruststream/latest/ruststream/testing/index.html) connects
+[`PubSubBroker`] in process: no emulator, no credentials, and the same descriptors, publish
+policies and dispatch path production uses. The test addresses the broker by its production type.
+
+```
+# #[cfg(feature = "testing")]
+# mod demo {
+use ruststream::testing::TestApp;
+use ruststream_gcp_pubsub::prelude::*;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
+struct Order {
+    id: u64,
+}
+
+#[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
+#[outgoing(name = "confirmations")]
+struct Confirmation {
+    order_id: u64,
+}
+
+#[subscriber(GooglePubSub::new("orders-workers").create_with_topic("orders"), publish)]
+async fn confirm(order: &Order) -> Confirmation {
+    Confirmation { order_id: order.id }
+}
+
+/// The app `main` runs, and the one the test hands the harness.
+pub fn app() -> impl App {
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+        PubSubBroker::new("my-project"),
+        |b| {
+            b.include(confirm).out_reply(Publish::default());
+        },
+    )
+}
+
+pub async fn a_confirmation_follows_an_order() -> Result<(), Box<dyn std::error::Error>> {
+    let tb = TestApp::start(app()).await?;
+
+    // A producer publishes to the topic; the subscription attached to it delivers.
+    tb.broker::<PubSubBroker>()
+        .message(&Order { id: 42 })
+        .to("orders")
+        .publish()
+        .await?;
+
+    tb.broker::<PubSubBroker>()
+        .subscriber("orders-workers")
+        .assert_called_once()
+        .with(&Order { id: 42 })
+        .settled(HandlerOutcome::ack());
+    tb.broker::<PubSubBroker>()
+        .published::<Confirmation>("confirmations")
+        .assert_called_once()
+        .with(&Confirmation { order_id: 42 });
+
+    tb.shutdown().await?;
+    Ok(())
+}
+# }
+# fn main() {}
+```
+
+The in-process mode routes the way Pub/Sub does. A publish goes to a topic, and every
+subscription attached to that topic receives it, each once. A descriptor with
+[`create_with_topic`](GooglePubSub::create_with_topic) says which topic that is. A subscription the
+service only names is infrastructure it expects to find, and the in-process mode takes it to be
+attached to the topic of its own name. A subscription keeps what its topic received while no
+consumer was open, and the consumers of one subscription share its messages.
+
+Settlement follows the service. A rejected delivery comes back as the next attempt, and so does a
+delivery dropped without a settlement. The registration's dead-letter policy counts the attempts,
+reports them in [`DELIVERY_ATTEMPT_HEADER`], and publishes a spent message to the dead-letter
+topic. A delayed retry holds the delivery for its delay and then rejects it; under a paused clock,
+`tb.advance(delay)` lets the delay pass. A publish the service refuses is refused here with the
+same error: a topic id Pub/Sub does not accept, a message with neither data nor attributes, an
+attribute or an ordering key past its limit or not UTF-8, a publish after shutdown.
+
+What is the service's alone runs against the emulator: lease deadlines and their extension, flow
+control, ordered delivery by key, exactly-once delivery and retention.
+`TestApp::start_live(app())` runs the same test body against a running emulator or project, and
+`just test-brokers` runs the crate's live suites that way.
 
 # Operations
 

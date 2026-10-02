@@ -13,16 +13,22 @@
 //! [`GooglePubSub::batch_wait`](crate::GooglePubSub::batch_wait).
 
 use std::num::NonZeroUsize;
+#[cfg(feature = "testing")]
+use std::time::Duration;
 
 use futures::Stream;
 
 use google_cloud_pubsub::subscriber::{MessageStream, ShutdownToken};
 use ruststream::{BatchSubscriber, BufferedSubscriber, Subscriber};
+use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
 use crate::broker::Core;
 use crate::error::{PubSubError, box_err};
+#[cfg(feature = "testing")]
+use crate::in_process::Consumer;
 use crate::message::PubSubMessage;
+use crate::runtime_slot::RuntimeSlot;
 use crate::subscription::{DeliveryLimits, GooglePubSub};
 
 /// How many converted deliveries may sit between the pump and the consumer. Real prefetch is
@@ -39,7 +45,6 @@ pub struct PubSubSubscriber {
     // Named for what it is rather than what it yields: `buffer.batches(size)` reads, and
     // `batches.batches(size)` would not.
     buffer: BufferedSubscriber<Deliveries>,
-    shutdown: ShutdownToken,
 }
 
 impl std::fmt::Debug for PubSubSubscriber {
@@ -57,8 +62,9 @@ impl PubSubSubscriber {
         &self.subscription
     }
 
-    /// Opens the stream synchronously (the client connects lazily) and spawns the pump.
-    pub(crate) fn open(core: &Core, descriptor: &GooglePubSub) -> Self {
+    /// Opens the stream synchronously (the client connects lazily) and spawns the pump on
+    /// `runtime`, the one the broker connected on.
+    pub(crate) fn open(core: &Core, descriptor: &GooglePubSub, runtime: &Handle) -> Self {
         let name = core.subscription_name(descriptor.subscription());
         let mut builder = core.subscriber.subscribe(name.clone());
         if let Some(messages) = descriptor.max_outstanding_value() {
@@ -71,31 +77,39 @@ impl PubSubSubscriber {
         // descriptor reports and the value the client honours have to be the same one.
         let limits = descriptor.limits();
         builder = builder.set_max_lease(limits.max_lease);
-        let stream = builder.build();
+        // The client starts the subscription's lease loop on the runtime `build` runs in, and
+        // the subscription may be opened from a runtime that stops right after (a dedicated
+        // thread): the loop belongs beside the pump, on the runtime the broker connected on.
+        let stream = {
+            let _connect_runtime = runtime.enter();
+            builder.build()
+        };
         let shutdown = stream.shutdown_token();
 
         let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
-        tokio::spawn(pump(stream, tx, name.clone(), limits));
+        runtime.spawn(pump(stream, tx, name.clone(), limits, core.runtime_slot()));
 
         Self {
             subscription: name,
-            buffer: BufferedSubscriber::new(Deliveries { rx })
-                .max_wait(descriptor.batch_wait_value()),
-            shutdown,
+            buffer: BufferedSubscriber::new(Deliveries::Pull(Pull {
+                rx,
+                shutdown,
+                runtime: runtime.clone(),
+            }))
+            .max_wait(descriptor.batch_wait_value()),
         }
     }
-}
 
-impl Drop for PubSubSubscriber {
-    fn drop(&mut self) {
-        // `shutdown` is async and destructors are sync; the spawned signal drains the stream,
-        // which ends the pump task. Best effort by design: if the runtime is already gone, the
-        // pump dies with it.
-        let token = self.shutdown.clone();
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                token.shutdown().await;
-            });
+    /// A subscription of the in-process transport, batched over the same buffer and deadline.
+    #[cfg(feature = "testing")]
+    pub(crate) fn in_process(
+        subscription: String,
+        consumer: Consumer,
+        batch_wait: Duration,
+    ) -> Self {
+        Self {
+            subscription,
+            buffer: BufferedSubscriber::new(Deliveries::InProcess(consumer)).max_wait(batch_wait),
         }
     }
 }
@@ -124,11 +138,43 @@ impl BatchSubscriber for PubSubSubscriber {
     }
 }
 
-/// The wire side of a subscription: the pump's output channel, read one delivery at a time.
-/// Private, because a service reaches it through [`PubSubSubscriber`], which owns the buffer
-/// that turns these deliveries into batches.
-struct Deliveries {
+/// The wire side of a subscription, read one delivery at a time: the streaming pull, or, under
+/// the `testing` feature, a consumer of the in-process transport. Private, because a service
+/// reaches it through [`PubSubSubscriber`], which owns the buffer that turns these deliveries into
+/// batches.
+///
+/// Without the feature there is one variant, so the type is the pull itself and the `match` in
+/// [`stream`](Subscriber::stream) is irrefutable.
+enum Deliveries {
+    Pull(Pull),
+    #[cfg(feature = "testing")]
+    InProcess(Consumer),
+}
+
+// The zero-cost promise of the in-process mode: a subscription built without it holds exactly the
+// streaming pull it reads.
+#[cfg(not(feature = "testing"))]
+const _: () = assert!(size_of::<Deliveries>() == size_of::<Pull>());
+
+/// The streaming pull: the pump's output channel, the token that stops the client's stream, and
+/// the runtime the pump runs on.
+struct Pull {
     rx: mpsc::Receiver<Result<PubSubMessage, PubSubError>>,
+    shutdown: ShutdownToken,
+    runtime: Handle,
+}
+
+impl Drop for Pull {
+    fn drop(&mut self) {
+        // `shutdown` is async and destructors are sync; the spawned signal drains the stream,
+        // which ends the pump task. It runs beside the pump, on the runtime the broker connected
+        // on, whichever thread drops the subscriber. Best effort by design: if that runtime is
+        // already gone, the pump died with it.
+        let token = self.shutdown.clone();
+        self.runtime.spawn(async move {
+            token.shutdown().await;
+        });
+    }
 }
 
 impl Subscriber for Deliveries {
@@ -139,7 +185,11 @@ impl Subscriber for Deliveries {
         // Poll the channel in place rather than wrapping it in an owning stream, so `stream`
         // can be called again after the returned stream is dropped (the runtime and the
         // conformance helpers re-enter it per call).
-        futures::stream::poll_fn(move |cx| self.rx.poll_recv(cx))
+        futures::stream::poll_fn(move |cx| match self {
+            Self::Pull(pull) => pull.rx.poll_recv(cx),
+            #[cfg(feature = "testing")]
+            Self::InProcess(consumer) => consumer.poll_next(cx),
+        })
     }
 }
 
@@ -148,12 +198,13 @@ async fn pump(
     out: mpsc::Sender<Result<PubSubMessage, PubSubError>>,
     subscription: String,
     limits: DeliveryLimits,
+    runtime: RuntimeSlot,
 ) {
     while let Some(item) = stream.next().await {
         match item {
             Ok((message, handler)) => {
                 if out
-                    .send(Ok(PubSubMessage::new(message, handler, limits)))
+                    .send(Ok(PubSubMessage::new(message, handler, limits, runtime)))
                     .await
                     .is_err()
                 {
