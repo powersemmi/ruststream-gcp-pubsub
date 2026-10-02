@@ -404,11 +404,32 @@ pub(crate) type CoreCell = Arc<OnceCell<Link>>;
 /// # Examples
 ///
 /// ```
-/// use ruststream_gcp_pubsub::PubSubBroker;
+/// # mod demo {
+/// use ruststream_gcp_pubsub::prelude::*;
+/// use serde::Deserialize;
 ///
-/// let broker = PubSubBroker::new("my-project"); // Application Default Credentials
-/// let local = PubSubBroker::new("my-project").emulator("localhost:8085");
-/// # let _ = (broker, local);
+/// #[derive(Debug, Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[subscriber("orders-workers")]
+/// async fn handle(order: &Order) -> HandlerOutcome {
+///     println!("got order {}", order.id);
+///     HandlerOutcome::ack()
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     // Application Default Credentials against `pubsub.googleapis.com`; `.emulator(host)`
+///     // points the same broker at a local emulator instead.
+///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+///         .with_broker(PubSubBroker::new("my-project"), |b| {
+///             b.include(handle);
+///         })
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 #[derive(Clone)]
 #[must_use]
