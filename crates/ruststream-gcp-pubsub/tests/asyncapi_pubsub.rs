@@ -26,7 +26,7 @@ struct Receipt {
     id: u64,
 }
 
-#[subscriber(GooglePubSub::new("orders-workers"), publish)]
+#[subscriber(GooglePubSub::new("orders-workers"), reply)]
 async fn confirm(order: &Order) -> Receipt {
     Receipt { id: order.id }
 }

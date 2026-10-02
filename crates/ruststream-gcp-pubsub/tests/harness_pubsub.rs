@@ -236,7 +236,7 @@ struct Receipt {
 }
 
 /// Answers an order with its receipt.
-#[subscriber("orders-receipts", publish)]
+#[subscriber("orders-receipts", reply)]
 async fn receipt(order: &Order) -> Receipt {
     Receipt { id: order.id }
 }
@@ -276,7 +276,7 @@ struct Audited {
 }
 
 /// Copies an order to wherever it is mounted.
-#[subscriber("orders-audit", publish("audit-eu"))]
+#[subscriber("orders-audit", reply("audit-eu"))]
 async fn audit(order: &Order) -> Audited {
     Audited { id: order.id }
 }
@@ -451,7 +451,7 @@ struct PlanItem {
 }
 
 /// The other half of a routes file: a handler whose reply the mount site publishes.
-#[subscriber(GooglePubSub::new("orders-plan"), publish("plan-items"))]
+#[subscriber(GooglePubSub::new("orders-plan"), reply("plan-items"))]
 async fn plan(order: &Order) -> PlanItem {
     PlanItem { order_id: order.id }
 }
@@ -841,7 +841,7 @@ impl<C> PublishTransform<ForReply<C>, PubSubPublishOptions> for ReplyUnderTheOrd
 }
 
 /// Answers an order with its receipt.
-#[subscriber("orders-keyed", publish)]
+#[subscriber("orders-keyed", reply)]
 async fn keyed_receipt(order: &Order) -> KeyedReceipt {
     KeyedReceipt { id: order.id }
 }

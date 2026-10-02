@@ -92,7 +92,7 @@ const REPLIES: &str = "confirmations";
 /// counts, and a redelivery would be a message the scenario did not publish.
 const ACK_DEADLINE_SECONDS: i32 = 600;
 /// How long a drain may go without a delivery before the run is called stuck.
-const STALL: Duration = Duration::from_secs(120);
+const STALL: Duration = Duration::from_mins(2);
 
 /// The values every body carries. Fixed, so that every delivery of a run costs the same.
 const ID: u64 = 1_000_000;
