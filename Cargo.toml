@@ -5,9 +5,8 @@ members = ["crates/ruststream-gcp-pubsub", "crates/ruststream-gcp-pubsub-bench"]
 [workspace.package]
 version = "0.7.0"
 edition = "2024"
-# google-cloud-pubsub tracks a 1.88 floor; the core stays at 1.85 (a dependent may exceed
-# its dependency's floor).
-rust-version = "1.88"
+# The core's floor; google-cloud-pubsub tracks a lower one (1.88).
+rust-version = "1.95"
 license = "Apache-2.0"
 repository = "https://github.com/powersemmi/ruststream-gcp-pubsub"
 authors = ["RustStream contributors"]

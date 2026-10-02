@@ -13,7 +13,7 @@ ruststream-gcp-pubsub = "0.7"
 serde = { version = "1", features = ["derive"] }
 ```
 
-该 crate 发布在 crates.io 上，跟随 `ruststream` 的 0.7 线。它的 MSRV 是 1.88，由官方客户端决定。
+该 crate 发布在 crates.io 上，跟随 `ruststream` 的 0.7 线。它的 MSRV 是 1.95，由框架核心决定。
 
 你在 app 函数里组装一个 Pub/Sub 服务：
 

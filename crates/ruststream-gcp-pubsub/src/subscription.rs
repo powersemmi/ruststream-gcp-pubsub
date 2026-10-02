@@ -30,7 +30,7 @@ const DELIVERY_ATTEMPTS: RangeInclusive<i32> = 5..=100;
 /// How long the client keeps extending the ack deadline of a delivery nothing has settled, which
 /// is the client's own default and the budget a delayed retry spends. Past it the client stops
 /// extending, the lease expires, and the subscription redelivers on its own.
-const DEFAULT_MAX_LEASE: Duration = Duration::from_secs(60 * 60);
+const DEFAULT_MAX_LEASE: Duration = Duration::from_hours(1);
 
 /// What one delivery may do before it has to be settled, read off the subscription that opened
 /// it: how many deliveries the dead-letter policy allows, and how long the client will keep a
@@ -169,11 +169,11 @@ impl GooglePubSub {
     ///
     /// /// An invoice that is not ready yet comes back in ninety minutes, inside the lease.
     /// #[subscriber(
-    ///     GooglePubSub::new("invoices-workers").max_lease(Duration::from_secs(2 * 60 * 60))
+    ///     GooglePubSub::new("invoices-workers").max_lease(Duration::from_hours(2))
     /// )]
     /// async fn send(invoice: &Invoice) -> HandlerOutcome {
     ///     if !invoice.ready {
-    ///         return HandlerOutcome::retry_after(Duration::from_secs(90 * 60));
+    ///         return HandlerOutcome::retry_after(Duration::from_mins(90));
     ///     }
     ///     println!("sent invoice {}", invoice.id);
     ///     HandlerOutcome::ack()
