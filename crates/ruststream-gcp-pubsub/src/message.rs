@@ -422,7 +422,7 @@ mod tests {
     fn plain_messages_carry_no_ordering_key() {
         let message = to_gcp_message(BytesMut::from(&b"{}"[..]), &HeaderMap::new(), None)
             .expect("no headers to refuse");
-        assert!(message.ordering_key.is_empty());
+        assert_eq!(message.ordering_key, "");
     }
 
     /// An attribute is text, so a binary header value is refused, never rewritten.
