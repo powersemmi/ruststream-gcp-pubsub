@@ -274,7 +274,7 @@ async fn confirm(
     HandlerOutcome::ack()
 }
 
-#[subscriber("orders-receipts", publish)]
+#[subscriber("orders-receipts", reply)]
 async fn receipt(order: &Order) -> Receipt {
     Receipt { order_id: order.id }
 }
@@ -379,7 +379,7 @@ struct Confirmation {
     order_id: u64,
 }
 
-#[subscriber(GooglePubSub::new("orders-workers").create_with_topic("orders"), publish)]
+#[subscriber(GooglePubSub::new("orders-workers").create_with_topic("orders"), reply)]
 async fn confirm(order: &Order) -> Confirmation {
     Confirmation { order_id: order.id }
 }

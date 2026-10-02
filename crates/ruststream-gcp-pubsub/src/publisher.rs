@@ -358,7 +358,7 @@ where
 ///     order_id: u64,
 /// }
 ///
-/// #[subscriber("orders-receipts", publish)]
+/// #[subscriber("orders-receipts", reply)]
 /// async fn receipt(order: &Order) -> Receipt {
 ///     Receipt { order_id: order.id }
 /// }
