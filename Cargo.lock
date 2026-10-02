@@ -1686,9 +1686,9 @@ dependencies = [
 
 [[package]]
 name = "rtrb"
-version = "0.3.5"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fae8ee26b0371a29a77d2b2d6b3ae13aa81def6f9bf1b1b92a32d279a5e709b7"
+checksum = "9278fb35b3e730abe136e9b395b5b81b96d06b9f5478a50f0c8430a2237b22de"
 
 [[package]]
 name = "rustc-hash"
@@ -1783,9 +1783,9 @@ dependencies = [
 
 [[package]]
 name = "ruststream"
-version = "0.7.0-rc.11"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "868604a9138c3f9ddde617b1fc056e0f5f5925c7d7989e5f207fd96f45f17a16"
+checksum = "e305cbca42b78b29597864f3bdb6732a136035f3792a75b099cea388e5b82e4d"
 dependencies = [
  "bytes",
  "bytes-utils",
@@ -1839,9 +1839,9 @@ dependencies = [
 
 [[package]]
 name = "ruststream-macros"
-version = "0.7.0-rc.11"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "915a47a2359e57c0b7b9ca54acd9e827f4c0128071d09a18cfb0742fb8f205df"
+checksum = "41108b8dfe9660e288827bdd18234ededebb8faa5f554349ff8887151309a90d"
 dependencies = [
  "proc-macro2",
  "quote",

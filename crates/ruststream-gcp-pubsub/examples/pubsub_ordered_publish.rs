@@ -58,7 +58,7 @@ struct Receipt {
 }
 
 /// Answers an order with its receipt.
-#[subscriber("orders-receipts", publish)]
+#[subscriber("orders-receipts", reply)]
 async fn receipt(order: &Order) -> Receipt {
     Receipt { order_id: order.id }
 }

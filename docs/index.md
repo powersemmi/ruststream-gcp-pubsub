@@ -14,8 +14,8 @@ ruststream-gcp-pubsub = "0.7"
 serde = { version = "1", features = ["derive"] }
 ```
 
-The crate is published on crates.io and tracks the `ruststream` 0.7 line. Its MSRV is 1.88, set by
-the official client.
+The crate is published on crates.io and tracks the `ruststream` 0.7 line. Its MSRV is 1.95, set by
+the framework core.
 
 You assemble a Pub/Sub service in the app function:
 

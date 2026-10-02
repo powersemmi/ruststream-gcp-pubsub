@@ -143,7 +143,7 @@ const CHECK_EVERY: usize = 256;
 /// close, a run would hit that ceiling with its backlog still inside the client.
 const PUBLISH_IN_FLIGHT: usize = 4_096;
 /// How long a run may go without a delivery before it is called stuck.
-const STALL: Duration = Duration::from_secs(60);
+const STALL: Duration = Duration::from_mins(1);
 
 /// Calls the round-trip probe makes, on one connection, outside both halves of every pair.
 ///
@@ -162,7 +162,7 @@ const ROUND_TRIPS_PER_DELIVERY: f64 = 1.0;
 /// How long the client keeps extending the ack deadline of a delivery nothing has settled. It is
 /// the client's own default, and the value [`GooglePubSub`] hands the streaming pull, so the raw
 /// half asks for the same thing.
-const MAX_LEASE: Duration = Duration::from_secs(60 * 60);
+const MAX_LEASE: Duration = Duration::from_hours(1);
 
 /// Distinct ordering keys the ordered scenario publishes under.
 ///
