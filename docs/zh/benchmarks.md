@@ -110,5 +110,10 @@ just bench-code
 ```
 
 这条 recipe 先起模拟器，在 valgrind 下统计代码表，再把模拟器停掉，并重写同一份文档里的 `code`
-部分。它要花几分钟。除了 Docker，还需要 valgrind 和基准测试运行器：
-`cargo install --locked gungraun-runner --version =0.19.4`。
+部分。它要花几分钟。除了 Docker，还需要 valgrind。基准测试运行器必须是 `Cargo.lock` 锁定的那个
+`gungraun` 版本：这条 recipe 第一次运行时会自己把它装进 `target/`，版本变了以后会再装一次。
+
+recipe 名后面的数字设定每次被测量的运行包含多少次投递（`just bench-code 500`）；公布的表格按
+默认的 1000 次测量。其余参数交给基准测试运行器，例如 `--save-baseline=main` 或
+`--baseline=main`。某次运行突破了上限，也仍会跑完所有场景并打印表格。表格下面列出每一个被突破的
+上限，用来对照的值和新值并排给出，然后这次运行以失败结束。

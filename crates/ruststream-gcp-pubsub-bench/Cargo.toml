@@ -32,7 +32,7 @@ ruststream = { workspace = true, features = ["macros", "json"] }
 google-cloud-pubsub.workspace = true
 google-cloud-auth.workspace = true
 # The code-cost benchmarks: callgrind and DHAT through the runner the core pins.
-gungraun = "=0.19.4"
+gungraun = "=0.20.0"
 bytes.workspace = true
 futures.workspace = true
 serde = { version = "1", features = ["derive"] }

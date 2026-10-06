@@ -59,7 +59,7 @@ use futures::stream::FuturesUnordered;
 use google_cloud_auth::credentials::{Credentials, anonymous};
 use google_cloud_pubsub::client::{BasePublisher, SubscriptionAdmin, TopicAdmin};
 use google_cloud_pubsub::model::Message as GcpMessage;
-use gungraun::{Callgrind, Dhat, DhatMetric, EntryPoint, EventKind, LibraryBenchmarkConfig};
+use gungraun::{Callgrind, Dhat, DhatMetric, EntryPoint, LibraryBenchmarkConfig};
 use ruststream::runtime::{AppInfo, BrokerScope, Identity, RunningApp, RustStream};
 use ruststream_gcp_pubsub::PubSubBroker;
 use serde::Deserialize;
@@ -106,10 +106,43 @@ pub struct Order {
     pub quantity: u32,
 }
 
-/// Deliveries per measured run: large enough that entering and leaving the region is lost in the
-/// per-message number, small enough that a scenario stays within two minutes of valgrind time.
-/// `scripts/bench_results.py` divides by the same count.
-pub const MESSAGES: usize = 1_000;
+/// Deliveries per measured run.
+///
+/// The default is large enough that entering and leaving the region is lost in the per-message
+/// number and small enough that a scenario stays within two minutes of valgrind time.
+/// `RUSTSTREAM_BENCH_MESSAGES` at build time measures another count (`just bench-code 500`); the
+/// published document is measured at the default, and the allocation limits scale with the count
+/// through [`config`]. The recipe hands the same count to `scripts/bench_results.py`, which
+/// divides by it.
+pub const MESSAGES: usize = messages(option_env!("RUSTSTREAM_BENCH_MESSAGES"));
+
+/// The count a run measures when nothing names one.
+const DEFAULT_MESSAGES: usize = 1_000;
+
+/// The configured count, or the default; a value that is not a positive number is a build error
+/// naming the variable, so a typo cannot silently measure the default.
+const fn messages(configured: Option<&str>) -> usize {
+    let Some(text) = configured else {
+        return DEFAULT_MESSAGES;
+    };
+    let bytes = text.as_bytes();
+    let mut count = 0usize;
+    let mut index = 0;
+    while index < bytes.len() {
+        let digit = bytes[index];
+        assert!(
+            digit.is_ascii_digit(),
+            "RUSTSTREAM_BENCH_MESSAGES must be a positive number of deliveries"
+        );
+        count = count * 10 + (digit - b'0') as usize;
+        index += 1;
+    }
+    assert!(
+        count > 0,
+        "RUSTSTREAM_BENCH_MESSAGES must be a positive number of deliveries"
+    );
+    count
+}
 
 /// The measurement configuration every gated scenario shares.
 ///
@@ -120,10 +153,14 @@ pub const MESSAGES: usize = 1_000;
 /// leases on timers, so a run's count moves a little on an unchanged tree: the limit is the
 /// highest count seen over repeated runs plus a margin at least as large as the spread seen, and
 /// a tenth of a percent at the least. One allocation more per delivery adds `2 * MESSAGES` to
-/// the run, more than any margin here, so the gate still catches it. A number that goes down is
-/// lowered here in the same change. The instruction totals moved by at most half a percent, a
-/// quarter of the relative limit: `just bench-code --save-baseline=main` records a baseline and
-/// `just bench-code --baseline=main` fails on two percent more.
+/// the run, more than any margin here at the default count, so the limit still catches it. A
+/// number that goes down is lowered here in the same change. Every run of `just bench-code` is
+/// held to these limits.
+///
+/// The instruction limit is relative, and `just bench-code` sets it only for a run against a named
+/// baseline: `just bench-code --save-baseline=main` records one, and
+/// `just bench-code --baseline=main` fails on two percent more instructions than it. The
+/// instruction totals moved by at most half a percent, a quarter of that limit.
 pub fn config(steady: u64, cold: u64) -> LibraryBenchmarkConfig {
     config_every(steady, 1, cold)
 }
@@ -134,7 +171,7 @@ pub fn config_every(steady: u64, per: u64, cold: u64) -> LibraryBenchmarkConfig 
     let mut config = LibraryBenchmarkConfig::default();
     config
         .pass_through_env(HOST)
-        .tool(callgrind().soft_limits([(EventKind::Ir, 2f64)]))
+        .tool(callgrind())
         .tool(dhat().hard_limits([(DhatMetric::TotalBlocks, blocks(steady, per, cold))]));
     config
 }
