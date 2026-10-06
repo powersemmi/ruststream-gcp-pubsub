@@ -16,7 +16,8 @@ benchmark, in the summary layout gungraun 0.20 writes (its version 7). It writes
 section, one entry per scenario with instructions and allocations per message plus what starting
 the service cost once, by the core's method: every scenario is measured over one delivery, over
 MESSAGES and over twice MESSAGES, the slope between the last two is the steady state, and the
-one-delivery run is the cold start. Either run keeps the section the other one wrote.
+one-delivery run is the cold start. MESSAGES is 1000 unless the benches were built with another
+count, which `--messages` names. Either run keeps the section the other one wrote.
 
 The target is the local emulator, and the environment block says so down to the SDK release it
 ships in: a rate taken against it is a statement about dispatch cost and about nothing a hosted
@@ -27,9 +28,11 @@ A field the machine does not publish is written as `unknown` rather than guessed
 comes from the DMI tables, which most systems only let root read.
 
     python3 scripts/bench_results.py target/bench-paired.json docs/benchmarks/results.json
-    python3 scripts/bench_results.py --code target/bench-code.json docs/benchmarks/results.json
+    python3 scripts/bench_results.py --code [--messages N] target/bench-code.json \
+        docs/benchmarks/results.json
 """
 
+import argparse
 import json
 import re
 import subprocess
@@ -166,7 +169,9 @@ def environment(round_trip: str) -> dict[str, str]:
 # stops the conversion with a message naming both rather than with a missing field.
 CODE_SUMMARY_VERSION = "7"
 
-# Deliveries per measured run of the code-cost benches, the default of their `MESSAGES`.
+# Deliveries per measured run of the code-cost benches, the default of their `MESSAGES`. Every
+# published number is per message, so the totals are divided by the count. `just bench-code N`
+# builds the benches with another count and passes the same one here through `--messages`.
 CODE_MESSAGES = 1000
 
 # An instruction count below this on a code run means the measured region stopped matching its
@@ -236,7 +241,7 @@ def per_message(figure: float) -> float:
     return round(figure, 3) if abs(figure) < 1 else round(figure, 1)
 
 
-def code_section(path: Path) -> list[dict]:
+def code_section(path: Path, messages: int) -> list[dict]:
     found = code_runs(path)
     rows = []
     for name, key, gated in CODE_SCENARIOS:
@@ -248,9 +253,9 @@ def code_section(path: Path) -> list[dict]:
         rows.append(
             {
                 "name": name,
-                "messages": CODE_MESSAGES,
+                "messages": messages,
                 "framework": {
-                    metric: per_message((twice[metric] - base[metric]) / CODE_MESSAGES)
+                    metric: per_message((twice[metric] - base[metric]) / messages)
                     for metric in ("instructions", "allocations")
                 },
                 "cold": {metric: first[metric] for metric in ("instructions", "allocations")},
@@ -265,19 +270,27 @@ def valgrind() -> str:
 
 
 def main() -> int:
-    args = sys.argv[1:]
-    code = bool(args) and args[0] == "--code"
-    if code:
-        args = args[1:]
-    if len(args) != 2:
-        print(__doc__, file=sys.stderr)
-        return 2
-    source, out = Path(args[0]), Path(args[1])
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--code", action="store_true", help="read a run of the code-cost benches")
+    parser.add_argument(
+        "--messages",
+        type=int,
+        default=CODE_MESSAGES,
+        help="deliveries per measured run of the code-cost benches, the count they were built with",
+    )
+    parser.add_argument("summary", type=Path, help="the summary the benchmark run wrote")
+    parser.add_argument("output", type=Path, help="the results document to write")
+    args = parser.parse_args()
+    if args.messages <= 0:
+        parser.error("--messages must be a positive number of deliveries")
+    code, source, out = args.code, args.summary, args.output
     previous = json.loads(out.read_text(encoding="utf-8")) if out.exists() else {}
     if code:
         document = previous
         document["schema"] = 3
-        document["code"] = code_section(source)
+        document["code"] = code_section(source, args.messages)
         # The code costs carry their own provenance: the paired numbers beside them may come
         # from another run, on another version, on another day.
         document["code_measured"] = {

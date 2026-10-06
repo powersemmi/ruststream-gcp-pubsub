@@ -106,10 +106,43 @@ pub struct Order {
     pub quantity: u32,
 }
 
-/// Deliveries per measured run: large enough that entering and leaving the region is lost in the
-/// per-message number, small enough that a scenario stays within two minutes of valgrind time.
-/// `scripts/bench_results.py` divides by the same count.
-pub const MESSAGES: usize = 1_000;
+/// Deliveries per measured run.
+///
+/// The default is large enough that entering and leaving the region is lost in the per-message
+/// number and small enough that a scenario stays within two minutes of valgrind time.
+/// `RUSTSTREAM_BENCH_MESSAGES` at build time measures another count (`just bench-code 500`); the
+/// published document is measured at the default, and the allocation limits scale with the count
+/// through [`config`]. The recipe hands the same count to `scripts/bench_results.py`, which
+/// divides by it.
+pub const MESSAGES: usize = messages(option_env!("RUSTSTREAM_BENCH_MESSAGES"));
+
+/// The count a run measures when nothing names one.
+const DEFAULT_MESSAGES: usize = 1_000;
+
+/// The configured count, or the default; a value that is not a positive number is a build error
+/// naming the variable, so a typo cannot silently measure the default.
+const fn messages(configured: Option<&str>) -> usize {
+    let Some(text) = configured else {
+        return DEFAULT_MESSAGES;
+    };
+    let bytes = text.as_bytes();
+    let mut count = 0usize;
+    let mut index = 0;
+    while index < bytes.len() {
+        let digit = bytes[index];
+        assert!(
+            digit.is_ascii_digit(),
+            "RUSTSTREAM_BENCH_MESSAGES must be a positive number of deliveries"
+        );
+        count = count * 10 + (digit - b'0') as usize;
+        index += 1;
+    }
+    assert!(
+        count > 0,
+        "RUSTSTREAM_BENCH_MESSAGES must be a positive number of deliveries"
+    );
+    count
+}
 
 /// The measurement configuration every gated scenario shares.
 ///

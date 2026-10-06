@@ -64,13 +64,23 @@ bench *ARGS: brokers-up
 # the runner up. A `GUNGRAUN_RUNNER` in the environment would win over PATH when the benchmarks
 # build, so the recipe clears it.
 #
-# Extra arguments reach the runner: `just bench-code --save-baseline=main` records a baseline,
-# `just bench-code --baseline=main` compares against it.
+# A leading number is the deliveries per measured run: the default of 1000 is what the published
+# document is measured at (`just bench-code 500` measures another count). The benches read it at
+# build time, so a new count rebuilds them. The other arguments reach the runner:
+# `just bench-code --save-baseline=main` records a baseline, `just bench-code --baseline=main`
+# compares against it. Totals over another count are not comparable, so each count keeps its runs
+# and baselines in a directory of its own, `target/gungraun/<count>`.
+[positional-arguments]
 bench-code *ARGS: brokers-up
     #!/usr/bin/env bash
     set -euo pipefail
     trap 'just brokers-down' EXIT
     mkdir -p target
+    messages=1000
+    if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
+        messages="$1"
+        shift
+    fi
     version="$(cargo pkgid gungraun)"
     version="${version##*@}"
     runner="$PWD/target/gungraun-runner"
@@ -79,11 +89,12 @@ bench-code *ARGS: brokers-up
         cargo install --locked --root "$runner" gungraun-runner --version "=$version"
     fi
     unset GUNGRAUN_RUNNER
-    export PATH="$runner/bin:$PATH"
-    RUSTFLAGS="" PUBSUB_TEST_HOST=127.0.0.1:8085 \
-        cargo bench -p ruststream-gcp-pubsub-bench --bench consume --bench reply --bench batch \
-        -- --output-format=json {{ ARGS }} > target/bench-code.json
-    python3 scripts/bench_results.py --code target/bench-code.json docs/benchmarks/results.json
+    export PATH="$runner/bin:$PATH" RUSTFLAGS="" PUBSUB_TEST_HOST=127.0.0.1:8085 \
+        RUSTSTREAM_BENCH_MESSAGES="$messages" GUNGRAUN_HOME="$PWD/target/gungraun/$messages"
+    cargo bench -p ruststream-gcp-pubsub-bench --bench consume --bench reply --bench batch \
+        -- --output-format=json "$@" > target/bench-code.json
+    python3 scripts/bench_results.py --code --messages "$messages" target/bench-code.json \
+        docs/benchmarks/results.json
 
 fmt:
     cargo fmt --all
