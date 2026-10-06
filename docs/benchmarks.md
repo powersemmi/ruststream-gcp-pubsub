@@ -139,6 +139,10 @@ just bench-code
 The recipe starts the emulator, counts the code table under valgrind, stops the emulator again and
 rewrites the `code` section of the same document. It takes a few minutes. Besides Docker it needs
 valgrind. The benchmark runner has to be the `gungraun` release `Cargo.lock` pins: the recipe
-installs it into `target/` on its first run and again after the release changes. A number after the
-recipe name sets the deliveries per measured run (`just bench-code 500`); the published table is
-measured at the default of 1000.
+installs it into `target/` on its first run and again after the release changes.
+
+A number after the recipe name sets the deliveries per measured run (`just bench-code 500`); the
+published table is measured at the default of 1000. Any other argument goes to the benchmark runner,
+such as `--save-baseline=main` or `--baseline=main`. A run that breaches a limit still measures
+every scenario and prints the table. Every breached limit follows the table, with the value it was
+compared against next to the new one, and the run fails.

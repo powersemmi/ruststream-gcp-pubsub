@@ -70,6 +70,15 @@ bench *ARGS: brokers-up
 # `just bench-code --save-baseline=main` records a baseline, `just bench-code --baseline=main`
 # compares against it. Totals over another count are not comparable, so each count keeps its runs
 # and baselines in a directory of its own, `target/gungraun/<count>`.
+#
+# A run against a baseline, named with `--baseline` or in `GUNGRAUN_BASELINE`, fails on two
+# percent more instructions than the baseline in a scenario. The limit is relative, so it applies
+# only there: a plain run would be held to the previous run, and the client's timers move a count
+# from one run to the next. The allocation limits are absolute, and every run is held to them.
+#
+# A benchmark that breaches a limit fails the run, and the run still goes to the end: the code
+# table prints, every breach under it with the value it was compared against beside the new one,
+# and the recipe fails after that. A build error stops it before anything runs.
 [positional-arguments]
 bench-code *ARGS: brokers-up
     #!/usr/bin/env bash
@@ -91,10 +100,23 @@ bench-code *ARGS: brokers-up
     unset GUNGRAUN_RUNNER
     export PATH="$runner/bin:$PATH" RUSTFLAGS="" PUBSUB_TEST_HOST=127.0.0.1:8085 \
         RUSTSTREAM_BENCH_MESSAGES="$messages" GUNGRAUN_HOME="$PWD/target/gungraun/$messages"
-    cargo bench -p ruststream-gcp-pubsub-bench --bench consume --bench reply --bench batch \
-        -- --output-format=json "$@" > target/bench-code.json
+    # A baseline named on the command line or in the environment brings the instruction limit.
+    baseline="${GUNGRAUN_BASELINE:-}"
+    for arg in "$@"; do
+        case "$arg" in --baseline | --baseline=*) baseline="$arg" ;; esac
+    done
+    limits=()
+    if [ -n "$baseline" ]; then
+        limits=(--callgrind-limits='ir=2.0%')
+    fi
+    benches=(-p ruststream-gcp-pubsub-bench --bench consume --bench reply --bench batch)
+    cargo bench "${benches[@]}" --no-run
+    status=0
+    cargo bench "${benches[@]}" --no-fail-fast \
+        -- --output-format=json "${limits[@]}" "$@" > target/bench-code.json || status=$?
     python3 scripts/bench_results.py --code --messages "$messages" target/bench-code.json \
         docs/benchmarks/results.json
+    exit "$status"
 
 fmt:
     cargo fmt --all

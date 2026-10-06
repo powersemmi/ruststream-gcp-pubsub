@@ -59,7 +59,7 @@ use futures::stream::FuturesUnordered;
 use google_cloud_auth::credentials::{Credentials, anonymous};
 use google_cloud_pubsub::client::{BasePublisher, SubscriptionAdmin, TopicAdmin};
 use google_cloud_pubsub::model::Message as GcpMessage;
-use gungraun::{Callgrind, Dhat, DhatMetric, EntryPoint, EventKind, LibraryBenchmarkConfig};
+use gungraun::{Callgrind, Dhat, DhatMetric, EntryPoint, LibraryBenchmarkConfig};
 use ruststream::runtime::{AppInfo, BrokerScope, Identity, RunningApp, RustStream};
 use ruststream_gcp_pubsub::PubSubBroker;
 use serde::Deserialize;
@@ -153,10 +153,14 @@ const fn messages(configured: Option<&str>) -> usize {
 /// leases on timers, so a run's count moves a little on an unchanged tree: the limit is the
 /// highest count seen over repeated runs plus a margin at least as large as the spread seen, and
 /// a tenth of a percent at the least. One allocation more per delivery adds `2 * MESSAGES` to
-/// the run, more than any margin here, so the gate still catches it. A number that goes down is
-/// lowered here in the same change. The instruction totals moved by at most half a percent, a
-/// quarter of the relative limit: `just bench-code --save-baseline=main` records a baseline and
-/// `just bench-code --baseline=main` fails on two percent more.
+/// the run, more than any margin here at the default count, so the limit still catches it. A
+/// number that goes down is lowered here in the same change. Every run of `just bench-code` is
+/// held to these limits.
+///
+/// The instruction limit is relative, and `just bench-code` sets it only for a run against a named
+/// baseline: `just bench-code --save-baseline=main` records one, and
+/// `just bench-code --baseline=main` fails on two percent more instructions than it. The
+/// instruction totals moved by at most half a percent, a quarter of that limit.
 pub fn config(steady: u64, cold: u64) -> LibraryBenchmarkConfig {
     config_every(steady, 1, cold)
 }
@@ -167,7 +171,7 @@ pub fn config_every(steady: u64, per: u64, cold: u64) -> LibraryBenchmarkConfig 
     let mut config = LibraryBenchmarkConfig::default();
     config
         .pass_through_env(HOST)
-        .tool(callgrind().soft_limits([(EventKind::Ir, 2f64)]))
+        .tool(callgrind())
         .tool(dhat().hard_limits([(DhatMetric::TotalBlocks, blocks(steady, per, cold))]));
     config
 }
