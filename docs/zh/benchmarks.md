@@ -110,5 +110,5 @@ just bench-code
 ```
 
 这条 recipe 先起模拟器，在 valgrind 下统计代码表，再把模拟器停掉，并重写同一份文档里的 `code`
-部分。它要花几分钟。除了 Docker，还需要 valgrind 和基准测试运行器：
-`cargo install --locked gungraun-runner --version =0.19.4`。
+部分。它要花几分钟。除了 Docker，还需要 valgrind。基准测试运行器必须是 `Cargo.lock` 锁定的那个
+`gungraun` 版本：这条 recipe 第一次运行时会自己把它装进 `target/`，版本变了以后会再装一次。

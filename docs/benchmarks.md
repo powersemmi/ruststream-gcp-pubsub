@@ -138,4 +138,5 @@ just bench-code
 
 The recipe starts the emulator, counts the code table under valgrind, stops the emulator again and
 rewrites the `code` section of the same document. It takes a few minutes. Besides Docker it needs
-valgrind and the benchmark runner: `cargo install --locked gungraun-runner --version =0.19.4`.
+valgrind. The benchmark runner has to be the `gungraun` release `Cargo.lock` pins: the recipe
+installs it into `target/` on its first run and again after the release changes.
