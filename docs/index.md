@@ -18,19 +18,14 @@ serde = { version = "1", features = ["derive"] }
 The crate is published on crates.io and tracks the `ruststream` 0.6 line. Its MSRV is 1.88,
 tracking the official client; the framework core stays at 1.85.
 
-```rust
---8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_service.rs:app"
+```rust reference="examples/pubsub_service.rs#app"
 ```
 
 ## Where to go next
 
-<div class="grid cards" markdown>
-
-- :material-transit-connection-variant: **[Pub/Sub guide](pubsub.md)** - subscriptions, acknowledgement, ordering keys, the emulator, and testing.
-- :material-book-open-variant: **[RustStream docs](https://powersemmi.github.io/ruststream/)** - the framework itself: subscribers, routing, codecs, middleware, the CLI.
-- :material-language-rust: **[API reference](https://docs.rs/ruststream-gcp-pubsub)** - the crate's rustdoc on docs.rs.
-
-</div>
+- **[Pub/Sub guide](pubsub.md)** - subscriptions, acknowledgement, ordering keys, the emulator, and testing.
+- **[RustStream docs](https://powersemmi.github.io/ruststream/)** - the framework itself: subscribers, routing, codecs, middleware, the CLI.
+- **[API reference](https://docs.rs/ruststream-gcp-pubsub)** - the crate's rustdoc on docs.rs.
 
 ## How this site relates to the RustStream docs
 

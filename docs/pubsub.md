@@ -55,15 +55,13 @@ default the descriptor names an existing subscription, by short id or by full
 `projects/{project}/subscriptions/{name}` resource name. It implements `SubscriptionSource`, so it
 sits inline in the decorator:
 
-```rust
---8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_service.rs:handler"
+```rust reference="examples/pubsub_service.rs#handler"
 ```
 
 Wiring it onto the broker is the framework's `with_broker` / `include` pair, identical to every
 other broker:
 
-```rust
---8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_service.rs:app"
+```rust reference="examples/pubsub_service.rs#app"
 ```
 
 Three options ride the descriptor:
@@ -127,8 +125,7 @@ same idea, so the two are one header. A `partition-key` header (exported as `PAR
 on an outgoing message becomes the message's ordering key, and a delivered message carries its
 ordering key back under the same header, feeding the `Partitioned` capability.
 
-```rust
---8<-- "crates/ruststream-gcp-pubsub/examples/pubsub_ordered_publish.rs:ordered"
+```rust reference="examples/pubsub_ordered_publish.rs#ordered"
 ```
 
 Ordered delivery needs the subscription to have message ordering enabled, and a regional
