@@ -20,7 +20,7 @@ The name is a short id in the broker's project or a full resource name, `project
 Nothing is created at startup, and a subscription that does not exist fails on its stream with [`PubSubError::Receive`](api:ruststream_gcp_pubsub::PubSubError::Receive).
 A [dead-letter declaration](../settlement/dead-letters.md) at the mount site reaches a subscription named this way too.
 Every other setting belongs to the descriptor, which goes where the name goes, as the attribute's first argument.
-The manual form passes the name to [`subscriber(name, body)`](api:ruststream::runtime::subscriber), and a descriptor joins the chain through [`map_source`](api:ruststream::runtime::SubscriberSettings::map_source).
+The manual form passes the name to [`subscriber(name, body)`](api:ruststream::runtime::subscriber), and a descriptor goes in the same place, `subscriber(descriptor, body)`.
 Two handlers on one subscription are two consumers of it: each message goes to one of them.
 
 ## Example

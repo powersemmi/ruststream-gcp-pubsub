@@ -87,18 +87,20 @@ fn app() -> impl App {
         PubSubBroker::new("my-project"),
         |b| {
             b.include(
-                subscriber("orders-receipts", ReceiptFor)
-                    .map_source(|_| {
-                        GooglePubSub::new("orders-receipts").create_with_topic("orders")
-                    })
-                    .reply()
-                    .build(),
+                subscriber(
+                    GooglePubSub::new("orders-receipts").create_with_topic("orders"),
+                    ReceiptFor,
+                )
+                .reply()
+                .build(),
             )
             .out_reply(Publish::default());
             b.include(
-                subscriber("orders-billing", Bill)
-                    .map_source(|_| GooglePubSub::new("orders-billing").create_with_topic("orders"))
-                    .build(),
+                subscriber(
+                    GooglePubSub::new("orders-billing").create_with_topic("orders"),
+                    Bill,
+                )
+                .build(),
             )
             .out(DefaultSlot, Publish::default())
             .build();

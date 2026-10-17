@@ -51,11 +51,11 @@ fn app() -> impl App {
         PubSubBroker::new("my-project"),
         |b| {
             b.include(
-                subscriber("payments-workers", Charge)
-                    .map_source(|_| {
-                        GooglePubSub::new("payments-workers").create_with_topic("payments")
-                    })
-                    .build(),
+                subscriber(
+                    GooglePubSub::new("payments-workers").create_with_topic("payments"),
+                    Charge,
+                )
+                .build(),
             )
             .max_attempts(nonzero!(5u32))
             .dead_letter("payments-dead");

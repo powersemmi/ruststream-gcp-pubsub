@@ -43,12 +43,12 @@ fn app() -> impl App {
         |b| {
             // At most 50 orders reach the handler per call.
             b.include(
-                subscriber("orders-workers", Settle)
-                    .map_source(|_| {
-                        GooglePubSub::new("orders-workers").batch_wait(Duration::from_millis(200))
-                    })
-                    .batch(nonzero!(50))
-                    .build(),
+                subscriber(
+                    GooglePubSub::new("orders-workers").batch_wait(Duration::from_millis(200)),
+                    Settle,
+                )
+                .batch(nonzero!(50))
+                .build(),
             );
         },
     )

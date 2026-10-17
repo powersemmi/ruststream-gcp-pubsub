@@ -1,5 +1,5 @@
 //! The service of `examples/pubsub_subscriptions_descriptor.rs` written without the macros: the
-//! descriptor joins the chain through `map_source`.
+//! handler mounts on the descriptor itself, `subscriber(descriptor, body)`.
 //!
 //! ```text
 //! cargo test --example manual_pubsub_subscriptions_descriptor --features testing
@@ -69,16 +69,8 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         PubSubBroker::new("my-project"),
         |b| {
-            b.include(
-                subscriber("orders-workers", Place)
-                    .map_source(|_| orders())
-                    .build(),
-            );
-            b.include(
-                subscriber("orders-audit", Audit)
-                    .map_source(|_| audit())
-                    .build(),
-            );
+            b.include(subscriber(orders(), Place).build());
+            b.include(subscriber(audit(), Audit).build());
         },
     )
 }

@@ -49,11 +49,7 @@ fn orders() -> GooglePubSub {
 
 fn service(broker: PubSubBroker) -> impl App<State = ()> {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(
-            subscriber("emulator-orders-workers", Place)
-                .map_source(|_| orders())
-                .build(),
-        );
+        b.include(subscriber(orders(), Place).build());
     })
 }
 

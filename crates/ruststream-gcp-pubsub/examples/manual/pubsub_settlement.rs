@@ -53,9 +53,11 @@ fn app() -> impl App {
         PubSubBroker::new("my-project"),
         |b| {
             b.include(
-                subscriber("orders-workers", Reserve)
-                    .map_source(|_| GooglePubSub::new("orders-workers").create_with_topic("orders"))
-                    .build(),
+                subscriber(
+                    GooglePubSub::new("orders-workers").create_with_topic("orders"),
+                    Reserve,
+                )
+                .build(),
             )
             .max_attempts(nonzero!(5u32))
             .dead_letter("orders-dead");

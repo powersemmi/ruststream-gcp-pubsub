@@ -1,5 +1,5 @@
 //! The service of `examples/pubsub_broker_prelude.rs` without the macros: the handler is a named
-//! type, the descriptor joins the chain through `map_source`, and `main` is written by hand.
+//! type, `subscriber(..)` takes the descriptor, and `main` is written by hand.
 //!
 //! ```text
 //! cargo test --example manual_pubsub_broker_prelude --features testing
@@ -47,10 +47,12 @@ fn app() -> impl App {
         PubSubBroker::new("my-project"),
         |b| {
             b.include(
-                subscriber("orders-workers", ReceiptFor)
-                    .map_source(|_| GooglePubSub::new("orders-workers").create_with_topic("orders"))
-                    .reply()
-                    .build(),
+                subscriber(
+                    GooglePubSub::new("orders-workers").create_with_topic("orders"),
+                    ReceiptFor,
+                )
+                .reply()
+                .build(),
             )
             .out_reply(Publish::default());
         },

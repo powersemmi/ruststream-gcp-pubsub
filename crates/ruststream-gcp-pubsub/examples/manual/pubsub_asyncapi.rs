@@ -60,13 +60,8 @@ fn broker() -> PubSubBroker {
 fn service(broker: PubSubBroker) -> impl App<State = ()> {
     RustStream::new(AppInfo::new("orders", "1.0.0")).with_broker_labeled("pubsub", broker, |b| {
         // Every receipt goes out under one key, so the document states it.
-        b.include(
-            subscriber("orders-workers", ReceiptFor)
-                .map_source(|_| orders())
-                .reply()
-                .build(),
-        )
-        .out_reply(Publish::default().ordering_key("receipts"));
+        b.include(subscriber(orders(), ReceiptFor).reply().build())
+            .out_reply(Publish::default().ordering_key("receipts"));
     })
 }
 // --8<-- [end:messages]

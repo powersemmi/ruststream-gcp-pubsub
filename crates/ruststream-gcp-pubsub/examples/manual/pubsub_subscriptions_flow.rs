@@ -1,5 +1,5 @@
 //! The service of `examples/pubsub_subscriptions_flow.rs` written without the macros: each
-//! descriptor joins its chain through `map_source`.
+//! handler mounts on its descriptor, `subscriber(descriptor, body)`.
 //!
 //! ```text
 //! cargo test --example manual_pubsub_subscriptions_flow --features testing
@@ -119,21 +119,9 @@ fn invoices() -> GooglePubSub {
 
 fn service(broker: PubSubBroker) -> impl App<State = ()> {
     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(broker, |b| {
-        b.include(
-            subscriber("flow-orders-workers", Index)
-                .map_source(|_| orders())
-                .build(),
-        );
-        b.include(
-            subscriber("flow-reports-workers", Render)
-                .map_source(|_| reports())
-                .build(),
-        );
-        b.include(
-            subscriber("flow-invoices-workers", Send)
-                .map_source(|_| invoices())
-                .build(),
-        );
+        b.include(subscriber(orders(), Index).build());
+        b.include(subscriber(reports(), Render).build());
+        b.include(subscriber(invoices(), Send).build());
     })
 }
 
@@ -258,13 +246,9 @@ mod tests {
             PubSubBroker::new("my-project"),
             |b| {
                 // The cap ends the redeliveries, so the test sees how many came back.
-                b.include(
-                    subscriber("flow-invoices-workers", TooLate)
-                        .map_source(|_| invoices())
-                        .build(),
-                )
-                .max_attempts(nonzero!(5u32))
-                .dead_letter("flow-invoices-dead");
+                b.include(subscriber(invoices(), TooLate).build())
+                    .max_attempts(nonzero!(5u32))
+                    .dead_letter("flow-invoices-dead");
             },
         );
         let tb = TestApp::start(app).await?;

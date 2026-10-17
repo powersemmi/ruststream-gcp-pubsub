@@ -72,18 +72,10 @@ fn app() -> impl App {
         |b| {
             // Five deliveries of one payment; after the fifth Pub/Sub publishes it to
             // `payments-dead`, payload and attributes as they arrived.
-            b.include(
-                subscriber("payments-workers", Charge)
-                    .map_source(|_| payments())
-                    .build(),
-            )
-            .max_attempts(nonzero!(5u32))
-            .dead_letter("payments-dead");
-            b.include(
-                subscriber("payments-dead-audit", OnDeadLetter)
-                    .map_source(|_| dead_letters())
-                    .build(),
-            );
+            b.include(subscriber(payments(), Charge).build())
+                .max_attempts(nonzero!(5u32))
+                .dead_letter("payments-dead");
+            b.include(subscriber(dead_letters(), OnDeadLetter).build());
         },
     )
 }

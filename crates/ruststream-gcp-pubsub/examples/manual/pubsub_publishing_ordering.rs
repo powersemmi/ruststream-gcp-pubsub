@@ -59,11 +59,7 @@ fn order_events() -> GooglePubSub {
 
 fn service(broker: PubSubBroker) -> impl App<State = ()> {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(
-            subscriber("ordering-order-events-workers", Track)
-                .map_source(|_| order_events())
-                .build(),
-        );
+        b.include(subscriber(order_events(), Track).build());
     })
 }
 

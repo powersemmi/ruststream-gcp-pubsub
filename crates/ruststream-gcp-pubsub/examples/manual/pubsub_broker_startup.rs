@@ -1,5 +1,5 @@
 //! The service of `examples/pubsub_broker_startup.rs` without the macros: the handler is a named
-//! type, the descriptor joins the chain through `map_source`, and `main` is written by hand.
+//! type, `subscriber(..)` takes the descriptor, and `main` is written by hand.
 //!
 //! ```text
 //! cargo test --example manual_pubsub_broker_startup --features testing
@@ -46,13 +46,9 @@ fn app() -> impl App {
         |b| {
             // Before the pull opens: the topics `orders` and `orders-dead`, then the
             // subscription with its dead-letter policy.
-            b.include(
-                subscriber("orders-workers", Place)
-                    .map_source(|_| orders())
-                    .build(),
-            )
-            .max_attempts(nonzero!(5u32))
-            .dead_letter("orders-dead");
+            b.include(subscriber(orders(), Place).build())
+                .max_attempts(nonzero!(5u32))
+                .dead_letter("orders-dead");
         },
     )
 }
@@ -96,13 +92,9 @@ mod tests {
         let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
             PubSubBroker::new("my-project"),
             |b| {
-                b.include(
-                    subscriber("orders-workers", Place)
-                        .map_source(|_| orders())
-                        .build(),
-                )
-                .max_attempts(nonzero!(3u32))
-                .dead_letter("orders-dead");
+                b.include(subscriber(orders(), Place).build())
+                    .max_attempts(nonzero!(3u32))
+                    .dead_letter("orders-dead");
             },
         );
 

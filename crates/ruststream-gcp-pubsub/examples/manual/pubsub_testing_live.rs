@@ -54,11 +54,7 @@ fn payments() -> GooglePubSub {
 /// The service on `broker`: the production builder, unchanged in either mode.
 fn service(broker: PubSubBroker) -> impl App<State = ()> {
     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker, |b| {
-        b.include(
-            subscriber("testing-live-payments-workers", Accept)
-                .map_source(|_| payments())
-                .build(),
-        );
+        b.include(subscriber(payments(), Accept).build());
     })
 }
 
