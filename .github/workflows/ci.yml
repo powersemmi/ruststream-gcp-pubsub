@@ -315,9 +315,9 @@ jobs:
       # test that skips is a defect rather than a convenience. Without it a live test returns
       # before its first assertion and reports ok, which reads exactly like a run that did the
       # work.
-      # Every suite that reaches the emulator is named here, and a new one has to be added: the
-      # list is what decides whether a live case runs at all, and a file left out passes by not
-      # being built.
+      # Every suite and every example that reaches the emulator is named here, and a new one has
+      # to be added: the list is what decides whether a live case runs at all, and a file left out
+      # passes by not being built.
       - name: Run the live suites against the emulator
         env:
           PUBSUB_TEST_HOST: 127.0.0.1:8085
@@ -328,6 +328,15 @@ jobs:
           --test conformance_pubsub
           --test topology_pubsub
           --test deadlines_pubsub
+          --test harness_pubsub
+          --example pubsub_broker_emulator
+          --example manual_pubsub_broker_emulator
+          --example pubsub_subscriptions_flow
+          --example manual_pubsub_subscriptions_flow
+          --example pubsub_publishing_ordering
+          --example manual_pubsub_publishing_ordering
+          --example pubsub_testing_live
+          --example manual_pubsub_testing_live
           -- --test-threads=1
 
       - name: Cleanup
