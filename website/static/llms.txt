@@ -9,6 +9,15 @@ This site holds the guides, one page per component and the architecture of the c
 ## Guides
 
 - [Guides](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/): building a Pub/Sub service with the crate, from a first subscriber to production
+- [Getting started](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/getting-started/): install the crate, run a first subscriber against the emulator and test it
+- [Topics and subscriptions](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/topics-and-subscriptions/): fan-out, replicas sharing a subscription, topology the service or operations own
+- [Publishing and replies](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/publishing/): replies whose type names the topic, `Out` slots and a publish at startup
+- [Acknowledgement and retries](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/retries/): ack, retry, `retry_after` and drop on Pub/Sub, the dead-letter policy and exactly-once
+- [Flow control and leases](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/flow-control/): `max_outstanding`, `ack_extension` and `max_lease`
+- [Ordering keys](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/ordering/): ordered subscriptions, keyed lanes and the key on what a service publishes
+- [Batch processing](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/batches/): a slice handler, the batch size and wait, settling each message
+- [Running in production](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/production/): credentials, a regional endpoint, operations-owned topology and IAM roles
+- [Testing a Pub/Sub service](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/testing/): one test body in process and against the emulator
 
 ## Components
 
@@ -52,7 +61,7 @@ This site holds the guides, one page per component and the architecture of the c
 - [Architecture](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/): how Pub/Sub works, where the crate sits between Pub/Sub and the RustStream runtime, and what that costs
 - [Topics](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/pubsub/): a topic hands every message to each attached subscription, whose subscribers share it
 - [Leases](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/pubsub/leases/): the streaming pull's lease on each message, its extension and flow control
-- [Ordering](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/pubsub/ordering/): messages sharing an ordering key, published in one region, delivered in order
+- [Ordered delivery](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/pubsub/ordering/): messages sharing an ordering key, published in one region, delivered in order
 - [Redelivery](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/pubsub/redelivery/): a nack or an expired deadline, and the dead-letter policy that ends redelivery
 - [Design](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/design/): a streaming pull per subscription and a publisher per topic, between the runtime and the client
 - [Lifecycle](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/lifecycle/): `new`, `connect`, each subscription opened at startup, and the flush at shutdown

@@ -54,6 +54,18 @@ runtime, and the [benchmarks][benchmarks] what it costs.
 Each topic below links to its component page on the site, which shows it in a service; the
 item's own documentation keeps the detail.
 
+## Guides
+
+- [Getting started][g-getting-started]: install the crate, run a first subscriber against the emulator and test it.
+- [Topics and subscriptions][g-topics-and-subscriptions]: fan-out, replicas sharing a subscription, topology the service or operations own.
+- [Publishing and replies][g-publishing]: replies whose type names the topic, `Out` slots and a publish at startup.
+- [Acknowledgement and retries][g-retries]: ack, retry, `retry_after` and drop on Pub/Sub, the dead-letter policy and exactly-once.
+- [Flow control and leases][g-flow-control]: `max_outstanding`, `ack_extension` and `max_lease`.
+- [Ordering keys][g-ordering]: ordered subscriptions, keyed lanes and the key on what a service publishes.
+- [Batch processing][g-batches]: a slice handler, the batch size and wait, settling each message.
+- [Running in production][g-production]: credentials, a regional endpoint, operations-owned topology and IAM roles.
+- [Testing a Pub/Sub service][g-testing]: one test body in process and against the emulator.
+
 ## Broker
 
 - [PubSubBroker][c-broker]: [`PubSubBroker`], connected into [`ConnectedPubSubBroker`].
@@ -122,6 +134,15 @@ contributes the `googlepubsub` bindings to the generated document. The codecs ar
 framework's features, on the `ruststream` dependency.
 
 [guides]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/
+[g-getting-started]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/getting-started/
+[g-topics-and-subscriptions]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/topics-and-subscriptions/
+[g-publishing]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/publishing/
+[g-retries]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/retries/
+[g-flow-control]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/flow-control/
+[g-ordering]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/ordering/
+[g-batches]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/batches/
+[g-production]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/production/
+[g-testing]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/testing/
 [architecture]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/
 [benchmarks]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/benchmarks/
 [c-broker]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/broker/
