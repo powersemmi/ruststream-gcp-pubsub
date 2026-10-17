@@ -95,6 +95,36 @@ async fn roundtrip_preserves_payload_attributes_and_partition_key() {
     connected.shutdown().await.expect("shutdown succeeds");
 }
 
+/// An emulator address written as a URL dials the same emulator as the bare `host:port` that
+/// `PUBSUB_EMULATOR_HOST` holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_emulator_address_with_a_scheme_reaches_the_emulator() {
+    let Some(host) = test_host() else { return };
+    let connected = connect(&format!("http://{host}")).await;
+
+    let name = unique("emulator-url");
+    let mut subscriber = connected
+        .subscribe_descriptor(GooglePubSub::new(&name).create_with_topic(&name))
+        .await
+        .expect("subscription opens");
+    connected
+        .publisher()
+        .publish(OutgoingMessage::new(&name, b"by-url".as_slice()), None)
+        .await
+        .expect("publish succeeds");
+
+    let mut stream = pin!(subscriber.stream());
+    let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("delivery arrives")
+        .expect("stream is open")
+        .expect("delivery is ok");
+    assert_eq!(message.payload(), b"by-url");
+    message.ack().await.expect("ack succeeds");
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
 /// The portable spelling reaches the product's own field: a service that names no broker writes
 /// the framework's `partition-key` header, and the message leaves under that ordering key. The
 /// header itself never becomes an attribute, so the key travels once.

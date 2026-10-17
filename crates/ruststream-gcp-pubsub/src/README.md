@@ -447,9 +447,10 @@ Authentication is Application Default Credentials by default;
 [`credentials`](PubSubBroker::credentials) takes a `google_cloud_auth` credentials value instead,
 and transport security is the client's. [`endpoint`](PubSubBroker::endpoint) names another service
 endpoint - a regional one is what keeps a single ordering key in order across publishers in one
-region. [`emulator`](PubSubBroker::emulator) points every client at a local Pub/Sub emulator with a
-plaintext endpoint and anonymous credentials in one call; the client does not read
-`PUBSUB_EMULATOR_HOST` on its own, so the host is named here.
+region. [`emulator`](PubSubBroker::emulator) points every client at a local Pub/Sub emulator with
+anonymous credentials in one call; the client does not read `PUBSUB_EMULATOR_HOST` on its own, so
+the address is named here. It takes the `host:port` that variable holds, dialled over plaintext, or
+a URL such as `http://localhost:8085`.
 
 Ordered delivery needs message ordering enabled on the subscription resource; the publish side
 alone does not turn it on. Flow control, deadline extension and the lease budget are the three

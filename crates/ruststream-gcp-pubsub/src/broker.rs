@@ -437,6 +437,7 @@ pub struct PubSubBroker {
     project: String,
     credentials: Option<Credentials>,
     endpoint: Option<String>,
+    /// The emulator's endpoint with its scheme, the form the client dials.
     emulator: Option<String>,
     // Shared with publishers handed out before connect; the consuming connect fills it.
     cell: CoreCell,
@@ -476,11 +477,20 @@ impl PubSubBroker {
         self
     }
 
-    /// Targets a local Pub/Sub emulator at `host:port`: plaintext transport and anonymous
-    /// credentials. The client does not honour `PUBSUB_EMULATOR_HOST` on its own, so the host
-    /// is explicit here.
-    pub fn emulator(mut self, host: impl Into<String>) -> Self {
-        self.emulator = Some(host.into());
+    /// Targets a local Pub/Sub emulator with anonymous credentials. The client does not honour
+    /// `PUBSUB_EMULATOR_HOST` on its own, so the address is explicit here.
+    ///
+    /// The address is either `host:port`, the form `PUBSUB_EMULATOR_HOST` holds, which is dialled
+    /// over plaintext, or a URL such as `http://localhost:8085`, which is dialled as written. An
+    /// address the transport cannot parse fails [`connect`](Broker::connect) with
+    /// [`PubSubError::Connect`].
+    pub fn emulator(mut self, address: impl Into<String>) -> Self {
+        let address = address.into();
+        self.emulator = Some(if address.contains("://") {
+            address
+        } else {
+            format!("http://{address}")
+        });
         self
     }
 
@@ -514,9 +524,9 @@ impl Broker for PubSubBroker {
         let link = self
             .cell
             .get_or_try_init(async || {
-                let (endpoint, credentials) = if let Some(host) = &self.emulator {
+                let (endpoint, credentials) = if let Some(endpoint) = &self.emulator {
                     (
-                        Some(format!("http://{host}")),
+                        Some(endpoint.clone()),
                         Some(anonymous::Builder::new().build()),
                     )
                 } else {
@@ -838,6 +848,27 @@ mod tests {
             assert!(
                 !host.contains('@'),
                 "credentials reached the description: {host}"
+            );
+        }
+    }
+
+    /// Both forms of an emulator address dial the same endpoint: the bare `host:port` that
+    /// `PUBSUB_EMULATOR_HOST` holds gets the plaintext scheme, and a URL is dialled as written.
+    #[test]
+    fn an_emulator_address_dials_one_endpoint_in_either_form() {
+        for (written, dialled) in [
+            ("localhost:8085", "http://localhost:8085"),
+            ("http://localhost:8085", "http://localhost:8085"),
+            ("[::1]:8085", "http://[::1]:8085"),
+            (
+                "https://pubsub.internal:8443",
+                "https://pubsub.internal:8443",
+            ),
+        ] {
+            assert_eq!(
+                PubSubBroker::new("p").emulator(written).emulator.as_deref(),
+                Some(dialled),
+                "emulator {written:?}"
             );
         }
     }
