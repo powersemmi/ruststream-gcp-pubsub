@@ -1,9 +1,9 @@
 ---
 sidebar_position: 0
-description: "Архитектура ruststream-gcp-pubsub и то, во что он обходится сервису поверх клиента google-cloud-pubsub."
+description: "Как работает Google Cloud Pub/Sub, где ruststream-gcp-pubsub стоит между Pub/Sub и рантаймом RustStream и во что это обходится."
 ---
 
 # Архитектура
 
-Этот раздел показывает, во что `ruststream-gcp-pubsub` обходится сервису поверх клиента
-`google-cloud-pubsub`, который он оборачивает.
+Этот раздел показывает, как работает Google Cloud Pub/Sub, где `ruststream-gcp-pubsub` стоит между
+Pub/Sub и рантаймом RustStream и во что это обходится сервису.
