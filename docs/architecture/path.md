@@ -37,7 +37,7 @@ has a dead-letter policy.
 The handler's reply is encoded into a buffer that becomes the outgoing message's data as it is,
 because the client keeps the bytes it publishes. The headers become attributes; a header that is
 not UTF-8 fails the publish, because an attribute is text. A key named for the publish becomes the
-message's ordering key, as [Ordering](pubsub/ordering.md) draws.
+message's ordering key, as [Ordered delivery](pubsub/ordering.md) draws.
 
 The publish returns once the service has assigned the message an id. A reply that fails to
 publish settles the delivery with a retry, so the message comes back.

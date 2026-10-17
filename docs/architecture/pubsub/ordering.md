@@ -1,5 +1,5 @@
 ---
-title: Ordering
+title: Ordered delivery
 sidebar_position: 2
 description: "Messages that share an ordering key, published in one region, reach a subscription with message ordering in the order they were published."
 ---
@@ -20,7 +20,7 @@ export const words = {
   "inOrder": "in key order"
 };
 
-# Ordering
+# Ordered delivery
 
 Messages that share an ordering key, published in one region, reach a subscription with message
 ordering in the order they were published.
