@@ -30,7 +30,7 @@ export const words = {
 
 <Diagram name="settlement" words={words} />
 
-Pub/Sub 除了 ack 之外，没有“丢弃且不重新投递”的操作，因此 `drop()` 执行 ack。例外是已声明的死信政策允许的最后一次投递。在那里，nack 才会把消息转到死信主题，因此 `drop()` 执行 nack。本 crate 从投递中读取尝试次数，从注册的 [`max_attempts(n)`](api:ruststream::runtime::Mounting::max_attempts) 读取上限。在服务代码之外为订阅设置的上限，本 crate 无从得知，此时 `drop()` 执行 ack。尝试次数是近似值，因此计数被重置时，`drop()` 同样执行 ack。
+Pub/Sub 除了 ack 之外，没有“丢弃且不重新投递”的操作，因此 `drop()` 执行 ack。例外是订阅的死信政策允许的最后一次投递。在那里，nack 才会把消息转到死信主题，因此 `drop()` 执行 nack。本 crate 从投递中读取尝试次数。上限来自注册的 [`max_attempts(n)`](api:ruststream::runtime::Mounting::max_attempts)；如果运维人员在代码之外设置了政策，则在启动时从订阅本身读取一次。读取需要 `pubsub.subscriptions.get` 权限；没有该权限时，服务会记录一条警告，`drop()` 执行 ack。尝试次数是近似值，因此计数被重置时，`drop()` 同样执行 ack。
 
 解码失败默认丢弃消息（[`FailurePolicy`](api:ruststream::runtime::FailurePolicy)），因此在 Pub/Sub 上这条消息得到确认。
 

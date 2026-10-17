@@ -15,7 +15,7 @@ Pub/Sub settles each message on its own, by acknowledging it or by giving it bac
 `retry` nacks, and the subscription redelivers the message, possibly to another consumer.
 A subscription with no retry policy redelivers at once; one with an exponential backoff policy waits first.
 `drop` acknowledges too: Pub/Sub has no verb that discards a message without settling it.
-The one exception is the last delivery a [dead-letter policy](./dead-letters.md) allows: there `drop` nacks, so the service moves the message to the dead-letter topic as the mount site declared.
+The one exception is the last delivery a [dead-letter policy](./dead-letters.md) allows: there `drop` nacks, so the service moves the message to the dead-letter topic.
 A delayed retry is [`retry_after`](./retry-after.md).
 
 ### Exactly-once subscriptions

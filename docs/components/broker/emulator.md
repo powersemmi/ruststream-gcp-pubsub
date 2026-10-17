@@ -1,7 +1,7 @@
 ---
 sidebar_position: 1
 title: emulator
-description: "emulator points every client of the broker at a local Pub/Sub emulator, over plaintext with anonymous credentials."
+description: "emulator points every client of the broker at a local Pub/Sub emulator, with anonymous credentials."
 ---
 
 import Tabs from '@theme/Tabs';
@@ -9,9 +9,9 @@ import TabItem from '@theme/TabItem';
 
 # emulator
 
-[`emulator(host)`](api:ruststream_gcp_pubsub::PubSubBroker::emulator) points every client of the broker at a local Pub/Sub emulator, over plaintext with anonymous credentials.
+[`emulator(address)`](api:ruststream_gcp_pubsub::PubSubBroker::emulator) points every client of the broker at a local Pub/Sub emulator, with anonymous credentials.
 
-The host is a `host:port` without a scheme: the broker dials `http://{host}` itself.
+The address is either a `host:port`, which the broker dials over plaintext, or a URL such as `http://localhost:8085`, which it dials as written.
 The Google client libraries for Rust do not read `PUBSUB_EMULATOR_HOST`, so the address is a setting of the broker.
 With an emulator set, the [endpoint](./endpoint.md) and the [credentials](./credentials.md) steps have no effect.
 
