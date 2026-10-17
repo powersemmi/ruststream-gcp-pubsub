@@ -12,6 +12,7 @@ use std::ops::RangeInclusive;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
+use ruststream::runtime::IntoSource;
 use ruststream::{BrokerMoves, DeclareRetryError, FromName, RetryDeclaration, SubscriptionSource};
 
 use crate::broker::ConnectedPubSubBroker;
@@ -382,6 +383,16 @@ impl GooglePubSub {
 impl FromName for GooglePubSub {
     fn from_name(name: impl Into<Cow<'static, str>>) -> Self {
         Self::new(name.into().into_owned())
+    }
+}
+
+// The manual path binds a `Handle` body to its source with `subscriber(source, body)`, which
+// takes the descriptor as it is, the way the `#[subscriber(..)]` attribute does.
+impl IntoSource for GooglePubSub {
+    type Source = Self;
+
+    fn into_source(self) -> Self {
+        self
     }
 }
 
