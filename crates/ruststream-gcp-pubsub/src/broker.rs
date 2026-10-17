@@ -38,6 +38,7 @@ use ruststream::{
 use ruststream::{OutgoingMessage, RawMessage};
 use tokio::runtime::Handle;
 use tokio::sync::OnceCell;
+use tracing::warn;
 
 use crate::error::{PubSubError, box_err};
 #[cfg(feature = "testing")]
@@ -161,7 +162,60 @@ impl Core {
         #[cfg(feature = "testing")]
         self.learn_attachment(&descriptor).await?;
 
-        Ok(PubSubSubscriber::open(self, &descriptor, runtime))
+        // A delivery is settled against the cap the subscription itself carries: the declared one,
+        // which was just written onto it, or the one an operator set, read once here.
+        let mut limits = descriptor.limits();
+        if limits.max_delivery_attempts.is_none() && state == Resource::Existing {
+            limits.max_delivery_attempts = self.learn_delivery_cap(&descriptor).await?;
+        }
+        Ok(PubSubSubscriber::open(self, &descriptor, limits, runtime))
+    }
+
+    /// The `maxDeliveryAttempts` of the dead-letter policy the subscription `descriptor` opens
+    /// carries on the service, where it carries one.
+    ///
+    /// A policy set outside the service's code still moves a message that `drop()` settles on its
+    /// last attempt, and only the service knows that policy. A subscription the service does not
+    /// know reports no cap, and its stream reports the missing subscription. A service account
+    /// that may consume but not read the subscription (the bare `roles/pubsub.subscriber`) also
+    /// reports none, with a warning: a drop on the last attempt then acknowledges.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PubSubError::Admin`] when the service refuses the lookup for another reason.
+    async fn learn_delivery_cap(
+        &self,
+        descriptor: &GooglePubSub,
+    ) -> Result<Option<i32>, PubSubError> {
+        let name = self.subscription_name(descriptor.subscription());
+        match self
+            .subscription_admin
+            .get_subscription()
+            .set_subscription(name.clone())
+            .send()
+            .await
+        {
+            Ok(subscription) => Ok(subscription
+                .dead_letter_policy
+                .map(|policy| policy.max_delivery_attempts)
+                .filter(|attempts| *attempts > 0)),
+            Err(err) if err.http_status_code() == Some(404) => Ok(None),
+            Err(err) if err.http_status_code() == Some(403) => {
+                warn!(
+                    subscription = %name,
+                    error = %err,
+                    "cannot read the subscription's dead-letter policy, so a message dropped on \
+                     its last delivery attempt is acknowledged instead of dead-lettered; grant \
+                     pubsub.subscriptions.get or declare max_attempts and dead_letter at the \
+                     mount site",
+                );
+                Ok(None)
+            }
+            Err(err) => Err(PubSubError::Admin {
+                name,
+                source: box_err(err),
+            }),
+        }
     }
 
     /// Records the topic the subscription `descriptor` opens is attached to, as the service

@@ -159,8 +159,11 @@ fn app() -> impl App {
 
 Pub/Sub has no drop-without-redelivery verb, which is why `drop()` acknowledges. The one exception
 is the last delivery a dead-letter policy allows: there the rejection is what carries the message
-to the dead-letter topic, so it is rejected rather than acknowledged, and a message the
-declaration asked to keep is kept.
+to the dead-letter topic, so it is rejected rather than acknowledged, and a message the policy
+asked to keep is kept. The policy is the subscription's own, whether the mount site declared it or
+an operator set it: the broker reads it once when the subscription opens. That read needs
+`pubsub.subscriptions.get`; a service account without it logs a warning at startup, and its
+`drop()` acknowledges on the last attempt too.
 
 Pub/Sub has no delayed nack either, so `retry_after(delay)` is carried by the process: the crate
 holds the delivery for `delay` and then rejects it. The wait runs on the runtime the broker
@@ -429,9 +432,10 @@ attached to the topic of its own name. A subscription keeps what its topic recei
 consumer was open, and the consumers of one subscription share its messages.
 
 Settlement follows the service. A rejected delivery comes back as the next attempt, and so does a
-delivery dropped without a settlement. The registration's dead-letter policy counts the attempts,
-reports them in [`DELIVERY_ATTEMPT_HEADER`], and publishes a spent message to the dead-letter
-topic. A delayed retry holds the delivery for its delay and then rejects it; under a paused clock,
+delivery dropped without a settlement. A dead-letter policy a registration declares stays on the
+subscription, as it does on the service, and every consumer of the subscription runs under it: it
+counts the attempts, reports them in [`DELIVERY_ATTEMPT_HEADER`], and publishes a spent message to
+the dead-letter topic. A delayed retry holds the delivery for its delay and then rejects it; under a paused clock,
 `tb.advance(delay)` lets the delay pass. A publish the service refuses is refused here with the
 same error: a topic id Pub/Sub does not accept, a message with neither data nor attributes, an
 attribute or an ordering key past its limit or not UTF-8, a publish after shutdown.

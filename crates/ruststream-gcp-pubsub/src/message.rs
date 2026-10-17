@@ -47,7 +47,8 @@ pub const DELIVERY_ATTEMPT_HEADER: &str = "pubsub-delivery-attempt";
 /// subscription's dead-letter policy, driven by repeated nacks and expired deadlines, not a
 /// per-message verb. The exception is the last delivery that policy allows, where a rejection is
 /// exactly how the message reaches the dead-letter topic; a delivery there is rejected rather
-/// than acknowledged. On an exactly-once subscription the confirmed forms are used, so `Ok`
+/// than acknowledged. The policy is the one the subscription carries when it opens, declared at
+/// the mount site or set by an operator. On an exactly-once subscription the confirmed forms are used, so `Ok`
 /// from `ack` means the broker accepted it.
 pub struct PubSubMessage {
     payload: Bytes,

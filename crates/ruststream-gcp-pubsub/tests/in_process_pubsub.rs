@@ -14,8 +14,8 @@ use std::time::Duration;
 use futures::{Stream, StreamExt};
 use ruststream::testing::{InProcess, TestableBroker};
 use ruststream::{
-    ConnectedBroker, HeaderMap, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
-    SubscriptionSource,
+    ConnectedBroker, HeaderMap, IncomingMessage, OutgoingMessage, Publisher, RetryDeclaration,
+    Subscriber, SubscriptionSource, nonzero,
 };
 use ruststream_gcp_pubsub::{
     ConnectedPubSubBroker, GooglePubSub, PubSubBroker, PubSubError, PubSubMessage,
@@ -260,5 +260,42 @@ async fn a_resource_name_the_service_refuses_does_not_open() {
         matches!(err, PubSubError::InvalidDescriptor(_)),
         "got {err}"
     );
+    broker.shutdown().await.expect("shutdown");
+}
+
+/// A subscription keeps the dead-letter policy it was given, and a registration that declares
+/// none consumes under it: a drop on the policy's last attempt moves the message to the
+/// dead-letter topic, as the service does, instead of acknowledging it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_drop_on_the_last_attempt_follows_the_policy_the_subscription_carries() {
+    const MAX_ATTEMPTS: u32 = 5;
+    let broker = connected().await;
+    // Another registration, standing for the operator, gives the subscription its policy.
+    let declared = RetryDeclaration::new()
+        .with_max_attempts(nonzero!(MAX_ATTEMPTS))
+        .with_dead_letter("orders-dead".to_owned());
+    drop(
+        SubscriptionSource::<ConnectedPubSubBroker>::declare_retry(workers(), &declared)
+            .subscribe(&broker)
+            .await
+            .expect("subscribe with a policy"),
+    );
+
+    let mut subscriber = workers().subscribe(&broker).await.expect("subscribe");
+    let mut stream = std::pin::pin!(subscriber.stream());
+    publish(&broker, "orders", b"dropped").await;
+    for attempt in 1..=MAX_ATTEMPTS {
+        let message = next(&mut stream).await;
+        assert_eq!(message.redelivery_count(), Some(u64::from(attempt)));
+        message.nack(attempt < MAX_ATTEMPTS).await.expect("nack");
+    }
+
+    let dead = broker.published("orders-dead");
+    assert_eq!(
+        dead.len(),
+        1,
+        "the dropped delivery reaches the dead-letter topic"
+    );
+    assert_eq!(dead[0].payload(), b"dropped");
     broker.shutdown().await.expect("shutdown");
 }

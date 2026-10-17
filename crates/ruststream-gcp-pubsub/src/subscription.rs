@@ -37,8 +37,7 @@ const DEFAULT_MAX_LEASE: Duration = Duration::from_hours(1);
 /// delivery leased.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DeliveryLimits {
-    /// `None` where the registration declared no dead-letter policy, and Pub/Sub then counts
-    /// nothing.
+    /// `None` where the subscription has no dead-letter policy, and Pub/Sub then counts nothing.
     pub(crate) max_delivery_attempts: Option<i32>,
     pub(crate) max_lease: Duration,
 }
