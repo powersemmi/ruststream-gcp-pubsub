@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <b><a href="https://powersemmi.github.io/ruststream-gcp-pubsub/">Documentation</a></b>
+  <b><a href="https://powersemmi.github.io/ruststream-gcp-pubsub/latest/">Documentation</a></b>
 </p>
 
 ---
@@ -34,7 +34,7 @@ codecs and middleware come from the framework; this crate is the transport.
 - **Ordering keys** as a per-message setting.
 - **Plain Pub/Sub messages:** headers ride attributes, with no envelope.
 - **Batches** assembled on the client.
-- **The emulator as a target,** with topics and subscriptions created on subscribe for local
+- **The emulator as a target,** with topics and subscriptions created at startup for local
   development.
 - **AsyncAPI** under the `googlepubsub` protocol, behind the `asyncapi` feature.
 - **Tests on the production app:** `TestApp` runs it with `PubSubBroker` connected in process.
@@ -84,7 +84,7 @@ async fn handle(order: &Order, Out(out): Out<impl Publisher>) -> HandlerOutcome 
 #[ruststream::app]
 fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        PubSubBroker::new("my-project"),
+        PubSubBroker::new("my-project").emulator("localhost:8085"),
         |b| {
             b.include(handle).out(DefaultSlot, Publish::default()).build();
         },
@@ -92,8 +92,10 @@ fn app() -> impl App {
 }
 ```
 
-`#[ruststream::app]` generates `main`, so the binary understands `run` and `asyncapi gen`. A plain
-name subscribes to a subscription that already exists; `GooglePubSub` describes one with options.
+`#[ruststream::app]` generates `main`, so the binary understands `run` and `asyncapi gen`. The
+service runs against a local emulator, where `create_with_topic` creates the subscription and its
+topic at startup. Without `emulator` the broker dials `pubsub.googleapis.com` with Application
+Default Credentials. A plain name in `#[subscriber]` reads a subscription that already exists.
 
 ## Test it
 
@@ -118,8 +120,17 @@ tb.out::<DefaultSlot>()
 
 ## Documentation
 
-- This crate: <https://docs.rs/ruststream-gcp-pubsub>
-- The framework: <https://powersemmi.github.io/ruststream/latest>
+- [Guides](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/) - a Pub/Sub service with
+  the crate, from a first subscriber to production.
+- [Components](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/) - one page
+  per part of the crate: the broker, subscriptions, settlement, publishing and ordering, AsyncAPI
+  and testing.
+- [Architecture](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/) - how
+  Pub/Sub works and how the crate sits between `google-cloud-pubsub` and the runtime.
+- [Benchmarks](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/benchmarks/) -
+  what the crate costs over the raw client.
+- [API reference](https://docs.rs/ruststream-gcp-pubsub) - every item on docs.rs.
+- The framework: <https://powersemmi.github.io/ruststream/latest/>
 
 ## Minimum supported Rust version
 
