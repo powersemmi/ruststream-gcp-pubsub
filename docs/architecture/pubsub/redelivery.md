@@ -54,7 +54,7 @@ A delivery reports `delivery_attempt` as the `pubsub-delivery-attempt` header. A
 [`dead_letter(topic)`](api:ruststream::runtime::Mounting::dead_letter) become the subscription's
 dead-letter policy, written when the subscription opens. A cap outside 5 to 100, or one of the two
 declared without the other, fails the start before any call to the service. How each handler
-outcome reaches this picture is on the Settlement page.
+outcome reaches this picture is on [Settlement](../settlement.md).
 
 The rules are Google's
 ([retry policy](https://docs.cloud.google.com/pubsub/docs/subscription-retry-policy),

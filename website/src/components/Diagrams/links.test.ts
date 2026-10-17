@@ -37,6 +37,35 @@ describe('a box that links to a page', () => {
   });
 });
 
+describe('a box that names a step explained elsewhere', () => {
+  it('links to that page on the path of a message', () => {
+    expect(hrefs('path')).toEqual({
+      pull: '/architecture/pubsub/leases/',
+      publisher: '/architecture/pubsub/ordering/',
+      settle: '/architecture/settlement/',
+      ack: '/architecture/pubsub/leases/',
+    });
+  });
+
+  it('links to that page in the design of the crate', () => {
+    expect(hrefs('design')).toEqual({
+      subscriber: '/architecture/path/',
+      message: '/architecture/settlement/',
+      broker: '/architecture/lifecycle/',
+      pull: '/architecture/pubsub/leases/',
+    });
+  });
+
+  it('links to that page in the lifecycle and the settlement', () => {
+    expect(hrefs('lifecycle')).toEqual({subscriptions: '/architecture/pubsub/'});
+    expect(hrefs('settlement')).toEqual({
+      nacked: '/architecture/pubsub/redelivery/',
+      held: '/architecture/pubsub/leases/',
+      deadLettered: '/architecture/pubsub/redelivery/',
+    });
+  });
+});
+
 describe('a diagram drawn on the phone-first drawing area', () => {
   it.each(Object.keys(LAYOUTS) as DiagramName[])('%s keeps every box inside 360 units', (name) => {
     for (const box of LAYOUTS[name](words).boxes) {
