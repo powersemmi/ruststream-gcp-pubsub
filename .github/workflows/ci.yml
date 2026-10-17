@@ -339,6 +339,8 @@ jobs:
           --example manual_pubsub_testing_live
           --example guide_flow_control
           --example manual_guide_flow_control
+          --example guide_testing
+          --example manual_guide_testing
           -- --test-threads=1
 
       - name: Cleanup
