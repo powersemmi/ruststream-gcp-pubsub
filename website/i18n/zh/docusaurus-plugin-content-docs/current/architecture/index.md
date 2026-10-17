@@ -1,8 +1,8 @@
 ---
 sidebar_position: 0
-description: "ruststream-gcp-pubsub 的架构，以及它在所封装的 google-cloud-pubsub 客户端之上给服务带来的开销。"
+description: "Google Cloud Pub/Sub 如何工作，ruststream-gcp-pubsub 在 Pub/Sub 与 RustStream 运行时之间处于什么位置，以及这样做的开销。"
 ---
 
 # 架构
 
-这一部分说明 `ruststream-gcp-pubsub` 在它所封装的 `google-cloud-pubsub` 客户端之上给服务带来多少开销。
+本节用图说明 Google Cloud Pub/Sub 如何工作，`ruststream-gcp-pubsub` 在 Pub/Sub 与 RustStream 运行时之间处于什么位置，以及这给服务带来的开销。
