@@ -15,15 +15,19 @@
     "target"
   ],
   "rules": [
-    "Import `ruststream_gcp_pubsub::prelude::*` in a routes file; a file of handler bodies imports `ruststream::prelude::*` alone and bounds a slot `Out<impl Publisher>`, so it names no broker.",
-    "Subscribe with `#[subscriber(GooglePubSub::new(\"subscription\"))]`: that one descriptor carries `create_with_topic`, `max_outstanding`, `ack_extension`, `batch_wait` and `max_lease`, while the plain-string form opens the same subscription with every default and creates no topology.",
-    "Cap redeliveries with `.max_attempts(n).dead_letter(topic)` over either subscription form, both steps together and `n` between 5 and 100; the pair becomes that subscription's own dead-letter policy, one policy per subscription, and `.out_retry(..)` does not compile because Pub/Sub moves a spent delivery itself.",
-    "Attach the publish policy under its prelude name: `.out(marker, Publish::default()).build()` for a slot and `.out_reply(Publish::default())` for a reply; `PubSubPublish` is the same type spelled out for a file that speaks to two brokers.",
-    "Name an ordering key per message with the `.ordering_key(..)` step between `message(..)` and `publish()`, bounding the slot `Out<impl Publisher<Options = PubSubPublishOptions>>`; fix one for a whole mount site with `Publish::default().ordering_key(..)` instead.",
-    "Read the ordering key off a delivery with `message.partition_key()` or the `partition-key` header and the delivery attempt with `message.redelivery_count()`; the crate adds no per-delivery context field.",
-    "`HandlerOutcome::drop()` acknowledges, because Pub/Sub has no drop-without-redelivery verb, and `retry_after(delay)` holds the delivery in the process, refusing a delay past `GooglePubSub::max_lease`.",
-    "Batches are assembled on the client: name how large one may be with `.batch(n)` at the mount site and how long a partial one waits with `batch_wait` on the descriptor.",
-    "Test the production app: with feature `testing`, hand the builder `main` runs to `ruststream::testing::TestApp::start`, which connects `PubSubBroker` in process, address it as `tb.broker::<PubSubBroker>()` and publish to the topic; `TestApp::start_live` runs the same test against the emulator, which is where lease deadlines, flow control and ordered delivery are exercised.",
-    "A Pub/Sub subscription has no client-addressable position and no publish transaction, so `.start_at(..)`, transactions and request/reply do not compile here; a reply topic with a correlation attribute is the manual path."
+    "Import `ruststream_gcp_pubsub::prelude::*` at a mount site; a handler body imports `ruststream::prelude::*` and bounds its slot on a capability, except a body that writes an ordering key (Components: Prelude).",
+    "Read an existing subscription with bare `#[subscriber(\"orders-workers\")]`; name settings on `GooglePubSub::new(name)`: `create_with_topic`, `max_outstanding`, `ack_extension`, `max_lease`, `batch_wait` (Components: Subscriptions, GooglePubSub).",
+    "Mount a manual `Handle` body with `subscriber(GooglePubSub::new(\"orders-workers\"), Body)`, which takes the descriptor as the attribute does (Components: GooglePubSub).",
+    "Cap redeliveries with `.max_attempts(n).dead_letter(topic)` after `include`, both together and `n` in 5..=100; the pair becomes the subscription's own dead-letter policy, written at startup (Components: Dead letters).",
+    "Settle with the handler's outcome: `ack` acknowledges, `retry` nacks, `drop` acknowledges except on the last attempt of the subscription's dead-letter policy, where it nacks (Components: Acknowledgement).",
+    "`drop()` also follows a dead-letter policy set outside the code: the broker reads it once at startup, which needs `pubsub.subscriptions.get`; without it a warning is logged and the last-attempt drop acknowledges (Components: Acknowledgement).",
+    "Delay a redelivery with `HandlerOutcome::retry_after(delay)`: the delivery stays leased for the delay, then is nacked; size `GooglePubSub::max_lease` above the longest delay (Components: retry_after, max_lease).",
+    "Attach the publish policy under its prelude name: `.out(marker, Publish::default()).build()` for a slot and `.out_reply(Publish::default())` for a reply (Components: PubSubPublish).",
+    "Key one publish with `.ordering_key(..)` on the publish builder, the slot bounded `Out<impl Publisher<Options = PubSubPublishOptions>>`; key a mount site with `Publish::default().ordering_key(..)` (Components: ordering_key, Policy).",
+    "Read a delivery's ordering key with `message.partition_key()` or the `partition-key` header, and its attempt with `message.redelivery_count()`, sent only under a dead-letter policy (Components: PARTITION_KEY_HEADER, Attempts).",
+    "Take batches with a slice handler: `.batch(n)` at the mount site bounds their size and `batch_wait` on the descriptor the wait for a partial one (Components: Batches).",
+    "Run locally with `PubSubBroker::new(project).emulator(addr)`, `addr` a `host:port` or a URL; in production use Application Default Credentials, `credentials(..)` or a locational `endpoint(..)` (Components: emulator, credentials, endpoint).",
+    "Test a service by handing the app `main` runs to `TestApp::start`, which connects `PubSubBroker` in process with the `testing` feature, and address it as `tb.broker::<PubSubBroker>()` (Components: Testing).",
+    "Run the in-process test body against the emulator with `TestApp::start_live` for leases, flow control and ordered delivery; keep `TestApp::start` for the rest of the suite (Components: Live)."
   ]
 }
