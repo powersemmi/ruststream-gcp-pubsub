@@ -48,7 +48,10 @@ serde = { version = "1", features = ["derive"], optional = true }
 [dev-dependencies]
 # `cbor` is a second codec and nothing else: a test that names it proves a publish carries the
 # codec its mount site chose rather than the crate default, which json alone cannot tell apart.
+# `asyncapi` because a handler written without the macros documents its message types: the
+# examples' manual forms derive `JsonSchema` through the core's re-export.
 ruststream = { workspace = true, features = [
+    "asyncapi",
     "conformance",
     "testing",
     "macros",
@@ -65,3 +68,304 @@ google-cloud-wkt.workspace = true
 # rendered string.
 serde_json = "1"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+# The examples are the sources of the documentation site's code blocks: each one compiles, and
+# the ones a page shows carry the tests that prove what the page says.
+
+# --- examples: broker ---
+
+[[example]]
+name = "pubsub_broker"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_broker"
+path = "examples/manual/pubsub_broker.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "pubsub_broker_config"
+required-features = ["testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "manual_pubsub_broker_config"
+path = "examples/manual/pubsub_broker_config.rs"
+required-features = ["testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "pubsub_broker_emulator"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_broker_emulator"
+path = "examples/manual/pubsub_broker_emulator.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "pubsub_broker_errors"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_broker_errors"
+path = "examples/manual/pubsub_broker_errors.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "pubsub_broker_prelude"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_broker_prelude"
+path = "examples/manual/pubsub_broker_prelude.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "pubsub_broker_shutdown"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_broker_shutdown"
+path = "examples/manual/pubsub_broker_shutdown.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "pubsub_broker_startup"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_broker_startup"
+path = "examples/manual/pubsub_broker_startup.rs"
+required-features = ["testing"]
+test = true
+
+# --- examples: subscriptions ---
+
+[[example]]
+name = "pubsub_subscriptions"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_subscriptions"
+path = "examples/manual/pubsub_subscriptions.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "pubsub_subscriptions_batches"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_subscriptions_batches"
+path = "examples/manual/pubsub_subscriptions_batches.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "pubsub_subscriptions_descriptor"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_subscriptions_descriptor"
+path = "examples/manual/pubsub_subscriptions_descriptor.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "pubsub_subscriptions_flow"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_subscriptions_flow"
+path = "examples/manual/pubsub_subscriptions_flow.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "pubsub_subscriptions_name"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_subscriptions_name"
+path = "examples/manual/pubsub_subscriptions_name.rs"
+required-features = ["testing"]
+test = true
+
+# --- examples: settlement ---
+
+[[example]]
+name = "pubsub_settlement"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_settlement"
+path = "examples/manual/pubsub_settlement.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "pubsub_settlement_attempts"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_settlement_attempts"
+path = "examples/manual/pubsub_settlement_attempts.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "pubsub_settlement_dead_letters"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_settlement_dead_letters"
+path = "examples/manual/pubsub_settlement_dead_letters.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "pubsub_settlement_retry_after"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_settlement_retry_after"
+path = "examples/manual/pubsub_settlement_retry_after.rs"
+required-features = ["testing"]
+test = true
+
+# --- examples: publishing ---
+
+[[example]]
+name = "pubsub_publishing"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_publishing"
+path = "examples/manual/pubsub_publishing.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "pubsub_publishing_headers"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_publishing_headers"
+path = "examples/manual/pubsub_publishing_headers.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "pubsub_publishing_ordering"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_publishing_ordering"
+path = "examples/manual/pubsub_publishing_ordering.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "pubsub_publishing_ordering_header"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_publishing_ordering_header"
+path = "examples/manual/pubsub_publishing_ordering_header.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "pubsub_publishing_ordering_key"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_publishing_ordering_key"
+path = "examples/manual/pubsub_publishing_ordering_key.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "pubsub_publishing_ordering_policy"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_publishing_ordering_policy"
+path = "examples/manual/pubsub_publishing_ordering_policy.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "pubsub_publishing_ordering_transform"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_publishing_ordering_transform"
+path = "examples/manual/pubsub_publishing_ordering_transform.rs"
+required-features = ["testing"]
+test = true
+
+# --- examples: asyncapi ---
+
+[[example]]
+name = "pubsub_asyncapi"
+required-features = ["asyncapi"]
+test = true
+
+[[example]]
+name = "manual_pubsub_asyncapi"
+path = "examples/manual/pubsub_asyncapi.rs"
+required-features = ["asyncapi"]
+test = true
+
+# --- examples: testing ---
+
+[[example]]
+name = "pubsub_testing"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_testing"
+path = "examples/manual/pubsub_testing.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "pubsub_testing_live"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_pubsub_testing_live"
+path = "examples/manual/pubsub_testing_live.rs"
+required-features = ["testing"]
+test = true
