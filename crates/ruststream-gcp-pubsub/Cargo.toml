@@ -434,3 +434,15 @@ name = "manual_guide_flow_control"
 path = "examples/manual/guide/flow_control.rs"
 required-features = ["testing"]
 test = true
+
+[[example]]
+name = "guide_ordering"
+path = "examples/guide/ordering.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_ordering"
+path = "examples/manual/guide/ordering.rs"
+required-features = ["testing"]
+test = true
