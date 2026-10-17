@@ -1,9 +1,9 @@
 ---
 sidebar_position: 0
-description: "The architecture of ruststream-gcp-pubsub and what it costs a service over the google-cloud-pubsub client it wraps."
+description: "How Google Cloud Pub/Sub works, where ruststream-gcp-pubsub sits between Pub/Sub and the RustStream runtime, and what that costs."
 ---
 
 # Architecture
 
-This section shows what `ruststream-gcp-pubsub` costs a service over the `google-cloud-pubsub`
-client it wraps.
+This section draws how Google Cloud Pub/Sub works, where `ruststream-gcp-pubsub` sits between
+Pub/Sub and the RustStream runtime, and what that costs a service.
