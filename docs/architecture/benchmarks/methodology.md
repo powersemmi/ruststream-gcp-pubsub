@@ -70,7 +70,8 @@ just bench
 The recipe starts the emulator from `docker-compose.test.yml`, runs both scenarios, stops it again
 and rewrites `docs/benchmarks/results.json` with what it measured. It takes a few minutes and
 wants the machine to itself. It clears `RUSTFLAGS`, so the binary is not tied to the CPU it was
-built on.
+built on. Both recipes build the benchmarks the way a release is built, with fat link-time
+optimization across crates, so the numbers describe the code a service ships.
 
 ```bash
 just bench-code

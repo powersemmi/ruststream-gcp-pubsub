@@ -57,7 +57,8 @@ just bench
 
 这条 recipe 从 `docker-compose.test.yml` 起停模拟器，跑完两个场景，然后把测到的结果写回
 `docs/benchmarks/results.json`。它要花几分钟，并且需要整台机器。它会清空 `RUSTFLAGS`，所以二进制不
-绑定于构建它的那颗 CPU。
+绑定于构建它的那颗 CPU。两条 recipe 都按发布版本的方式构建基准测试，跨 crate 启用完整的链接时优化
+（fat LTO），因此这些数字描述的正是服务实际使用的代码。
 
 ```bash
 just bench-code

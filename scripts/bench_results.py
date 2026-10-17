@@ -42,6 +42,7 @@ import json
 import re
 import subprocess
 import sys
+import tomllib
 from datetime import date
 from pathlib import Path
 
@@ -52,11 +53,30 @@ LOCK = REPO / "Cargo.lock"
 
 # What `just bench` builds the benchmark with. Both are recipe decisions rather than machine
 # facts, so they are stated here next to the recipe rather than sniffed.
-PROFILE = "bench, inheriting release (opt-level = 3, lto = false, codegen-units = 16)"
 # The client version rides the build line rather than a field of its own: the schema fixes
 # the set of environment keys, and what this crate wraps is part of what was built.
 FEATURES = "ruststream-gcp-pubsub default (none), ruststream macros,json"
 RUSTFLAGS = "none (the recipe clears RUSTFLAGS, so the numbers are not tied to this CPU)"
+
+
+# What cargo compiles a release with when the manifest says nothing. The benchmark profile
+# inherits release, so this is where its description starts.
+RELEASE_DEFAULTS = {"opt-level": 3, "lto": False, "codegen-units": 16, "debug": False}
+
+
+def profile() -> str:
+    """The profile the benchmarks are built with, as it actually resolves."""
+    manifest = tomllib.loads(MANIFEST.read_text(encoding="utf-8"))
+    profiles = manifest.get("profile", {})
+    resolved = dict(RELEASE_DEFAULTS)
+    resolved.update(profiles.get("release", {}))
+    resolved.update(profiles.get("bench", {}))
+    resolved.pop("inherits", None)
+    settings = ", ".join(
+        f"{key} = {str(value).lower() if isinstance(value, bool) else value}"
+        for key, value in resolved.items()
+    )
+    return f"bench, inheriting release ({settings})"
 
 
 def run(*args: str) -> str:
@@ -163,7 +183,7 @@ def environment(round_trip: str) -> dict[str, str]:
         # arithmetic: round trips per delivery times this against the time one message took.
         "round_trip": round_trip,
         "rustc": run("rustc", "--version").replace("rustc", "").strip().split()[0],
-        "profile": PROFILE,
+        "profile": profile(),
         "features": f"{FEATURES}; google-cloud-pubsub {client_version()}",
         "rustflags": RUSTFLAGS,
     }
