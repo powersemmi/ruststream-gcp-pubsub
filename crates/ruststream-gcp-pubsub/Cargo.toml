@@ -458,3 +458,15 @@ name = "manual_guide_batches"
 path = "examples/manual/guide/batches.rs"
 required-features = ["testing"]
 test = true
+
+[[example]]
+name = "guide_production"
+path = "examples/guide/production.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_production"
+path = "examples/manual/guide/production.rs"
+required-features = ["testing"]
+test = true
