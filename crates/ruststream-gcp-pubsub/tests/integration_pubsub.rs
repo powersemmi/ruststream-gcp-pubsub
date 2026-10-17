@@ -8,6 +8,9 @@ use std::thread;
 use std::time::Duration;
 
 use futures::StreamExt;
+use google_cloud_auth::credentials::anonymous;
+use google_cloud_pubsub::client::{SubscriptionAdmin, TopicAdmin};
+use google_cloud_pubsub::model::DeadLetterPolicy;
 use ruststream::runtime::PublishExt;
 use ruststream::{
     AckError, Broker, ConnectedBroker, HeaderMap, IncomingMessage, Outgoing, OutgoingMessage,
@@ -385,6 +388,95 @@ async fn a_bare_name_opens_with_the_declared_dead_letter_policy() {
         .expect("the subscription opens with the declared dead-letter policy");
 
     spends_its_attempts(&connected, &topic, subscriber, dead).await;
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// Creates `topic`, and `subscription` on it carrying a dead-letter policy, the way an operator
+/// does outside the service: with the admin API, before the service starts.
+async fn provision_with_policy(host: &str, topic: &str, subscription: &str, dead_letter: &str) {
+    let topics = TopicAdmin::builder()
+        .with_endpoint(format!("http://{host}"))
+        .with_credentials(anonymous::Builder::new().build())
+        .build()
+        .await
+        .expect("the topic admin client builds");
+    for name in [topic, dead_letter] {
+        topics
+            .create_topic()
+            .set_name(format!("projects/{TEST_PROJECT}/topics/{name}"))
+            .send()
+            .await
+            .expect("the topic is created");
+    }
+    SubscriptionAdmin::builder()
+        .with_endpoint(format!("http://{host}"))
+        .with_credentials(anonymous::Builder::new().build())
+        .build()
+        .await
+        .expect("the subscription admin client builds")
+        .create_subscription()
+        .set_name(format!(
+            "projects/{TEST_PROJECT}/subscriptions/{subscription}"
+        ))
+        .set_topic(format!("projects/{TEST_PROJECT}/topics/{topic}"))
+        .set_dead_letter_policy(
+            DeadLetterPolicy::new()
+                .set_dead_letter_topic(format!("projects/{TEST_PROJECT}/topics/{dead_letter}"))
+                .set_max_delivery_attempts(
+                    i32::try_from(MAX_ATTEMPTS).expect("the cap fits the wire type"),
+                ),
+        )
+        .send()
+        .await
+        .expect("the subscription is created with a dead-letter policy");
+}
+
+/// A dead-letter policy set outside the service is the one a drop on the last attempt follows:
+/// the registration declares no cap, and the message it drops at the subscription's own cap
+/// still reaches the dead-letter topic instead of being acknowledged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_drop_on_the_last_attempt_follows_a_policy_set_outside_the_service() {
+    let Some(host) = test_host() else { return };
+    let topic = unique("ops-topic");
+    let workers = unique("ops-workers");
+    let dead_letter = unique("ops-dead");
+    provision_with_policy(&host, &topic, &workers, &dead_letter).await;
+
+    let connected = connect(&host).await;
+    let mut dead = watch_dead_letter(&connected, &dead_letter).await;
+    let mut subscriber = connected
+        .subscribe_descriptor(GooglePubSub::new(&workers))
+        .await
+        .expect("the subscription opens");
+    connected
+        .publisher()
+        .publish(OutgoingMessage::new(&topic, b"dropped".as_slice()), None)
+        .await
+        .expect("publish succeeds");
+
+    let mut stream = pin!(subscriber.stream());
+    for attempt in 1..=MAX_ATTEMPTS {
+        let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+            .await
+            .expect("delivery arrives")
+            .expect("stream is open")
+            .expect("delivery is ok");
+        assert_eq!(message.redelivery_count(), Some(u64::from(attempt)));
+        // What `HandlerOutcome::retry()` settles with before the cap, and what
+        // `HandlerOutcome::drop()` settles with on the last attempt.
+        let requeue = attempt < MAX_ATTEMPTS;
+        message.nack(requeue).await.expect("nack succeeds");
+    }
+
+    let mut dead_stream = pin!(dead.stream());
+    let carried = tokio::time::timeout(RECV_TIMEOUT, dead_stream.next())
+        .await
+        .expect("the dropped delivery reaches the dead-letter topic")
+        .expect("stream is open")
+        .expect("delivery is ok");
+    assert_eq!(carried.payload(), b"dropped");
+    carried.ack().await.expect("ack succeeds");
 
     connected.shutdown().await.expect("shutdown succeeds");
 }
