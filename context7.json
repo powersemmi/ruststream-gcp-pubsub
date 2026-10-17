@@ -1,4 +1,19 @@
 {
+  "$schema": "https://context7.com/schema/context7.json",
+  "folders": [
+    "docs",
+    "crates/ruststream-gcp-pubsub/src",
+    "crates/ruststream-gcp-pubsub/examples",
+    "website/static"
+  ],
+  "excludeFolders": [
+    "docs/benchmarks",
+    "website/i18n",
+    "website/build",
+    "website/.docusaurus",
+    "website/node_modules",
+    "target"
+  ],
   "rules": [
     "Import `ruststream_gcp_pubsub::prelude::*` in a routes file; a file of handler bodies imports `ruststream::prelude::*` alone and bounds a slot `Out<impl Publisher>`, so it names no broker.",
     "Subscribe with `#[subscriber(GooglePubSub::new(\"subscription\"))]`: that one descriptor carries `create_with_topic`, `max_outstanding`, `ack_extension`, `batch_wait` and `max_lease`, while the plain-string form opens the same subscription with every default and creates no topology.",
