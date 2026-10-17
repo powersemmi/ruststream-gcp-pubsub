@@ -422,3 +422,15 @@ name = "manual_guide_retries"
 path = "examples/manual/guide/retries.rs"
 required-features = ["testing"]
 test = true
+
+[[example]]
+name = "guide_flow_control"
+path = "examples/guide/flow_control.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_flow_control"
+path = "examples/manual/guide/flow_control.rs"
+required-features = ["testing"]
+test = true
