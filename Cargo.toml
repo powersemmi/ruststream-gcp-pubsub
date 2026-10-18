@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/ruststream-gcp-pubsub", "crates/ruststream-gcp-pubsub-bench"]
 
 [workspace.package]
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 # The core's floor; google-cloud-pubsub tracks a lower one (1.88).
 rust-version = "1.95"
