@@ -2,8 +2,8 @@
   "schema": 3,
   "crate": "ruststream-gcp-pubsub",
   "crate_version": "0.7.0",
-  "core_version": "0.7.0-rc.9",
-  "measured_at": "2026-09-23",
+  "core_version": "0.7.0",
+  "measured_at": "2026-10-18",
   "environment": {
     "cpu": "AMD Ryzen 9 7900X 12-Core Processor",
     "architecture": "x86_64",
@@ -11,11 +11,11 @@
     "cores": "12 physical, 24 logical",
     "memory": "62.4 GiB",
     "memory_speed": "unknown",
-    "os": "Linux 7.2.6-x64v3-xanmod1-1",
-    "broker": "Pub/Sub emulator, gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators, Google Cloud SDK 578.0.0, in Docker on localhost",
-    "round_trip": "0.282 ms (20000 GetSubscription calls on one connection); a delivery is charged 1 of them",
-    "rustc": "1.98.1",
-    "profile": "bench, inheriting release (opt-level = 3, lto = false, codegen-units = 16)",
+    "os": "Linux 7.2.10-x64v3-xanmod1-1",
+    "broker": "Pub/Sub emulator, gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators, Google Cloud SDK 587.0.0, in Docker on localhost",
+    "round_trip": "0.269 ms (20000 GetSubscription calls on one connection); a delivery is charged 1 of them",
+    "rustc": "1.99.0",
+    "profile": "bench, inheriting release (opt-level = 3, lto = fat, codegen-units = 16, debug = line-tables-only)",
     "features": "ruststream-gcp-pubsub default (none), ruststream macros,json; google-cloud-pubsub 1.3.0",
     "rustflags": "none (the recipe clears RUSTFLAGS, so the numbers are not tied to this CPU)",
     "valgrind": "3.25.1"
@@ -24,51 +24,51 @@
     {
       "name": "Streaming pull, 512 B JSON, ack each",
       "unit": "msg/s",
-      "messages": 11542,
+      "messages": 11513,
       "pairs": 3,
       "raw": {
-        "best": 1822,
-        "median": 1815,
-        "worst": 1809
+        "best": 1815,
+        "median": 1807,
+        "worst": 1796
       },
       "adapter": {
-        "best": 1827,
-        "median": 1827,
-        "worst": 1822
+        "best": 1805,
+        "median": 1803,
+        "worst": 1801
       },
       "framework": {
-        "best": 1838,
-        "median": 1828,
-        "worst": 1826
+        "best": 1819,
+        "median": 1809,
+        "worst": 1798
       },
-      "overhead_percent": -0.9,
-      "adapter_overhead_percent": -0.3,
-      "verdict": "measured",
+      "overhead_percent": -0.2,
+      "adapter_overhead_percent": 0.6,
+      "verdict": "indistinguishable",
       "adapter_verdict": "indistinguishable",
-      "broker_bound": true
+      "broker_bound": false
     },
     {
       "name": "Streaming pull with ordering keys, 512 B JSON, ack each",
       "unit": "msg/s",
-      "messages": 12540,
+      "messages": 12502,
       "pairs": 3,
       "raw": {
-        "best": 1994,
-        "median": 1994,
-        "worst": 1994
+        "best": 1987,
+        "median": 1986,
+        "worst": 1986
       },
       "adapter": {
-        "best": 1993,
-        "median": 1993,
-        "worst": 1993
+        "best": 1987,
+        "median": 1986,
+        "worst": 1986
       },
       "framework": {
-        "best": 1994,
-        "median": 1993,
-        "worst": 1993
+        "best": 1988,
+        "median": 1988,
+        "worst": 1986
       },
-      "overhead_percent": 0.0,
-      "adapter_overhead_percent": 0.0,
+      "overhead_percent": -0.1,
+      "adapter_overhead_percent": -0.0,
       "verdict": "indistinguishable",
       "adapter_verdict": "indistinguishable",
       "broker_bound": true
@@ -79,12 +79,12 @@
       "name": "consume, JSON decode into a small struct, ack each",
       "messages": 1000,
       "framework": {
-        "instructions": 13227.7,
-        "allocations": 5.3
+        "instructions": 10508.9,
+        "allocations": 5.4
       },
       "cold": {
-        "instructions": 91123146,
-        "allocations": 7533
+        "instructions": 87632171,
+        "allocations": 7652
       },
       "gated": true
     },
@@ -92,12 +92,12 @@
       "name": "reply to a declared topic, each confirmed before the next delivery",
       "messages": 1000,
       "framework": {
-        "instructions": 134591.4,
-        "allocations": 90.5
+        "instructions": 109193.1,
+        "allocations": 89.9
       },
       "cold": {
-        "instructions": 91134341,
-        "allocations": 7555
+        "instructions": 87640243,
+        "allocations": 7674
       },
       "gated": true
     },
@@ -105,14 +105,19 @@
       "name": "consume in batches of 64, assembled on the client",
       "messages": 1000,
       "framework": {
-        "instructions": 13130.4,
+        "instructions": 10772.9,
         "allocations": 5.4
       },
       "cold": {
-        "instructions": 91139168,
-        "allocations": 7537
+        "instructions": 87645959,
+        "allocations": 7656
       },
       "gated": true
     }
-  ]
+  ],
+  "code_measured": {
+    "crate_version": "0.7.0",
+    "core_version": "0.7.0",
+    "measured_at": "2026-10-18"
+  }
 }
