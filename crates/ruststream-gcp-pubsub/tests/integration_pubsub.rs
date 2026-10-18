@@ -215,6 +215,59 @@ async fn the_ordering_step_and_the_policy_default_reach_the_product() {
     connected.shutdown().await.expect("shutdown succeeds");
 }
 
+/// One handle publishing to two topics in turn reaches each of them, whether a publish names
+/// the topic by its id or by its full resource name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_handle_publishing_to_two_topics_in_turn_reaches_both() {
+    let Some(host) = test_host() else { return };
+    let connected = connect(&host).await;
+
+    let (first, second) = (unique("turns-first"), unique("turns-second"));
+    let mut first_subscriber = connected
+        .subscribe_descriptor(GooglePubSub::new(&first).create_with_topic(&first))
+        .await
+        .expect("subscription opens");
+    let mut second_subscriber = connected
+        .subscribe_descriptor(GooglePubSub::new(&second).create_with_topic(&second))
+        .await
+        .expect("subscription opens");
+
+    let first_full = format!("projects/{TEST_PROJECT}/topics/{first}");
+    let publisher = connected.publisher();
+    for (topic, payload) in [
+        (first.as_str(), b"first-1".as_slice()),
+        (second.as_str(), b"second-1"),
+        (first_full.as_str(), b"first-2"),
+        (second.as_str(), b"second-2"),
+    ] {
+        publisher
+            .publish(OutgoingMessage::new(topic, payload), None)
+            .await
+            .expect("publish succeeds");
+    }
+
+    for (subscriber, expected) in [
+        (&mut first_subscriber, [b"first-1".as_slice(), b"first-2"]),
+        (&mut second_subscriber, [b"second-1".as_slice(), b"second-2"]),
+    ] {
+        let mut stream = pin!(subscriber.stream());
+        let mut received = Vec::new();
+        for _ in 0..2 {
+            let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+                .await
+                .expect("delivery arrives")
+                .expect("stream is open")
+                .expect("delivery is ok");
+            received.push(message.payload().to_vec());
+            message.ack().await.expect("ack succeeds");
+        }
+        received.sort();
+        assert_eq!(received, expected.map(<[u8]>::to_vec));
+    }
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
 /// Runs one message past the declared cap on `workers` and returns what reached `dead_letter`.
 ///
 /// The declared number of deliveries is spent one by one, each checked for the count the service

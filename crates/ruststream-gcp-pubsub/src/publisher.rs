@@ -25,6 +25,7 @@ use tokio::runtime::Handle;
 use crate::broker::{ConnectedPubSubBroker, Core, CoreCell, Link};
 use crate::error::{PubSubError, box_err};
 use crate::message::{PARTITION_KEY_HEADER, header_text, to_gcp_message};
+use crate::topic_publishers::FirstTopic;
 
 /// The settings one Pub/Sub message may differ from the next by.
 ///
@@ -116,6 +117,9 @@ pub struct PubSubPublishOptions {
 /// Publishes messages to Pub/Sub topics, one client publisher per topic, created lazily and
 /// shared through the broker core (so `shutdown` can flush buffered batches).
 ///
+/// A publish to a topic whose client publisher exists takes no lock held across an await and
+/// allocates nothing for the topic's name.
+///
 /// The destination name is the topic id (short or full resource name). Message attributes carry
 /// headers directly, and the ordering key reaches the client as the message's own field.
 /// Buildable before `connect` and usable until `shutdown`; afterwards every publish reports
@@ -125,6 +129,8 @@ pub struct PubSubPublisher {
     cell: CoreCell,
     /// The key the mount site fixed for this handle, applied to every publish that names none.
     default_ordering_key: Option<Arc<str>>,
+    /// The first topic this handle published to, shared by the handle's clones.
+    first_topic: Arc<FirstTopic>,
 }
 
 impl fmt::Debug for PubSubPublisher {
@@ -140,6 +146,7 @@ impl PubSubPublisher {
         Self {
             cell,
             default_ordering_key: None,
+            first_topic: Arc::default(),
         }
     }
 
@@ -154,24 +161,31 @@ impl PubSubPublisher {
         self.cell.get().ok_or(PubSubError::NotConnected)
     }
 
-    /// The per-topic client publisher, created on first use and cached on the core.
-    async fn publisher_for(&self, core: &Core, topic: &str) -> GcpPublisher {
-        let name = core.topic_name(topic);
-        let mut publishers = core.publishers.lock().await;
-        if let Some(publisher) = publishers.get(&name) {
-            return publisher.clone();
+    /// Hands `use_it` the client publisher of `topic`, made on the connection's first publish
+    /// to the topic and shared by every handle of the connection.
+    fn with_client<Out>(
+        &self,
+        core: &Core,
+        topic: &str,
+        use_it: impl FnOnce(&GcpPublisher) -> Out,
+    ) -> Out {
+        if let Some(publisher) = self.first_topic.get(topic) {
+            return use_it(publisher);
         }
         // Sync and infallible off the connected BasePublisher; the network work happened in
         // connect. The client starts the topic's batching worker on the runtime `build` runs in,
         // and the first publish may come from a runtime that stops right after (a handler on a
         // dedicated thread), so the worker is started on the runtime the broker connected on.
-        let publisher = {
+        let build = || {
             let connect_runtime = core.runtime_slot().runtime();
             let _entered = connect_runtime.as_ref().map(Handle::enter);
-            core.base_publisher.publisher(name.clone()).build()
+            core.base_publisher.publisher(core.topic_name(topic)).build()
         };
-        publishers.insert(name, publisher.clone());
-        publisher
+        core.publishers
+            .with(core.topic_key(topic), build, |publisher| {
+                self.first_topic.remember(topic, publisher);
+                use_it(publisher)
+            })
     }
 }
 
@@ -240,14 +254,18 @@ impl Publisher for PubSubPublisher {
         let key = resolve_ordering_key(&headers, options, self.default_ordering_key.as_deref())
             .map_err(refused)?;
         let message = to_gcp_message(payload, &headers, key).map_err(refused)?;
-        let publisher = self.publisher_for(core, name).await;
-        match publisher.publish(message).await {
+        // The client queues the message and hands back a future that owns its answer, so the
+        // client publisher is borrowed for the call alone.
+        let sent = self.with_client(core, name, |publisher| publisher.publish(message));
+        match sent.await {
             Ok(_message_id) => Ok(()),
             Err(err) => {
                 // An error on an ordered key pauses the key; resume so the pause cannot wedge
                 // every later publish on this key, and let the caller see this failure.
                 if let Some(key) = key {
-                    publisher.resume_publish(key.to_owned());
+                    self.with_client(core, name, |publisher| {
+                        publisher.resume_publish(key.to_owned());
+                    });
                 }
                 Err(PubSubError::Publish {
                     topic: core.topic_name(name),
@@ -456,9 +474,38 @@ struct PubSubMessageBinding<'a> {
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use ruststream::HeaderMap;
+    use ruststream::{Broker, HeaderMap};
 
     use super::*;
+    use crate::broker::PubSubBroker;
+
+    /// The connection's core. The client dials lazily, so an address nothing listens on connects.
+    fn core_of(publisher: &PubSubPublisher) -> &Core {
+        match publisher.link().expect("the broker is connected") {
+            Link::Service(core) => core,
+            #[cfg(feature = "testing")]
+            Link::InProcess(_) => unreachable!("the broker connected to the service"),
+        }
+    }
+
+    /// Two handles naming one topic two ways share its client publisher, so messages under one
+    /// ordering key leave through one batcher and keep their order.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_short_and_the_full_name_of_a_topic_share_one_client_publisher() {
+        let connected = PubSubBroker::new("shop")
+            .emulator("127.0.0.1:9")
+            .connect()
+            .await
+            .expect("the client dials lazily");
+        let (short, full) = (connected.publisher(), connected.publisher());
+        let core = core_of(&short);
+
+        short.with_client(core, "orders", |_| ());
+        full.with_client(core, "projects/shop/topics/orders", |_| ());
+        short.with_client(core, "projects/shop/topics/orders", |_| ());
+
+        assert_eq!(core.publishers.len(), 1);
+    }
 
     fn keyed_header(value: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
