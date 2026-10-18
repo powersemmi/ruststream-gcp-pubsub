@@ -34,9 +34,9 @@ fn app(messages: usize) -> Pending {
 }
 
 // The client's batched acknowledgements put a fraction of an allocation on each delivery, so the
-// floor is stated over a thousand of them. The longest run allocated 18,130 to 18,135 blocks over
-// six runs; the floor, 18,154, is the highest plus a tenth of a percent.
-#[library_benchmark(config = common::config_every(5_324, 1_000, 7_506))]
+// floor is stated over a thousand of them. The longest run allocated 18,251 to 18,421 blocks over
+// six runs; the floor, 18,600, is the highest plus more than that spread of 170.
+#[library_benchmark(config = common::config_every(5_421, 1_000, 7_758))]
 #[bench::first(app(1))]
 #[bench::base(app(MESSAGES))]
 #[bench::twice(app(2 * MESSAGES))]

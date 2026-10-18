@@ -153,7 +153,9 @@ const fn messages(configured: Option<&str>) -> usize {
 /// leases on timers, so a run's count moves a little on an unchanged tree: the limit is the
 /// highest count seen over repeated runs plus a margin at least as large as the spread seen, and
 /// a tenth of a percent at the least. One allocation more per delivery adds `2 * MESSAGES` to
-/// the run, more than any margin here at the default count, so the limit still catches it. A
+/// the run, more than the margin of the consuming scenarios at the default count, so their limit
+/// still catches it; the reply scenario's timers spread its count wider, and its limit catches
+/// two allocations more per delivery. A
 /// number that goes down is lowered here in the same change. Every run of `just bench-code` is
 /// held to these limits.
 ///

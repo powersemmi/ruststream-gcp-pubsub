@@ -469,7 +469,7 @@ pub(crate) type CoreCell = Arc<OnceCell<Link>>;
 ///
 /// #[subscriber("orders-workers")]
 /// async fn handle(order: &Order) -> HandlerOutcome {
-///     println!("got order {}", order.id);
+///     tracing::info!(order.id, "accepted");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -626,6 +626,78 @@ impl Broker for PubSubBroker {
 /// Nothing is dialled and no credentials are read, so a test runs where the service could not
 /// authenticate. A publisher handed out before the transition shares the connection cell, so it
 /// publishes in process too.
+///
+/// # Examples
+///
+/// A test hands [`TestApp`](ruststream::testing::TestApp) the app `main` runs and publishes to
+/// the topic; the subscription attached to it delivers:
+///
+/// ```
+/// # #[cfg(feature = "testing")]
+/// # mod demo {
+/// use std::error::Error;
+///
+/// use ruststream::testing::TestApp;
+/// use ruststream_gcp_pubsub::prelude::*;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
+/// #[outgoing(name = "confirmations")]
+/// struct Confirmation {
+///     order_id: u64,
+/// }
+///
+/// #[subscriber(GooglePubSub::new("orders-workers").create_with_topic("orders"), reply)]
+/// async fn confirm(order: &Order) -> Confirmation {
+///     Confirmation { order_id: order.id }
+/// }
+///
+/// /// The app `main` runs, and the one the test hands the harness.
+/// pub fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+///         PubSubBroker::new("my-project"),
+///         |b| {
+///             b.include(confirm).out_reply(Publish::default());
+///         },
+///     )
+/// }
+///
+/// pub async fn a_confirmation_follows_an_order() -> Result<(), Box<dyn Error>> {
+///     let tb = TestApp::start(app()).await?;
+///
+///     tb.broker::<PubSubBroker>()
+///         .message(&Order { id: 42 })
+///         .to("orders")
+///         .publish()
+///         .await?;
+///
+///     tb.broker::<PubSubBroker>()
+///         .subscriber("orders-workers")
+///         .assert_called_once()
+///         .with(&Order { id: 42 })
+///         .settled(HandlerOutcome::ack());
+///     tb.broker::<PubSubBroker>()
+///         .published::<Confirmation>("confirmations")
+///         .assert_called_once()
+///         .with(&Confirmation { order_id: 42 });
+///
+///     tb.shutdown().await?;
+///     Ok(())
+/// }
+/// # }
+/// # #[cfg(feature = "testing")]
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// #     demo::a_confirmation_follows_an_order().await
+/// # }
+/// # #[cfg(not(feature = "testing"))]
+/// # fn main() {}
+/// ```
 #[cfg(feature = "testing")]
 impl InProcess for PubSubBroker {
     fn connect_in_process(

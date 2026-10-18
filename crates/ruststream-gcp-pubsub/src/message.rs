@@ -38,6 +38,9 @@ pub const PARTITION_KEY_HEADER: &str = "partition-key";
 
 /// Header exposing the delivery attempt count on received messages, present when the
 /// subscription has a dead-letter policy.
+///
+/// Pub/Sub counts attempts on a best-effort basis, so the number may differ from the true count
+/// by a few.
 pub const DELIVERY_ATTEMPT_HEADER: &str = "pubsub-delivery-attempt";
 
 /// A message delivered by a [`PubSubSubscriber`](crate::PubSubSubscriber).
@@ -48,8 +51,8 @@ pub const DELIVERY_ATTEMPT_HEADER: &str = "pubsub-delivery-attempt";
 /// per-message verb. The exception is the last delivery that policy allows, where a rejection is
 /// exactly how the message reaches the dead-letter topic; a delivery there is rejected rather
 /// than acknowledged. The policy is the one the subscription carries when it opens, declared at
-/// the mount site or set by an operator. On an exactly-once subscription the confirmed forms are used, so `Ok`
-/// from `ack` means the broker accepted it.
+/// the mount site or set by an operator. On an exactly-once subscription the confirmed forms are
+/// used, so `Ok` from `ack` means the broker accepted it.
 pub struct PubSubMessage {
     payload: Bytes,
     headers: HeaderMap,
