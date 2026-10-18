@@ -64,7 +64,12 @@ impl PubSubSubscriber {
 
     /// Opens the stream synchronously (the client connects lazily) and spawns the pump on
     /// `runtime`, the one the broker connected on.
-    pub(crate) fn open(core: &Core, descriptor: &GooglePubSub, runtime: &Handle) -> Self {
+    pub(crate) fn open(
+        core: &Core,
+        descriptor: &GooglePubSub,
+        limits: DeliveryLimits,
+        runtime: &Handle,
+    ) -> Self {
         let name = core.subscription_name(descriptor.subscription());
         let mut builder = core.subscriber.subscribe(name.clone());
         if let Some(messages) = descriptor.max_outstanding_value() {
@@ -75,7 +80,6 @@ impl PubSubSubscriber {
         }
         // The budget a held delivery spends: the client stops extending past it, so the value the
         // descriptor reports and the value the client honours have to be the same one.
-        let limits = descriptor.limits();
         builder = builder.set_max_lease(limits.max_lease);
         // The client starts the subscription's lease loop on the runtime `build` runs in, and
         // the subscription may be opened from a runtime that stops right after (a dedicated

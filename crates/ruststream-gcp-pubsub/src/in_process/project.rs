@@ -285,6 +285,12 @@ impl Project {
         if dead_letter.is_some() {
             subscription.dead_letter = dead_letter;
         }
+        // The cap a delivery is settled against is the subscription's, whoever wrote it.
+        let mut limits = descriptor.limits();
+        limits.max_delivery_attempts = subscription
+            .dead_letter
+            .as_ref()
+            .map(|policy| policy.max_attempts);
         subscription.consumers.insert(id, sender);
         let held: Vec<Pending> = subscription.backlog.drain(..).collect();
         for pending in held {
@@ -297,7 +303,7 @@ impl Project {
             Arc::from(path),
             id,
             receiver,
-            descriptor.limits(),
+            limits,
         ))
     }
 
