@@ -79,12 +79,12 @@
       "name": "consume, JSON decode into a small struct, ack each",
       "messages": 1000,
       "framework": {
-        "instructions": 10508.9,
+        "instructions": 10571.0,
         "allocations": 5.4
       },
       "cold": {
-        "instructions": 87632171,
-        "allocations": 7652
+        "instructions": 87632378,
+        "allocations": 7653
       },
       "gated": true
     },
@@ -92,12 +92,12 @@
       "name": "reply to a declared topic, each confirmed before the next delivery",
       "messages": 1000,
       "framework": {
-        "instructions": 109193.1,
-        "allocations": 89.9
+        "instructions": 106926.5,
+        "allocations": 88.3
       },
       "cold": {
-        "instructions": 87640243,
-        "allocations": 7674
+        "instructions": 87639206,
+        "allocations": 7680
       },
       "gated": true
     },
@@ -105,12 +105,12 @@
       "name": "consume in batches of 64, assembled on the client",
       "messages": 1000,
       "framework": {
-        "instructions": 10772.9,
-        "allocations": 5.4
+        "instructions": 10809.5,
+        "allocations": 5.5
       },
       "cold": {
-        "instructions": 87645959,
-        "allocations": 7656
+        "instructions": 87640196,
+        "allocations": 7657
       },
       "gated": true
     }
