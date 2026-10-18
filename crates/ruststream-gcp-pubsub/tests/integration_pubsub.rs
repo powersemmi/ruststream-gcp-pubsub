@@ -248,7 +248,10 @@ async fn one_handle_publishing_to_two_topics_in_turn_reaches_both() {
 
     for (subscriber, expected) in [
         (&mut first_subscriber, [b"first-1".as_slice(), b"first-2"]),
-        (&mut second_subscriber, [b"second-1".as_slice(), b"second-2"]),
+        (
+            &mut second_subscriber,
+            [b"second-1".as_slice(), b"second-2"],
+        ),
     ] {
         let mut stream = pin!(subscriber.stream());
         let mut received = Vec::new();
@@ -263,6 +266,86 @@ async fn one_handle_publishing_to_two_topics_in_turn_reaches_both() {
         }
         received.sort();
         assert_eq!(received, expected.map(<[u8]>::to_vec));
+    }
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// Publishes racing on many threads, from fresh handles and from one shared handle, to many
+/// topics and to one topic, each reach their topic exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_publishes_to_many_topics_and_to_one_topic_each_arrive() {
+    const TOPICS: usize = 8;
+    const PER_TOPIC: usize = 4;
+    let Some(host) = test_host() else { return };
+    let connected = connect(&host).await;
+
+    let shared = unique("race-shared");
+    let own: Vec<String> = (0..TOPICS)
+        .map(|index| unique(&format!("race-own-{index}")))
+        .collect();
+    let mut subscribers = Vec::new();
+    for topic in own.iter().chain([&shared]) {
+        let subscriber = connected
+            .subscribe_descriptor(GooglePubSub::new(topic).create_with_topic(topic))
+            .await
+            .expect("subscription opens");
+        subscribers.push(subscriber);
+    }
+
+    // Every task publishes to its own topic through a fresh handle and to the shared topic
+    // through a handle all tasks share, so first publishes race on both paths.
+    let common = connected.publisher();
+    let mut sends = Vec::new();
+    for (index, topic) in own.iter().enumerate() {
+        let (fresh, common, topic, shared) = (
+            connected.publisher(),
+            common.clone(),
+            topic.clone(),
+            shared.clone(),
+        );
+        sends.push(tokio::spawn(async move {
+            for round in 0..PER_TOPIC {
+                let payload = format!("{index}-{round}");
+                let (to_own, to_shared) = futures::join!(
+                    fresh.publish(OutgoingMessage::new(&topic, payload.as_bytes()), None),
+                    common.publish(OutgoingMessage::new(&shared, payload.as_bytes()), None),
+                );
+                to_own.expect("publish to the task's topic succeeds");
+                to_shared.expect("publish to the shared topic succeeds");
+            }
+        }));
+    }
+    for send in sends {
+        send.await.expect("the publishing task finishes");
+    }
+
+    let expected_own = |index: usize| -> Vec<Vec<u8>> {
+        (0..PER_TOPIC)
+            .map(|round| format!("{index}-{round}").into_bytes())
+            .collect()
+    };
+    let mut expected_shared: Vec<Vec<u8>> = (0..TOPICS).flat_map(expected_own).collect();
+    expected_shared.sort();
+    for (index, subscriber) in subscribers.iter_mut().enumerate() {
+        let expected = if index < TOPICS {
+            expected_own(index)
+        } else {
+            expected_shared.clone()
+        };
+        let mut stream = pin!(subscriber.stream());
+        let mut received = Vec::new();
+        while received.len() < expected.len() {
+            let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+                .await
+                .expect("delivery arrives")
+                .expect("stream is open")
+                .expect("delivery is ok");
+            received.push(message.payload().to_vec());
+            message.ack().await.expect("ack succeeds");
+        }
+        received.sort();
+        assert_eq!(received, expected);
     }
 
     connected.shutdown().await.expect("shutdown succeeds");

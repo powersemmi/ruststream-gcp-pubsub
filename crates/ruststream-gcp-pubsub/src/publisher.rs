@@ -179,7 +179,9 @@ impl PubSubPublisher {
         let build = || {
             let connect_runtime = core.runtime_slot().runtime();
             let _entered = connect_runtime.as_ref().map(Handle::enter);
-            core.base_publisher.publisher(core.topic_name(topic)).build()
+            core.base_publisher
+                .publisher(core.topic_name(topic))
+                .build()
         };
         core.publishers
             .with(core.topic_key(topic), build, |publisher| {
@@ -473,8 +475,11 @@ struct PubSubMessageBinding<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use bytes::Bytes;
     use ruststream::{Broker, HeaderMap};
+    use tokio::sync::Barrier;
 
     use super::*;
     use crate::broker::PubSubBroker;
@@ -505,6 +510,49 @@ mod tests {
         short.with_client(core, "projects/shop/topics/orders", |_| ());
 
         assert_eq!(core.publishers.len(), 1);
+    }
+
+    /// First publishes racing on many threads, each handle to a topic of its own and all of them
+    /// to one shared topic, build one client publisher per topic: a race never builds a second
+    /// one, which would split one ordering key across two batchers.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn racing_first_publishes_build_one_client_publisher_per_topic() {
+        const HANDLES: usize = 16;
+        let connected = PubSubBroker::new("shop")
+            .emulator("127.0.0.1:9")
+            .connect()
+            .await
+            .expect("the client dials lazily");
+        let builds = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(Barrier::new(HANDLES));
+        let racers: Vec<_> = (0..HANDLES)
+            .map(|index| {
+                let publisher = connected.publisher();
+                let (builds, start) = (Arc::clone(&builds), Arc::clone(&start));
+                tokio::spawn(async move {
+                    let core = core_of(&publisher);
+                    let build = |topic: &str| {
+                        builds.fetch_add(1, Ordering::Relaxed);
+                        core.base_publisher
+                            .publisher(core.topic_name(topic))
+                            .build()
+                    };
+                    start.wait().await;
+                    for topic in ["shared".to_owned(), format!("own-{index}")] {
+                        core.publishers.with(&topic, || build(&topic), |_| ());
+                    }
+                })
+            })
+            .collect();
+        for racer in racers {
+            racer.await.expect("the racer finishes");
+        }
+
+        assert_eq!(builds.load(Ordering::Relaxed), HANDLES + 1);
+        assert_eq!(
+            core_of(&connected.publisher()).publishers.len(),
+            HANDLES + 1
+        );
     }
 
     fn keyed_header(value: &str) -> HeaderMap {

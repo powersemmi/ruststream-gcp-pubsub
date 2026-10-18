@@ -38,6 +38,7 @@ google-cloud-auth.workspace = true
 google-cloud-wkt.workspace = true
 bytes.workspace = true
 futures.workspace = true
+arc-swap.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
