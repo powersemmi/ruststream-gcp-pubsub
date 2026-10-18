@@ -11,6 +11,7 @@ mod publisher;
 mod runtime_slot;
 mod subscriber;
 mod subscription;
+mod topic_publishers;
 
 pub use broker::{ConnectedPubSubBroker, PubSubBroker};
 pub use error::PubSubError;

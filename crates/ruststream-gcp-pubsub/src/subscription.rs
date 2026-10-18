@@ -12,6 +12,7 @@ use std::ops::RangeInclusive;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
+use ruststream::runtime::IntoSource;
 use ruststream::{BrokerMoves, DeclareRetryError, FromName, RetryDeclaration, SubscriptionSource};
 
 use crate::broker::ConnectedPubSubBroker;
@@ -37,8 +38,7 @@ const DEFAULT_MAX_LEASE: Duration = Duration::from_hours(1);
 /// delivery leased.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DeliveryLimits {
-    /// `None` where the registration declared no dead-letter policy, and Pub/Sub then counts
-    /// nothing.
+    /// `None` where the subscription has no dead-letter policy, and Pub/Sub then counts nothing.
     pub(crate) max_delivery_attempts: Option<i32>,
     pub(crate) max_lease: Duration,
 }
@@ -66,7 +66,7 @@ pub(crate) struct DeliveryLimits {
 ///         .ack_extension(Duration::from_secs(60))
 /// )]
 /// async fn handle(order: &Order) -> HandlerOutcome {
-///     println!("got order {}", order.id);
+///     tracing::info!(order.id, "accepted");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -123,7 +123,8 @@ impl GooglePubSub {
     /// The subscription it creates enables message ordering, so a run of messages sharing an
     /// ordering key reaches the handler in publish order. A subscription that already exists
     /// keeps whatever its own configuration says: ordered delivery is a field of the
-    /// subscription resource, and the crate changes no resource it did not create.
+    /// subscription resource, and the crate does not change it on a subscription it did not
+    /// create.
     pub fn create_with_topic(mut self, topic: impl Into<String>) -> Self {
         self.create_with_topic = Some(topic.into());
         self
@@ -133,8 +134,7 @@ impl GooglePubSub {
     /// to the client's 1000.
     ///
     /// The limit travels with the streaming pull and the service is what holds to it, pausing
-    /// the stream while this many deliveries are unsettled and resuming below it. The local
-    /// emulator does not, so a run against it sees no back-pressure.
+    /// the stream while this many deliveries are unsettled and resuming below it.
     pub fn max_outstanding(mut self, messages: i64) -> Self {
         self.max_outstanding = Some(messages);
         self
@@ -175,7 +175,7 @@ impl GooglePubSub {
     ///     if !invoice.ready {
     ///         return HandlerOutcome::retry_after(Duration::from_mins(90));
     ///     }
-    ///     println!("sent invoice {}", invoice.id);
+    ///     tracing::info!(invoice.id, "sent");
     ///     HandlerOutcome::ack()
     /// }
     ///
@@ -217,7 +217,7 @@ impl GooglePubSub {
     /// #[subscriber(GooglePubSub::new("orders-workers").batch_wait(Duration::from_millis(200)))]
     /// async fn index(orders: &[Order]) -> HandlerOutcome {
     ///     let ids: Vec<u64> = orders.iter().map(|order| order.id).collect();
-    ///     println!("indexed {ids:?}");
+    ///     tracing::info!(?ids, "indexed");
     ///     HandlerOutcome::ack()
     /// }
     ///
@@ -364,7 +364,7 @@ impl GooglePubSub {
 ///
 /// #[subscriber(GooglePubSub)]
 /// async fn handle(order: &Order) -> HandlerOutcome {
-///     println!("got order {}", order.id);
+///     tracing::info!(order.id, "accepted");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -385,10 +385,63 @@ impl FromName for GooglePubSub {
     }
 }
 
+// The manual path binds a `Handle` body to its source with `subscriber(source, body)`, which
+// takes the descriptor as it is, the way the `#[subscriber(..)]` attribute does.
+impl IntoSource for GooglePubSub {
+    type Source = Self;
+
+    fn into_source(self) -> Self {
+        self
+    }
+}
+
 /// A Pub/Sub subscription moves a spent delivery itself, so the copy path is
 /// [`BrokerMoves`]: the subscription's dead-letter policy is the mechanism, and nothing is
 /// published from the service to retry a message. `.out_retry(..)` over this descriptor is
 /// therefore a compile error, and the error names it.
+///
+/// # Examples
+///
+/// `.max_attempts(n).dead_letter(topic)` at the mount site becomes the subscription's own
+/// dead-letter policy, written when the service starts:
+///
+/// ```
+/// # mod demo {
+/// use std::time::Duration;
+///
+/// use ruststream_gcp_pubsub::prelude::*;
+/// use serde::Deserialize;
+///
+/// #[derive(Debug, Deserialize)]
+/// struct Payment {
+///     id: u64,
+///     settled: bool,
+/// }
+///
+/// #[subscriber(GooglePubSub::new("payments-workers").batch_wait(Duration::from_millis(200)))]
+/// async fn reconcile(payments: &[Payment]) -> HandlerOutcome {
+///     if payments.iter().any(|payment| !payment.settled) {
+///         return HandlerOutcome::retry_after(Duration::from_secs(5));
+///     }
+///     tracing::info!(count = payments.len(), "settled");
+///     HandlerOutcome::ack()
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
+///         PubSubBroker::new("my-project"),
+///         |b| {
+///             // Pub/Sub gives one payment five deliveries, then publishes it to `payments-dead`.
+///             b.include(reconcile.batch(nonzero!(50)))
+///                 .max_attempts(nonzero!(5u32))
+///                 .dead_letter("payments-dead");
+///         },
+///     )
+/// }
+/// # }
+/// # fn main() {}
+/// ```
 impl SubscriptionSource<ConnectedPubSubBroker> for GooglePubSub {
     type Subscriber = PubSubSubscriber;
     type Copies = BrokerMoves;

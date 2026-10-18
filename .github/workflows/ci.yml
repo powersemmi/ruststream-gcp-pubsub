@@ -48,9 +48,15 @@ jobs:
               - '.github/workflows/ci.yml'
             docs:
               - 'docs/**'
-              - 'properdocs.yml'
-              - 'overrides/**'
+              - 'website/**'
               - 'crates/ruststream-gcp-pubsub/examples/**'
+              # API links on the pages resolve against the crates' rustdoc, so a renamed item
+              # rebuilds the site and fails it on a link that no longer resolves
+              - 'crates/ruststream-gcp-pubsub/src/**'
+              - 'crates/ruststream-gcp-pubsub/Cargo.toml'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'scripts/site_rustdoc.sh'
               - 'scripts/lint_doc_fences.py'
               - 'scripts/check_doc_i18n.py'
               - 'scripts/doc_glossary.toml'
@@ -309,9 +315,9 @@ jobs:
       # test that skips is a defect rather than a convenience. Without it a live test returns
       # before its first assertion and reports ok, which reads exactly like a run that did the
       # work.
-      # Every suite that reaches the emulator is named here, and a new one has to be added: the
-      # list is what decides whether a live case runs at all, and a file left out passes by not
-      # being built.
+      # Every suite and every example that reaches the emulator is named here, and a new one has
+      # to be added: the list is what decides whether a live case runs at all, and a file left out
+      # passes by not being built.
       - name: Run the live suites against the emulator
         env:
           PUBSUB_TEST_HOST: 127.0.0.1:8085
@@ -322,6 +328,19 @@ jobs:
           --test conformance_pubsub
           --test topology_pubsub
           --test deadlines_pubsub
+          --test harness_pubsub
+          --example pubsub_broker_emulator
+          --example manual_pubsub_broker_emulator
+          --example pubsub_subscriptions_flow
+          --example manual_pubsub_subscriptions_flow
+          --example pubsub_publishing_ordering
+          --example manual_pubsub_publishing_ordering
+          --example pubsub_testing_live
+          --example manual_pubsub_testing_live
+          --example guide_flow_control
+          --example manual_guide_flow_control
+          --example guide_testing
+          --example manual_guide_testing
           -- --test-threads=1
 
       - name: Cleanup
@@ -342,12 +361,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-node@v7
         with:
-          python-version: "3.12"
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: website/package-lock.json
 
-      - name: Install docs toolchain
-        run: pip install -r docs/requirements.txt
+      - name: Install site toolchain
+        working-directory: website
+        run: npm ci
 
       - name: Lint doc code fences
         run: python3 scripts/lint_doc_fences.py
@@ -355,8 +377,27 @@ jobs:
       - name: Check translated pages against their originals
         run: python3 scripts/check_doc_i18n.py
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # The API links on the pages resolve against this rustdoc, the one docs.rs renders for the
+      # same code; an item it lacks fails the build below.
+      - name: Build the rustdoc the API links resolve against
+        run: scripts/site_rustdoc.sh
+
+      # Strict: a broken link, anchor, Markdown link or API link fails the build.
       - name: Build site (strict)
-        run: properdocs build --strict
+        working-directory: website
+        run: npm run build
+
+      - name: Type-check and test site components
+        working-directory: website
+        run: |
+          npm run typecheck
+          npm run test
 
   codeql:
     name: CodeQL (${{ matrix.language }})

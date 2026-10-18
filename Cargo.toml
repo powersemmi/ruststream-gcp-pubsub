@@ -9,6 +9,7 @@ edition = "2024"
 rust-version = "1.95"
 license = "Apache-2.0"
 repository = "https://github.com/powersemmi/ruststream-gcp-pubsub"
+homepage = "https://powersemmi.github.io/ruststream-gcp-pubsub/latest/"
 authors = ["RustStream contributors"]
 
 [workspace.dependencies]
@@ -24,6 +25,10 @@ google-cloud-auth = "1.15"
 # fields it writes with a `FieldMask`, and the client re-exports none of them.
 google-cloud-wkt = "1.7"
 bytes = "1"
+# The connection's map of client publishers is read on every publish to a topic the handle did
+# not publish to first; a snapshot load writes no shared cache line, which a lock's reader count
+# would on every one.
+arc-swap = "1.7"
 futures = "0.3"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
@@ -47,3 +52,16 @@ module_name_repetitions = "allow"
 missing_const_for_fn = "allow"
 multiple_crate_versions = "allow"
 redundant_pub_crate = "allow"
+
+# What ships is optimized across crate boundaries: the framework is generic to the point where a
+# dispatch path is only as cheap as the inlining it gets, and a build that stops at each crate
+# boundary is not the one to publish numbers from.
+[profile.release]
+lto = "fat"
+
+# The benchmarks measure what ships, so they are built the way a release is: the profile inherits
+# it whole, and the only addition is the line tables a profile needs to name functions. Debug
+# information is metadata and changes no codegen decision.
+[profile.bench]
+inherits = "release"
+debug = "line-tables-only"

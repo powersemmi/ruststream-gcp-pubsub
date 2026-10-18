@@ -12,6 +12,7 @@
     allow(clippy::infallible_destructuring_match)
 )]
 
+#[cfg(feature = "testing")]
 use std::collections::HashMap;
 #[cfg(feature = "testing")]
 use std::future::{Future, ready};
@@ -23,9 +24,7 @@ use std::sync::{Mutex, PoisonError};
 #[cfg(feature = "testing")]
 use bytes::BytesMut;
 use google_cloud_auth::credentials::{Credentials, anonymous};
-use google_cloud_pubsub::client::{
-    BasePublisher, Publisher, Subscriber, SubscriptionAdmin, TopicAdmin,
-};
+use google_cloud_pubsub::client::{BasePublisher, Subscriber, SubscriptionAdmin, TopicAdmin};
 use google_cloud_pubsub::model::{DeadLetterPolicy, Subscription};
 use google_cloud_wkt::FieldMask;
 #[cfg(feature = "testing")]
@@ -38,6 +37,7 @@ use ruststream::{
 use ruststream::{OutgoingMessage, RawMessage};
 use tokio::runtime::Handle;
 use tokio::sync::OnceCell;
+use tracing::warn;
 
 use crate::error::{PubSubError, box_err};
 #[cfg(feature = "testing")]
@@ -50,6 +50,7 @@ use crate::publisher::{PubSubPublish, PubSubPublisher};
 use crate::runtime_slot::{RuntimeRegistration, RuntimeSlot};
 use crate::subscriber::PubSubSubscriber;
 use crate::subscription::{DeclaredRetries, GooglePubSub};
+use crate::topic_publishers::{TopicPublishers, topic_key};
 
 /// Whether a get-then-create found the resource or made it, which is what decides between
 /// carrying a dead-letter policy into the create and writing it as an update afterwards.
@@ -91,9 +92,9 @@ pub(crate) struct Core {
     pub(crate) subscription_admin: SubscriptionAdmin,
     pub(crate) project: String,
     pub(crate) closed: AtomicBool,
-    /// Per-topic publisher handles, shared by every publisher handle so shutdown can flush
+    /// Per-topic client publishers, shared by every publisher handle so shutdown can flush
     /// them all.
-    pub(crate) publishers: tokio::sync::Mutex<HashMap<String, Publisher>>,
+    pub(crate) publishers: TopicPublishers,
     /// What the registrations mounted by a bare subscription name declared about their retries,
     /// taken at startup and applied when each subscription opens.
     pub(crate) declared_retries: DeclaredRetries,
@@ -122,6 +123,11 @@ impl Core {
     /// Resolves a short topic id to a full resource name; full names pass through.
     pub(crate) fn topic_name(&self, topic: &str) -> String {
         topic_path(&self.project, topic)
+    }
+
+    /// The key the client publisher of `topic` is kept under, whichever way `topic` names it.
+    pub(crate) fn topic_key<'a>(&self, topic: &'a str) -> &'a str {
+        topic_key(&self.project, topic)
     }
 
     /// Resolves a short subscription id to a full resource name; full names pass through.
@@ -161,7 +167,60 @@ impl Core {
         #[cfg(feature = "testing")]
         self.learn_attachment(&descriptor).await?;
 
-        Ok(PubSubSubscriber::open(self, &descriptor, runtime))
+        // A delivery is settled against the cap the subscription itself carries: the declared one,
+        // which was just written onto it, or the one an operator set, read once here.
+        let mut limits = descriptor.limits();
+        if limits.max_delivery_attempts.is_none() && state == Resource::Existing {
+            limits.max_delivery_attempts = self.learn_delivery_cap(&descriptor).await?;
+        }
+        Ok(PubSubSubscriber::open(self, &descriptor, limits, runtime))
+    }
+
+    /// The `maxDeliveryAttempts` of the dead-letter policy the subscription `descriptor` opens
+    /// carries on the service, where it carries one.
+    ///
+    /// A policy set outside the service's code still moves a message that `drop()` settles on its
+    /// last attempt, and only the service knows that policy. A subscription the service does not
+    /// know reports no cap, and its stream reports the missing subscription. A service account
+    /// that may consume but not read the subscription (the bare `roles/pubsub.subscriber`) also
+    /// reports none, with a warning: a drop on the last attempt then acknowledges.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PubSubError::Admin`] when the service refuses the lookup for another reason.
+    async fn learn_delivery_cap(
+        &self,
+        descriptor: &GooglePubSub,
+    ) -> Result<Option<i32>, PubSubError> {
+        let name = self.subscription_name(descriptor.subscription());
+        match self
+            .subscription_admin
+            .get_subscription()
+            .set_subscription(name.clone())
+            .send()
+            .await
+        {
+            Ok(subscription) => Ok(subscription
+                .dead_letter_policy
+                .map(|policy| policy.max_delivery_attempts)
+                .filter(|attempts| *attempts > 0)),
+            Err(err) if err.http_status_code() == Some(404) => Ok(None),
+            Err(err) if err.http_status_code() == Some(403) => {
+                warn!(
+                    subscription = %name,
+                    error = %err,
+                    "cannot read the subscription's dead-letter policy, so a message dropped on \
+                     its last delivery attempt is acknowledged instead of dead-lettered; grant \
+                     pubsub.subscriptions.get or declare max_attempts and dead_letter at the \
+                     mount site",
+                );
+                Ok(None)
+            }
+            Err(err) => Err(PubSubError::Admin {
+                name,
+                source: box_err(err),
+            }),
+        }
     }
 
     /// Records the topic the subscription `descriptor` opens is attached to, as the service
@@ -348,8 +407,7 @@ impl Core {
     /// batches reach the service; the client has no explicit close beyond dropping the handles.
     async fn shutdown(&self) {
         self.closed.store(true, Ordering::Release);
-        let publishers: Vec<_> = self.publishers.lock().await.values().cloned().collect();
-        for publisher in publishers {
+        for publisher in self.publishers.all() {
             publisher.flush().await;
         }
     }
@@ -415,7 +473,7 @@ pub(crate) type CoreCell = Arc<OnceCell<Link>>;
 ///
 /// #[subscriber("orders-workers")]
 /// async fn handle(order: &Order) -> HandlerOutcome {
-///     println!("got order {}", order.id);
+///     tracing::info!(order.id, "accepted");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -437,6 +495,7 @@ pub struct PubSubBroker {
     project: String,
     credentials: Option<Credentials>,
     endpoint: Option<String>,
+    /// The emulator's endpoint with its scheme, the form the client dials.
     emulator: Option<String>,
     // Shared with publishers handed out before connect; the consuming connect fills it.
     cell: CoreCell,
@@ -476,11 +535,20 @@ impl PubSubBroker {
         self
     }
 
-    /// Targets a local Pub/Sub emulator at `host:port`: plaintext transport and anonymous
-    /// credentials. The client does not honour `PUBSUB_EMULATOR_HOST` on its own, so the host
-    /// is explicit here.
-    pub fn emulator(mut self, host: impl Into<String>) -> Self {
-        self.emulator = Some(host.into());
+    /// Targets a local Pub/Sub emulator with anonymous credentials. The client does not honour
+    /// `PUBSUB_EMULATOR_HOST` on its own, so the address is explicit here.
+    ///
+    /// The address is either `host:port`, the form `PUBSUB_EMULATOR_HOST` holds, which is dialled
+    /// over plaintext, or a URL such as `http://localhost:8085`, which is dialled as written. An
+    /// address the transport cannot parse fails [`connect`](Broker::connect) with
+    /// [`PubSubError::Connect`].
+    pub fn emulator(mut self, address: impl Into<String>) -> Self {
+        let address = address.into();
+        self.emulator = Some(if address.contains("://") {
+            address
+        } else {
+            format!("http://{address}")
+        });
         self
     }
 
@@ -514,9 +582,9 @@ impl Broker for PubSubBroker {
         let link = self
             .cell
             .get_or_try_init(async || {
-                let (endpoint, credentials) = if let Some(host) = &self.emulator {
+                let (endpoint, credentials) = if let Some(endpoint) = &self.emulator {
                     (
-                        Some(format!("http://{host}")),
+                        Some(endpoint.clone()),
                         Some(anonymous::Builder::new().build()),
                     )
                 } else {
@@ -539,7 +607,7 @@ impl Broker for PubSubBroker {
                     subscription_admin,
                     project: self.project.clone(),
                     closed: AtomicBool::new(false),
-                    publishers: tokio::sync::Mutex::new(HashMap::new()),
+                    publishers: TopicPublishers::default(),
                     declared_retries: DeclaredRetries::default(),
                     runtime: RuntimeRegistration::new(Handle::current()),
                     #[cfg(feature = "testing")]
@@ -562,6 +630,78 @@ impl Broker for PubSubBroker {
 /// Nothing is dialled and no credentials are read, so a test runs where the service could not
 /// authenticate. A publisher handed out before the transition shares the connection cell, so it
 /// publishes in process too.
+///
+/// # Examples
+///
+/// A test hands [`TestApp`](ruststream::testing::TestApp) the app `main` runs and publishes to
+/// the topic; the subscription attached to it delivers:
+///
+/// ```
+/// # #[cfg(feature = "testing")]
+/// # mod demo {
+/// use std::error::Error;
+///
+/// use ruststream::testing::TestApp;
+/// use ruststream_gcp_pubsub::prelude::*;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
+/// #[outgoing(name = "confirmations")]
+/// struct Confirmation {
+///     order_id: u64,
+/// }
+///
+/// #[subscriber(GooglePubSub::new("orders-workers").create_with_topic("orders"), reply)]
+/// async fn confirm(order: &Order) -> Confirmation {
+///     Confirmation { order_id: order.id }
+/// }
+///
+/// /// The app `main` runs, and the one the test hands the harness.
+/// pub fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+///         PubSubBroker::new("my-project"),
+///         |b| {
+///             b.include(confirm).out_reply(Publish::default());
+///         },
+///     )
+/// }
+///
+/// pub async fn a_confirmation_follows_an_order() -> Result<(), Box<dyn Error>> {
+///     let tb = TestApp::start(app()).await?;
+///
+///     tb.broker::<PubSubBroker>()
+///         .message(&Order { id: 42 })
+///         .to("orders")
+///         .publish()
+///         .await?;
+///
+///     tb.broker::<PubSubBroker>()
+///         .subscriber("orders-workers")
+///         .assert_called_once()
+///         .with(&Order { id: 42 })
+///         .settled(HandlerOutcome::ack());
+///     tb.broker::<PubSubBroker>()
+///         .published::<Confirmation>("confirmations")
+///         .assert_called_once()
+///         .with(&Confirmation { order_id: 42 });
+///
+///     tb.shutdown().await?;
+///     Ok(())
+/// }
+/// # }
+/// # #[cfg(feature = "testing")]
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// #     demo::a_confirmation_follows_an_order().await
+/// # }
+/// # #[cfg(not(feature = "testing"))]
+/// # fn main() {}
+/// ```
 #[cfg(feature = "testing")]
 impl InProcess for PubSubBroker {
     fn connect_in_process(
@@ -838,6 +978,27 @@ mod tests {
             assert!(
                 !host.contains('@'),
                 "credentials reached the description: {host}"
+            );
+        }
+    }
+
+    /// Both forms of an emulator address dial the same endpoint: the bare `host:port` that
+    /// `PUBSUB_EMULATOR_HOST` holds gets the plaintext scheme, and a URL is dialled as written.
+    #[test]
+    fn an_emulator_address_dials_one_endpoint_in_either_form() {
+        for (written, dialled) in [
+            ("localhost:8085", "http://localhost:8085"),
+            ("http://localhost:8085", "http://localhost:8085"),
+            ("[::1]:8085", "http://[::1]:8085"),
+            (
+                "https://pubsub.internal:8443",
+                "https://pubsub.internal:8443",
+            ),
+        ] {
+            assert_eq!(
+                PubSubBroker::new("p").emulator(written).emulator.as_deref(),
+                Some(dialled),
+                "emulator {written:?}"
             );
         }
     }

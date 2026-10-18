@@ -1,35 +1,30 @@
-Google Cloud Pub/Sub broker for the [`RustStream`](https://github.com/powersemmi/ruststream)
-messaging framework.
+Google Cloud Pub/Sub broker for the [RustStream](https://github.com/powersemmi/ruststream)
+messaging framework, backed by the official
+[`google-cloud-pubsub`](https://docs.rs/google-cloud-pubsub) client.
 
-Handlers, routers, codecs and middleware come from the framework; this crate supplies the
-transport, over the official [`google-cloud-pubsub`](https://docs.rs/google-cloud-pubsub) client.
-Pub/Sub keeps its two resources apart: a service publishes to a topic, and a handler consumes a
-subscription, which queues that topic's messages for it. One streaming pull subscription is one
-handler's message stream, and acknowledgement on it is native and per message.
-
-The framework's half of a service - what a handler may take, routing, codecs, middleware, the
-generated document - is documented with the core:
-[runtime](https://docs.rs/ruststream/latest/ruststream/runtime/index.html) and
-[codec](https://docs.rs/ruststream/latest/ruststream/codec/index.html). This page is the Pub/Sub
-half: the descriptor, the publish policy, the settings and the losses.
+A service publishes to a topic, and a handler reads a subscription attached to it through one
+streaming pull. Pub/Sub acknowledges each message on its own, and a subscription's dead-letter
+policy, not the service, moves a message that has had its last delivery. The ordering key of a
+Pub/Sub message is the framework's partition key.
 
 # A service
 
-A handler names the subscription it consumes, and the application object mounts it on the broker:
+A handler is an `async fn` over the decoded payload, mounted on a broker inside the
+application object, and the attribute writes the `main`:
 
 ```
 # mod demo {
 use ruststream_gcp_pubsub::prelude::*;
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct Order {
     id: u64,
 }
 
 #[subscriber(GooglePubSub::new("orders-workers").create_with_topic("orders"))]
 async fn handle(order: &Order) -> HandlerOutcome {
-    println!("got order {}", order.id);
+    tracing::info!(order.id, "accepted");
     HandlerOutcome::ack()
 }
 
@@ -46,416 +41,140 @@ fn app() -> impl App {
 # fn main() {}
 ```
 
-`cargo run -- run` starts it. [`PubSubBroker::new`] records the project id and does no I/O, so the
-synchronous builder composes; the runtime authenticates and connects once at startup. Without
-[`emulator`](PubSubBroker::emulator) the broker dials `pubsub.googleapis.com` with Application
-Default Credentials, and `create_with_topic` is dropped: a production subscription is managed as
-infrastructure, not by the service that consumes it.
-
-More of both halves in [`examples/`][examples].
-
-[examples]: https://github.com/powersemmi/ruststream-gcp-pubsub/tree/main/crates/ruststream-gcp-pubsub/examples
-
-# Subscribing
-
-[`GooglePubSub`] is the one subscription form this crate has, and it carries every setting a
-subscription takes. It names an existing subscription by short id or by full
-`projects/{project}/subscriptions/{name}` resource name.
-
-| Step | What it decides | Default |
-| --- | --- | --- |
-| [`create_with_topic`](GooglePubSub::create_with_topic) | creates the subscription and its topic on subscribe | off |
-| [`max_outstanding`](GooglePubSub::max_outstanding) | how many deliveries may be unsettled at once - the real prefetch | the client's 1000 |
-| [`ack_extension`](GooglePubSub::ack_extension) | how far one background extension of the ack deadline reaches | 60s, clamped by the protocol to 10s..=600s |
-| [`batch_wait`](GooglePubSub::batch_wait) | how long a partial batch waits for the rest of it | 50ms |
-| [`max_lease`](GooglePubSub::max_lease) | how long one delivery may stay unsettled before the client stops extending it | 1 hour |
-
-`#[subscriber("orders-workers")]` is the by-name form, and it opens the same descriptor with every
-default, so the subscription has to exist already. `#[subscriber(GooglePubSub)]` with
-`.name("orders-workers")` at the mount site is that descriptor with its name left to the
-deployment. An empty subscription or topic name is refused before any I/O, as
-[`PubSubError::InvalidDescriptor`]. A name that is well formed but answers to nothing is not
-refused: the subscription is infrastructure, so the name is taken on trust and the streaming pull
-reports [`PubSubError::Receive`] on the stream when the service says there is no such
-subscription.
-
-`max_outstanding` is the one setting the service enforces rather than the client: the limit
-travels with the streaming pull, and the local emulator ignores it.
-
-Both forms answer `Copies = BrokerMoves`: a spent delivery is moved by Pub/Sub itself, and the
-service publishes no retry copies. `.out_retry(policy)` over either one therefore does not
-compile, and the error names the descriptor.
-
-## Capping the retries
-
-`.max_attempts(n).dead_letter(name)` at the mount site becomes the subscription's own dead-letter
-policy - `n` is its `maxDeliveryAttempts` and `name` its dead-letter topic - written when the
-service starts. A descriptor with `create_with_topic` creates the dead-letter topic beside its own
-and opens the subscription carrying the policy; a subscription that already exists receives it as
-an update.
-
-Pub/Sub bounds the count at 5..=100, and a cap outside that range refuses to start. So does half a
-declaration: the policy is one field of the subscription resource, and it cannot carry a cap
-without a destination or a destination without a cap.
-
-A handler that names its subscription with a plain string declares its retries the same way: the
-broker takes the declaration for that name and opens the subscription with the policy. What a bare
-name does not do is create topology, so the subscription and the dead-letter topic have to exist
-already; `GooglePubSub::new("orders-workers").create_with_topic("orders")` is the declaration that
-creates them.
-
-One subscription carries one dead-letter policy, so two handlers on the same subscription declare
-the same retries. A second declaration that differs refuses to start, rather than leaving whichever
-registration mounted last in charge of the policy.
-
-```
-# mod demo {
-use std::time::Duration;
-
-use ruststream_gcp_pubsub::prelude::*;
-use serde::Deserialize;
-
-#[derive(Debug, Deserialize)]
-struct Payment {
-    id: u64,
-    settled: bool,
-}
-
-/// A slice parameter is what makes this a batch handler; the mount site names how large a batch
-/// may be, and the descriptor how long a partial one waits.
-#[subscriber(GooglePubSub::new("payments-workers").batch_wait(Duration::from_millis(200)))]
-async fn reconcile(payments: &[Payment]) -> HandlerOutcome {
-    if payments.iter().any(|payment| !payment.settled) {
-        return HandlerOutcome::retry_after(Duration::from_secs(5));
-    }
-    println!("settled {} payments", payments.len());
-    HandlerOutcome::ack()
-}
-
-#[ruststream::app]
-fn app() -> impl App {
-    RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
-        PubSubBroker::new("my-project"),
-        |b| {
-            // Pub/Sub gives one payment five deliveries, then publishes it to `payments-dead`.
-            b.include(reconcile.batch(nonzero!(50)))
-                .max_attempts(nonzero!(5u32))
-                .dead_letter("payments-dead");
-        },
-    )
-}
-# }
-# fn main() {}
-```
-
-## Settling a delivery
-
-| Handler outcome | The call | The effect |
-| --- | --- | --- |
-| `HandlerOutcome::ack()` | acknowledge | the delivery is done |
-| `HandlerOutcome::retry()` | nack | the message becomes available again |
-| `HandlerOutcome::drop()` | acknowledge | the message is not redelivered |
-| `HandlerOutcome::retry_after(d)` | the delivery is held, then nacked | it comes back after `d` |
-
-Pub/Sub has no drop-without-redelivery verb, which is why `drop()` acknowledges. The one exception
-is the last delivery a dead-letter policy allows: there the rejection is what carries the message
-to the dead-letter topic, so it is rejected rather than acknowledged, and a message the
-declaration asked to keep is kept.
-
-Pub/Sub has no delayed nack either, so `retry_after(delay)` is carried by the process: the crate
-holds the delivery for `delay` and then rejects it. The wait runs on the runtime the broker
-connected on, so a handler on a dedicated thread may settle from a runtime that stops before the
-delay is out. The client goes on extending the ack deadline
-of a delivery nothing has settled, so a held delivery is leased rather than lost, and it still
-counts against `max_outstanding` while it waits. The budget is
-[`max_lease`](GooglePubSub::max_lease), and a longer delay is refused at the call with
-[`PubSubError::DelayBeyondLease`]. If the process dies while a delivery is held, the lease stops
-being extended and the subscription redelivers on its own: the delay is lost there, not the
-message.
-
-On an exactly-once subscription `ack` takes the confirmed form, so `Ok` means the service accepted
-it and a refused acknowledgement surfaces as `AckError::Broker` instead of passing as success.
-Exactly-once is a setting on the subscription resource, so the same handler code runs against
-both kinds.
-
-## Batches
-
-The streaming pull hands over one delivery at a time, so batches are assembled on the client, over
-the framework's own buffer. A batch holds at most the size `.batch(n)` named and closes early on
-[`batch_wait`](GooglePubSub::batch_wait), whose 50ms default is about one streaming-pull burst.
-`max_outstanding` bounds the pull, not the batch.
-
-## What a delivery reports
-
-The crate adds no per-delivery context field: everything a delivery says arrives through the
-framework's own surface. `message.partition_key()` and the [`PARTITION_KEY_HEADER`] header both
-report the ordering key the message arrived under. `message.redelivery_count()` and the
-[`DELIVERY_ATTEMPT_HEADER`] header report which attempt this delivery is, counting from one -
-Pub/Sub sends the count only where the subscription has a dead-letter policy, and reports nothing
-without one. Nothing in the process counts alongside it and nothing in the process applies the cap:
-the subscription's policy is what ends the message, whether the handler asked for the next attempt
-at once or after a delay, and the count is there for a handler to read. Every other attribute is a
-header, in both directions, with no envelope around it. An attribute and an ordering key are text,
-so a publish whose header value is not UTF-8 fails with `PubSubError::Publish` rather than
-reaching the subscriber rewritten.
-
-There is no log to seek in: a Pub/Sub subscription has no client-addressable position, so this
-crate implements neither `Seekable` nor `Positioned` and `.start_at(..)` does not compile.
-Repositioning a whole subscription to a timestamp or a snapshot is the admin `seek` call, an
-operator's action rather than a mount-site setting.
-
-# Publishing
-
-[`PubSubPublish`] is the publish policy, and the prelude carries it under the uniform mount-site
-name `Publish`. It is pure declaration, constructible anywhere; the runtime pairs it with the
-connected broker to produce the live [`PubSubPublisher`]. It is also this broker's default policy,
-so a replying handler mounted without an `.out_reply(..)` call publishes through it.
-
-A publish addresses a topic, by id or by full resource name. The client publisher for a topic is
-created on first use and cached on the broker, so `shutdown` flushes every batch it has buffered.
-A publisher handed out before `shutdown` and used after it reports
-[`PubSubError::NotConnected`] rather than accepting a message nothing will send.
-
-Pub/Sub gives a message exactly one setting beyond its payload and attributes, its ordering key,
-so that is the whole of [`PubSubPublishOptions`]. Messages sharing a key reach one subscriber in
-publish order, on a subscription that enables message ordering: the subscription
-[`create_with_topic`](GooglePubSub::create_with_topic) creates does, and one managed as
-infrastructure is configured where it is declared. Three places can name the key of one publish,
-and the most specific wins:
-
-1. the message's own settings, written by the [`ordering_key`](PubSubOrdering::ordering_key) step
-   at a call site or by a publish transform on the position the message leaves through;
-2. the [`PARTITION_KEY_HEADER`] header, the portable spelling of the same key, which is how a
-   service that names no broker still orders its messages;
-3. the key [`PubSubPublish::ordering_key`] fixed for the whole mount site.
-
-A publish that reaches none of the three is unordered, which is Pub/Sub's own default. The key
-travels as the message's own field and never as an attribute.
-
-Ordered delivery is what a key costs as well as what it buys: while a keyed delivery is waiting to
-come back - a `retry()`, a `retry_after(d)`, a handler that has not settled yet - the service holds
-every later message of that key behind it. A key per entity keeps that queue short; one key for a
-whole stream makes the stream serial.
-
-```
-# mod demo {
-use ruststream_gcp_pubsub::prelude::*;
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Deserialize, Serialize, Outgoing)]
-struct Order {
-    id: u64,
-}
-
-/// The reply type names its destination, so the mount site does not.
-#[derive(Serialize, Outgoing)]
-#[outgoing(name = "receipts")]
-struct Receipt {
-    order_id: u64,
-}
-
-/// Each confirmation goes out under its own order's key, so the body names the step - and with
-/// it the broker it runs on.
-#[subscriber("orders-workers")]
-async fn confirm(
-    order: &Order,
-    Out(out): Out<impl Publisher<Options = PubSubPublishOptions>>,
-) -> HandlerOutcome {
-    if out
-        .message(order)
-        .to("confirmations")
-        .ordering_key(format!("order-{}", order.id))
-        .publish()
-        .await
-        .is_err()
-    {
-        return HandlerOutcome::retry();
-    }
-    HandlerOutcome::ack()
-}
-
-#[subscriber("orders-receipts", reply)]
-async fn receipt(order: &Order) -> Receipt {
-    Receipt { order_id: order.id }
-}
-
-#[ruststream::app]
-fn app() -> impl App {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        PubSubBroker::new("my-project"),
-        |b| {
-            b.include(confirm).out(DefaultSlot, Publish::default()).build();
-            // A reply has no call site, so its key is the policy's.
-            b.include(receipt).out_reply(Publish::default().ordering_key("receipts"));
-        },
-    )
-}
-# }
-# fn main() {}
-```
-
-[`ordering_key`](PubSubOrdering::ordering_key) is a position on the framework's publish builder,
-between `message(..)` and `publish()`, so the publish it finishes is still the mount site's: the
-codec that entry named, its transforms and its slot attribution all hold. It resolves only on a
-builder over a Pub/Sub publisher. Where a reply needs a key that differs per delivery, a
-`PublishTransform<ForReply<C>, PubSubPublishOptions>` reads the delivery and writes the setting;
-it mounts with the ordinary `.transform(..)` step, and naming the options type is what keeps it off
-another broker's publisher.
-
-An error on an ordered key pauses that key inside the client. This crate resumes the key and
-returns the error, so one failure does not wedge every later publish under it.
-
-Three framework capabilities are absent here, and the calls that need them do not compile:
-`TransactionalPublisher` and `OwnedTransactions` (Pub/Sub has no publish transaction; an ordering
-key is what groups a run of messages) and `RequestReply` (a reply topic and a correlation
-attribute are yours to wire).
-
-# The prelude
-
-`use ruststream_gcp_pubsub::prelude::*;` is one glob: the framework's own prelude, this crate's
-broker and descriptor, [`PubSubPublish`] under the name `Publish`, the live publisher, the
-[`PubSubOrdering`] step and the [`PubSubPublishOptions`] it writes into.
-
-The two sides of a service import different things, and that is what keeps the vocabularies apart.
-A file of handler bodies imports the framework's prelude alone and bounds a slot with a capability
-(`Out(out): Out<impl Publisher>`), so it names no broker and moves between brokers untouched. A
-routes file imports this glob and attaches policies under their uniform names, so moving a service
-changes the one import rather than every mount site.
-
-The one exception is a body that adjusts a per-message setting: it names the
-[`ordering_key`](PubSubOrdering::ordering_key) step, imports this glob and bounds its slot
-`Out<impl Publisher<Options = PubSubPublishOptions>>`. Its signature then says which broker the
-handler is tied to, which is the cost of the setting.
-
-`Partitioned` is deliberately left out of the glob. The framework's prelude already carries
-`partition_key` as a defaulted method on `IncomingMessage`, and this crate's deliveries override
-it, so a glob holding both traits would make `message.partition_key()` ambiguous on a concrete
-delivery.
-
-# The `AsyncAPI` document
-
-The `asyncapi` feature turns on the framework's
-[document generation](https://docs.rs/ruststream/latest/ruststream/asyncapi/index.html) for this
-broker. The server carries the host clients dial and the protocol key `googlepubsub`, and nothing
-else: a scheme, a path or credentials written into an endpoint are cut off before the description
-is built, because the document is shared.
-
-What the crate adds is the `googlepubsub` message binding, carrying the `orderingKey` a mount site
-fixed. Everything else that binding can describe - labels, message retention, the storage policy,
-the schema settings - belongs to the topic resource, which no publish policy configures, and a key
-named per message is named at a call site, which is not in the document.
-
-A channel here is a subscription and the binding describes a topic, so a subscription's channel
-carries no binding at all: the topic behind a subscription is a connection-time value, and the
-document is built before anything connects. A reply's channel is a topic and the mount site names
-it, so the document reports that name as the channel's address; the channel binding stays empty
-there for the same reason, since its fields configure the topic resource and a publish policy holds
-none of them. For the same reason the crate answers no redelivery
-address, which costs nothing, since a Pub/Sub subscription moves a spent delivery itself and the
-framework's republishing fallback is unreachable from here.
-
-# Testing
-
-A test runs the app `main` runs. With the `testing` feature, the framework's
-[`TestApp`](https://docs.rs/ruststream/latest/ruststream/testing/index.html) connects
-[`PubSubBroker`] in process: no emulator, no credentials, and the same descriptors, publish
-policies and dispatch path production uses. The test addresses the broker by its production type.
-
-```
-# #[cfg(feature = "testing")]
-# mod demo {
-use ruststream::testing::TestApp;
-use ruststream_gcp_pubsub::prelude::*;
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
-struct Order {
-    id: u64,
-}
-
-#[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
-#[outgoing(name = "confirmations")]
-struct Confirmation {
-    order_id: u64,
-}
-
-#[subscriber(GooglePubSub::new("orders-workers").create_with_topic("orders"), reply)]
-async fn confirm(order: &Order) -> Confirmation {
-    Confirmation { order_id: order.id }
-}
-
-/// The app `main` runs, and the one the test hands the harness.
-pub fn app() -> impl App {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        PubSubBroker::new("my-project"),
-        |b| {
-            b.include(confirm).out_reply(Publish::default());
-        },
-    )
-}
-
-pub async fn a_confirmation_follows_an_order() -> Result<(), Box<dyn std::error::Error>> {
-    let tb = TestApp::start(app()).await?;
-
-    // A producer publishes to the topic; the subscription attached to it delivers.
-    tb.broker::<PubSubBroker>()
-        .message(&Order { id: 42 })
-        .to("orders")
-        .publish()
-        .await?;
-
-    tb.broker::<PubSubBroker>()
-        .subscriber("orders-workers")
-        .assert_called_once()
-        .with(&Order { id: 42 })
-        .settled(HandlerOutcome::ack());
-    tb.broker::<PubSubBroker>()
-        .published::<Confirmation>("confirmations")
-        .assert_called_once()
-        .with(&Confirmation { order_id: 42 });
-
-    tb.shutdown().await?;
-    Ok(())
-}
-# }
-# fn main() {}
-```
-
-The in-process mode routes the way Pub/Sub does. A publish goes to a topic, and every
-subscription attached to that topic receives it, each once. A descriptor with
-[`create_with_topic`](GooglePubSub::create_with_topic) says which topic that is. A subscription the
-service only names is infrastructure it expects to find, and the in-process mode takes it to be
-attached to the topic of its own name. A subscription keeps what its topic received while no
-consumer was open, and the consumers of one subscription share its messages.
-
-Settlement follows the service. A rejected delivery comes back as the next attempt, and so does a
-delivery dropped without a settlement. The registration's dead-letter policy counts the attempts,
-reports them in [`DELIVERY_ATTEMPT_HEADER`], and publishes a spent message to the dead-letter
-topic. A delayed retry holds the delivery for its delay and then rejects it; under a paused clock,
-`tb.advance(delay)` lets the delay pass. A publish the service refuses is refused here with the
-same error: a topic id Pub/Sub does not accept, a message with neither data nor attributes, an
-attribute or an ordering key past its limit or not UTF-8, a publish after shutdown.
-
-What is the service's alone runs against the emulator: lease deadlines and their extension, flow
-control, ordered delivery by key, exactly-once delivery and retention.
-`TestApp::start_live(app())` runs the same test body against a running emulator or project, and
-`just test-brokers` runs the crate's live suites that way.
-
-# Operations
-
-Authentication is Application Default Credentials by default;
-[`credentials`](PubSubBroker::credentials) takes a `google_cloud_auth` credentials value instead,
-and transport security is the client's. [`endpoint`](PubSubBroker::endpoint) names another service
-endpoint - a regional one is what keeps a single ordering key in order across publishers in one
-region. [`emulator`](PubSubBroker::emulator) points every client at a local Pub/Sub emulator with a
-plaintext endpoint and anonymous credentials in one call; the client does not read
-`PUBSUB_EMULATOR_HOST` on its own, so the host is named here.
-
-Ordered delivery needs message ordering enabled on the subscription resource; the publish side
-alone does not turn it on. Flow control, deadline extension and the lease budget are the three
-descriptor settings above, and the client owns their defaults.
-
-Known gaps, each a line: batches are assembled on the client, never on the wire; the retry cap
-lives in a range Pub/Sub chose (5..=100) and cannot be finer; a delayed retry cannot outlive the
-lease budget; there is no position to seek to; and a bare subscription name carries no descriptor
-settings, so the declaration steps over it are silently inert.
+`cargo run -- run` starts it against a local emulator. [`PubSubBroker::new`] only records the
+project; the runtime connects the broker at startup and flushes its publishers when the service
+stops.
+
+# Where things are
+
+The [guides][guides] take a Pub/Sub service from installation to production. The
+[architecture][architecture] pages show how the crate sits between `google-cloud-pubsub` and the
+runtime, and the [benchmarks][benchmarks] what it costs.
+
+Each topic below links to its component page on the site, which shows it in a service; the
+item's own documentation keeps the detail.
+
+## Guides
+
+- [Getting started][g-getting-started]: install the crate, run a first subscriber against the emulator and test it.
+- [Topics and subscriptions][g-topics-and-subscriptions]: fan-out, replicas sharing a subscription, topology the service or operations own.
+- [Publishing and replies][g-publishing]: replies whose type names the topic, `Out` slots and a publish at startup.
+- [Acknowledgement and retries][g-retries]: ack, retry, `retry_after` and drop on Pub/Sub, the dead-letter policy and exactly-once.
+- [Flow control and leases][g-flow-control]: `max_outstanding`, `ack_extension` and `max_lease`.
+- [Ordering keys][g-ordering]: ordered subscriptions, keyed lanes and the key on what a service publishes.
+- [Batch processing][g-batches]: a slice handler, the batch size and wait, settling each message.
+- [Running in production][g-production]: credentials, a regional endpoint, operations-owned topology and IAM roles.
+- [Testing a Pub/Sub service][g-testing]: one test body in process and against the emulator.
+
+## Broker
+
+- [PubSubBroker][c-broker]: [`PubSubBroker`], connected into [`ConnectedPubSubBroker`].
+- [emulator][c-emulator]: [`PubSubBroker::emulator`], a local Pub/Sub emulator with anonymous
+  credentials.
+- [credentials][c-credentials]: [`PubSubBroker::credentials`] in place of Application Default
+  Credentials.
+- [endpoint][c-endpoint]: [`PubSubBroker::endpoint`], another endpoint, such as a locational one.
+- [Startup][c-startup]: the clients built at connect, then each subscription's topology and
+  streaming pull.
+- [Shutdown][c-shutdown]: the flush of every publisher, and [`PubSubError::NotConnected`] for a
+  publisher used afterwards.
+- [Errors][c-errors]: [`PubSubError`].
+- [Prelude][c-prelude]: [`prelude`], the one glob a Pub/Sub service imports.
+
+## Subscriptions
+
+- [Subscriptions][c-subscriptions]: a bare subscription name in `#[subscriber]`.
+- [GooglePubSub][c-google-pubsub]: [`GooglePubSub`], one subscription and every setting it takes,
+  read through a [`PubSubSubscriber`].
+- [name][c-name]: `#[subscriber(GooglePubSub)]`, with the name given at the mount site.
+- [create_with_topic][c-create-with-topic]: [`GooglePubSub::create_with_topic`], the subscription
+  and its topic created at startup.
+- [max_outstanding][c-max-outstanding]: [`GooglePubSub::max_outstanding`], the cap on unsettled
+  deliveries.
+- [ack_extension][c-ack-extension]: [`GooglePubSub::ack_extension`], how far each lease extension
+  reaches.
+- [max_lease][c-max-lease]: [`GooglePubSub::max_lease`], how long one delivery stays leased.
+- [Batches][c-batches]: a slice handler, with [`GooglePubSub::batch_wait`] for a partial batch.
+
+## Settlement
+
+- [Acknowledgement][c-settlement]: what `ack`, `retry` and `drop` do to a [`PubSubMessage`],
+  exactly-once subscriptions included.
+- [retry_after][c-retry-after]: a delivery held under its lease, then nacked.
+- [Dead letters][c-dead-letters]: `max_attempts` and `dead_letter` as the subscription's own
+  dead-letter policy.
+- [Attempts][c-attempts]: [`DELIVERY_ATTEMPT_HEADER`], the attempt number a delivery reports.
+
+## Publishing
+
+- [PubSubPublish][c-publishing]: [`PubSubPublish`], the publish policy, and its live
+  [`PubSubPublisher`].
+- [Headers][c-headers]: headers as Pub/Sub attributes.
+- [Ordering][c-ordering]: messages that share an ordering key, in the order they were published.
+- [ordering_key][c-ordering-key]: [`PubSubOrdering::ordering_key`], the key of one publish, written
+  into [`PubSubPublishOptions`].
+- [Policy][c-policy]: [`PubSubPublish::ordering_key`], one key for a whole mount site.
+- [PARTITION_KEY_HEADER][c-partition-key]: [`PARTITION_KEY_HEADER`], the portable spelling of the
+  key.
+- [Transform][c-transform]: a reply transform that sets the key per delivery.
+
+## Tooling
+
+- [Bindings][c-asyncapi]: the `googlepubsub` bindings of the generated document (feature
+  `asyncapi`): the [server][c-asyncapi-server], the [messages][c-asyncapi-messages] and the
+  [channels][c-asyncapi-channels].
+- [Testing][c-testing]: the in-process Pub/Sub
+  [`TestApp`](https://docs.rs/ruststream/latest/ruststream/testing/struct.TestApp.html) connects
+  the broker to (feature `testing`), and [Live][c-live] runs the same test against the emulator.
+
+# Cargo features
+
+`testing` adds the in-process mode `TestApp::start` connects the broker through, and `asyncapi`
+contributes the `googlepubsub` bindings to the generated document. The codecs are the
+framework's features, on the `ruststream` dependency.
+
+[guides]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/
+[g-getting-started]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/getting-started/
+[g-topics-and-subscriptions]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/topics-and-subscriptions/
+[g-publishing]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/publishing/
+[g-retries]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/retries/
+[g-flow-control]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/flow-control/
+[g-ordering]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/ordering/
+[g-batches]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/batches/
+[g-production]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/production/
+[g-testing]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/testing/
+[architecture]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/
+[benchmarks]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/benchmarks/
+[c-broker]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/broker/
+[c-emulator]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/broker/emulator/
+[c-credentials]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/broker/credentials/
+[c-endpoint]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/broker/endpoint/
+[c-startup]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/broker/startup/
+[c-shutdown]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/broker/shutdown/
+[c-errors]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/broker/errors/
+[c-prelude]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/broker/prelude/
+[c-subscriptions]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/subscriptions/
+[c-google-pubsub]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/subscriptions/google-pubsub/
+[c-name]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/subscriptions/name/
+[c-create-with-topic]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/subscriptions/create-with-topic/
+[c-max-outstanding]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/subscriptions/max-outstanding/
+[c-ack-extension]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/subscriptions/ack-extension/
+[c-max-lease]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/subscriptions/max-lease/
+[c-batches]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/subscriptions/batches/
+[c-settlement]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/settlement/
+[c-retry-after]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/settlement/retry-after/
+[c-dead-letters]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/settlement/dead-letters/
+[c-attempts]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/settlement/attempts/
+[c-publishing]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/publishing/
+[c-headers]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/publishing/headers/
+[c-ordering]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/publishing/ordering/
+[c-ordering-key]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/publishing/ordering/ordering-key/
+[c-policy]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/publishing/ordering/policy/
+[c-partition-key]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/publishing/ordering/partition-key/
+[c-transform]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/publishing/ordering/transform/
+[c-asyncapi]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/asyncapi/
+[c-asyncapi-server]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/asyncapi/server/
+[c-asyncapi-messages]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/asyncapi/messages/
+[c-asyncapi-channels]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/asyncapi/channels/
+[c-testing]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/testing/
+[c-live]: https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/testing/live/

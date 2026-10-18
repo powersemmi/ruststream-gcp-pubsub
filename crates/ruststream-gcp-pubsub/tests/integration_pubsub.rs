@@ -8,6 +8,9 @@ use std::thread;
 use std::time::Duration;
 
 use futures::StreamExt;
+use google_cloud_auth::credentials::anonymous;
+use google_cloud_pubsub::client::{SubscriptionAdmin, TopicAdmin};
+use google_cloud_pubsub::model::DeadLetterPolicy;
 use ruststream::runtime::PublishExt;
 use ruststream::{
     AckError, Broker, ConnectedBroker, HeaderMap, IncomingMessage, Outgoing, OutgoingMessage,
@@ -95,6 +98,36 @@ async fn roundtrip_preserves_payload_attributes_and_partition_key() {
     connected.shutdown().await.expect("shutdown succeeds");
 }
 
+/// An emulator address written as a URL dials the same emulator as the bare `host:port` that
+/// `PUBSUB_EMULATOR_HOST` holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_emulator_address_with_a_scheme_reaches_the_emulator() {
+    let Some(host) = test_host() else { return };
+    let connected = connect(&format!("http://{host}")).await;
+
+    let name = unique("emulator-url");
+    let mut subscriber = connected
+        .subscribe_descriptor(GooglePubSub::new(&name).create_with_topic(&name))
+        .await
+        .expect("subscription opens");
+    connected
+        .publisher()
+        .publish(OutgoingMessage::new(&name, b"by-url".as_slice()), None)
+        .await
+        .expect("publish succeeds");
+
+    let mut stream = pin!(subscriber.stream());
+    let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("delivery arrives")
+        .expect("stream is open")
+        .expect("delivery is ok");
+    assert_eq!(message.payload(), b"by-url");
+    message.ack().await.expect("ack succeeds");
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
 /// The portable spelling reaches the product's own field: a service that names no broker writes
 /// the framework's `partition-key` header, and the message leaves under that ordering key. The
 /// header itself never becomes an attribute, so the key travels once.
@@ -177,6 +210,142 @@ async fn the_ordering_step_and_the_policy_default_reach_the_product() {
         assert_eq!(message.payload(), payload);
         assert_eq!(message.partition_key(), Some(key.as_bytes()));
         message.ack().await.expect("ack succeeds");
+    }
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// One handle publishing to two topics in turn reaches each of them, whether a publish names
+/// the topic by its id or by its full resource name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_handle_publishing_to_two_topics_in_turn_reaches_both() {
+    let Some(host) = test_host() else { return };
+    let connected = connect(&host).await;
+
+    let (first, second) = (unique("turns-first"), unique("turns-second"));
+    let mut first_subscriber = connected
+        .subscribe_descriptor(GooglePubSub::new(&first).create_with_topic(&first))
+        .await
+        .expect("subscription opens");
+    let mut second_subscriber = connected
+        .subscribe_descriptor(GooglePubSub::new(&second).create_with_topic(&second))
+        .await
+        .expect("subscription opens");
+
+    let first_full = format!("projects/{TEST_PROJECT}/topics/{first}");
+    let publisher = connected.publisher();
+    for (topic, payload) in [
+        (first.as_str(), b"first-1".as_slice()),
+        (second.as_str(), b"second-1"),
+        (first_full.as_str(), b"first-2"),
+        (second.as_str(), b"second-2"),
+    ] {
+        publisher
+            .publish(OutgoingMessage::new(topic, payload), None)
+            .await
+            .expect("publish succeeds");
+    }
+
+    for (subscriber, expected) in [
+        (&mut first_subscriber, [b"first-1".as_slice(), b"first-2"]),
+        (
+            &mut second_subscriber,
+            [b"second-1".as_slice(), b"second-2"],
+        ),
+    ] {
+        let mut stream = pin!(subscriber.stream());
+        let mut received = Vec::new();
+        for _ in 0..2 {
+            let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+                .await
+                .expect("delivery arrives")
+                .expect("stream is open")
+                .expect("delivery is ok");
+            received.push(message.payload().to_vec());
+            message.ack().await.expect("ack succeeds");
+        }
+        received.sort();
+        assert_eq!(received, expected.map(<[u8]>::to_vec));
+    }
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// Publishes racing on many threads, from fresh handles and from one shared handle, to many
+/// topics and to one topic, each reach their topic exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_publishes_to_many_topics_and_to_one_topic_each_arrive() {
+    const TOPICS: usize = 8;
+    const PER_TOPIC: usize = 4;
+    let Some(host) = test_host() else { return };
+    let connected = connect(&host).await;
+
+    let shared = unique("race-shared");
+    let own: Vec<String> = (0..TOPICS)
+        .map(|index| unique(&format!("race-own-{index}")))
+        .collect();
+    let mut subscribers = Vec::new();
+    for topic in own.iter().chain([&shared]) {
+        let subscriber = connected
+            .subscribe_descriptor(GooglePubSub::new(topic).create_with_topic(topic))
+            .await
+            .expect("subscription opens");
+        subscribers.push(subscriber);
+    }
+
+    // Every task publishes to its own topic through a fresh handle and to the shared topic
+    // through a handle all tasks share, so first publishes race on both paths.
+    let common = connected.publisher();
+    let mut sends = Vec::new();
+    for (index, topic) in own.iter().enumerate() {
+        let (fresh, common, topic, shared) = (
+            connected.publisher(),
+            common.clone(),
+            topic.clone(),
+            shared.clone(),
+        );
+        sends.push(tokio::spawn(async move {
+            for round in 0..PER_TOPIC {
+                let payload = format!("{index}-{round}");
+                let (to_own, to_shared) = futures::join!(
+                    fresh.publish(OutgoingMessage::new(&topic, payload.as_bytes()), None),
+                    common.publish(OutgoingMessage::new(&shared, payload.as_bytes()), None),
+                );
+                to_own.expect("publish to the task's topic succeeds");
+                to_shared.expect("publish to the shared topic succeeds");
+            }
+        }));
+    }
+    for send in sends {
+        send.await.expect("the publishing task finishes");
+    }
+
+    let expected_own = |index: usize| -> Vec<Vec<u8>> {
+        (0..PER_TOPIC)
+            .map(|round| format!("{index}-{round}").into_bytes())
+            .collect()
+    };
+    let mut expected_shared: Vec<Vec<u8>> = (0..TOPICS).flat_map(expected_own).collect();
+    expected_shared.sort();
+    for (index, subscriber) in subscribers.iter_mut().enumerate() {
+        let expected = if index < TOPICS {
+            expected_own(index)
+        } else {
+            expected_shared.clone()
+        };
+        let mut stream = pin!(subscriber.stream());
+        let mut received = Vec::new();
+        while received.len() < expected.len() {
+            let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+                .await
+                .expect("delivery arrives")
+                .expect("stream is open")
+                .expect("delivery is ok");
+            received.push(message.payload().to_vec());
+            message.ack().await.expect("ack succeeds");
+        }
+        received.sort();
+        assert_eq!(received, expected);
     }
 
     connected.shutdown().await.expect("shutdown succeeds");
@@ -355,6 +524,95 @@ async fn a_bare_name_opens_with_the_declared_dead_letter_policy() {
         .expect("the subscription opens with the declared dead-letter policy");
 
     spends_its_attempts(&connected, &topic, subscriber, dead).await;
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// Creates `topic`, and `subscription` on it carrying a dead-letter policy, the way an operator
+/// does outside the service: with the admin API, before the service starts.
+async fn provision_with_policy(host: &str, topic: &str, subscription: &str, dead_letter: &str) {
+    let topics = TopicAdmin::builder()
+        .with_endpoint(format!("http://{host}"))
+        .with_credentials(anonymous::Builder::new().build())
+        .build()
+        .await
+        .expect("the topic admin client builds");
+    for name in [topic, dead_letter] {
+        topics
+            .create_topic()
+            .set_name(format!("projects/{TEST_PROJECT}/topics/{name}"))
+            .send()
+            .await
+            .expect("the topic is created");
+    }
+    SubscriptionAdmin::builder()
+        .with_endpoint(format!("http://{host}"))
+        .with_credentials(anonymous::Builder::new().build())
+        .build()
+        .await
+        .expect("the subscription admin client builds")
+        .create_subscription()
+        .set_name(format!(
+            "projects/{TEST_PROJECT}/subscriptions/{subscription}"
+        ))
+        .set_topic(format!("projects/{TEST_PROJECT}/topics/{topic}"))
+        .set_dead_letter_policy(
+            DeadLetterPolicy::new()
+                .set_dead_letter_topic(format!("projects/{TEST_PROJECT}/topics/{dead_letter}"))
+                .set_max_delivery_attempts(
+                    i32::try_from(MAX_ATTEMPTS).expect("the cap fits the wire type"),
+                ),
+        )
+        .send()
+        .await
+        .expect("the subscription is created with a dead-letter policy");
+}
+
+/// A dead-letter policy set outside the service is the one a drop on the last attempt follows:
+/// the registration declares no cap, and the message it drops at the subscription's own cap
+/// still reaches the dead-letter topic instead of being acknowledged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_drop_on_the_last_attempt_follows_a_policy_set_outside_the_service() {
+    let Some(host) = test_host() else { return };
+    let topic = unique("ops-topic");
+    let workers = unique("ops-workers");
+    let dead_letter = unique("ops-dead");
+    provision_with_policy(&host, &topic, &workers, &dead_letter).await;
+
+    let connected = connect(&host).await;
+    let mut dead = watch_dead_letter(&connected, &dead_letter).await;
+    let mut subscriber = connected
+        .subscribe_descriptor(GooglePubSub::new(&workers))
+        .await
+        .expect("the subscription opens");
+    connected
+        .publisher()
+        .publish(OutgoingMessage::new(&topic, b"dropped".as_slice()), None)
+        .await
+        .expect("publish succeeds");
+
+    let mut stream = pin!(subscriber.stream());
+    for attempt in 1..=MAX_ATTEMPTS {
+        let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+            .await
+            .expect("delivery arrives")
+            .expect("stream is open")
+            .expect("delivery is ok");
+        assert_eq!(message.redelivery_count(), Some(u64::from(attempt)));
+        // What `HandlerOutcome::retry()` settles with before the cap, and what
+        // `HandlerOutcome::drop()` settles with on the last attempt.
+        let requeue = attempt < MAX_ATTEMPTS;
+        message.nack(requeue).await.expect("nack succeeds");
+    }
+
+    let mut dead_stream = pin!(dead.stream());
+    let carried = tokio::time::timeout(RECV_TIMEOUT, dead_stream.next())
+        .await
+        .expect("the dropped delivery reaches the dead-letter topic")
+        .expect("stream is open")
+        .expect("delivery is ok");
+    assert_eq!(carried.payload(), b"dropped");
+    carried.ack().await.expect("ack succeeds");
 
     connected.shutdown().await.expect("shutdown succeeds");
 }
