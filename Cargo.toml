@@ -25,6 +25,10 @@ google-cloud-auth = "1.15"
 # fields it writes with a `FieldMask`, and the client re-exports none of them.
 google-cloud-wkt = "1.7"
 bytes = "1"
+# The connection's map of client publishers is read on every publish to a topic the handle did
+# not publish to first; a snapshot load writes no shared cache line, which a lock's reader count
+# would on every one.
+arc-swap = "1.7"
 futures = "0.3"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }

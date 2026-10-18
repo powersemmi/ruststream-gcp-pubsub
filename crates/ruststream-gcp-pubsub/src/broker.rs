@@ -12,6 +12,7 @@
     allow(clippy::infallible_destructuring_match)
 )]
 
+#[cfg(feature = "testing")]
 use std::collections::HashMap;
 #[cfg(feature = "testing")]
 use std::future::{Future, ready};
@@ -23,9 +24,7 @@ use std::sync::{Mutex, PoisonError};
 #[cfg(feature = "testing")]
 use bytes::BytesMut;
 use google_cloud_auth::credentials::{Credentials, anonymous};
-use google_cloud_pubsub::client::{
-    BasePublisher, Publisher, Subscriber, SubscriptionAdmin, TopicAdmin,
-};
+use google_cloud_pubsub::client::{BasePublisher, Subscriber, SubscriptionAdmin, TopicAdmin};
 use google_cloud_pubsub::model::{DeadLetterPolicy, Subscription};
 use google_cloud_wkt::FieldMask;
 #[cfg(feature = "testing")]
@@ -51,6 +50,7 @@ use crate::publisher::{PubSubPublish, PubSubPublisher};
 use crate::runtime_slot::{RuntimeRegistration, RuntimeSlot};
 use crate::subscriber::PubSubSubscriber;
 use crate::subscription::{DeclaredRetries, GooglePubSub};
+use crate::topic_publishers::{TopicPublishers, topic_key};
 
 /// Whether a get-then-create found the resource or made it, which is what decides between
 /// carrying a dead-letter policy into the create and writing it as an update afterwards.
@@ -92,9 +92,9 @@ pub(crate) struct Core {
     pub(crate) subscription_admin: SubscriptionAdmin,
     pub(crate) project: String,
     pub(crate) closed: AtomicBool,
-    /// Per-topic publisher handles, shared by every publisher handle so shutdown can flush
+    /// Per-topic client publishers, shared by every publisher handle so shutdown can flush
     /// them all.
-    pub(crate) publishers: tokio::sync::Mutex<HashMap<String, Publisher>>,
+    pub(crate) publishers: TopicPublishers,
     /// What the registrations mounted by a bare subscription name declared about their retries,
     /// taken at startup and applied when each subscription opens.
     pub(crate) declared_retries: DeclaredRetries,
@@ -123,6 +123,11 @@ impl Core {
     /// Resolves a short topic id to a full resource name; full names pass through.
     pub(crate) fn topic_name(&self, topic: &str) -> String {
         topic_path(&self.project, topic)
+    }
+
+    /// The key the client publisher of `topic` is kept under, whichever way `topic` names it.
+    pub(crate) fn topic_key<'a>(&self, topic: &'a str) -> &'a str {
+        topic_key(&self.project, topic)
     }
 
     /// Resolves a short subscription id to a full resource name; full names pass through.
@@ -402,8 +407,7 @@ impl Core {
     /// batches reach the service; the client has no explicit close beyond dropping the handles.
     async fn shutdown(&self) {
         self.closed.store(true, Ordering::Release);
-        let publishers: Vec<_> = self.publishers.lock().await.values().cloned().collect();
-        for publisher in publishers {
+        for publisher in self.publishers.all() {
             publisher.flush().await;
         }
     }
@@ -603,7 +607,7 @@ impl Broker for PubSubBroker {
                     subscription_admin,
                     project: self.project.clone(),
                     closed: AtomicBool::new(false),
-                    publishers: tokio::sync::Mutex::new(HashMap::new()),
+                    publishers: TopicPublishers::default(),
                     declared_retries: DeclaredRetries::default(),
                     runtime: RuntimeRegistration::new(Handle::current()),
                     #[cfg(feature = "testing")]
