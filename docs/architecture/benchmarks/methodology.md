@@ -54,8 +54,8 @@ state: the slope between a run of 1000 deliveries and a run of 2000. The cold st
 starting the service and taking the first delivery cost once.
 
 The client acknowledges in batches and extends leases on timers, so a count moves a little from
-one run to the next: over four runs the instructions per message agreed within 1.2 percent, and
-the allocations of the longest run within 640 on the reply row and within 20 on the other two.
+one run to the next: over five runs the instructions per message agreed within 5 percent, and
+the allocations of the longest run within 3,500 on the reply row and within 440 on the other two.
 `just bench-code` fails on an allocation above the floor a scenario declares: the highest count
 seen plus a margin at least as large as that spread, and a tenth of a percent at the least. With
 `--baseline=main` it also fails on more than two percent more instructions. A pull request that
