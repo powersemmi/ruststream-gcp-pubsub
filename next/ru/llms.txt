@@ -1,0 +1,78 @@
+# ruststream-gcp-pubsub
+
+> `ruststream-gcp-pubsub` is the Google Cloud Pub/Sub broker crate for RustStream, a Rust framework for services that subscribe to message brokers and publish to them. It runs over the official `google-cloud-pubsub` client: a handler reads a subscription through one streaming pull, Pub/Sub acknowledges each message on its own, and an ordering key is the framework's partition key.
+
+A subscription is the descriptor `GooglePubSub`, which names a subscription and carries every setting it takes: topology created at startup, flow control, lease extension, the lease budget and the batch wait; a bare `#[subscriber("orders-workers")]` reads an existing subscription with every default. A retry cap and a dead-letter topic named at the mount site become the subscription's own dead-letter policy. A service imports `ruststream_gcp_pubsub::prelude::*`, which offers `PubSubPublish` as `Publish`; the ordering key of one publish is its per-message setting. `PubSubBroker::emulator` points the service at a local emulator.
+
+This site holds the guides, one page per component and the architecture of the crate; the API reference is on docs.rs, and the framework itself is documented on the RustStream site.
+
+## Guides
+
+- [Guides](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/): building a Pub/Sub service with the crate, from a first subscriber to production
+- [Getting started](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/getting-started/): install the crate, run a first subscriber against the emulator and test it
+- [Topics and subscriptions](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/topics-and-subscriptions/): fan-out, replicas sharing a subscription, topology the service or operations own
+- [Publishing and replies](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/publishing/): replies whose type names the topic, `Out` slots and a publish at startup
+- [Acknowledgement and retries](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/retries/): ack, retry, `retry_after` and drop on Pub/Sub, the dead-letter policy and exactly-once
+- [Flow control and leases](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/flow-control/): `max_outstanding`, `ack_extension` and `max_lease`
+- [Ordering keys](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/ordering/): ordered subscriptions, keyed lanes and the key on what a service publishes
+- [Batch processing](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/batches/): a slice handler, the batch size and wait, settling each message
+- [Running in production](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/production/): credentials, a regional endpoint, operations-owned topology and IAM roles
+- [Testing a Pub/Sub service](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/guides/testing/): one test body in process and against the emulator
+
+## Components
+
+- [Components](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/): the parts of the crate a Pub/Sub service uses, one page each
+- [PubSubBroker](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/broker/): the broker type, its project and its lazy connection
+- [emulator](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/broker/emulator/): a local Pub/Sub emulator at a `host:port` or a URL, with anonymous credentials
+- [credentials](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/broker/credentials/): a `google-cloud-auth` credentials value in place of Application Default Credentials
+- [endpoint](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/broker/endpoint/): another Pub/Sub endpoint, such as a locational one that keeps every request in one region
+- [Startup](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/broker/startup/): the clients built at connect, then each subscription's topology and streaming pull
+- [Shutdown](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/broker/shutdown/): the flush of every publisher, and `PubSubError::NotConnected` for a publisher used afterwards
+- [Errors](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/broker/errors/): `PubSubError`, the one error type of the crate
+- [Prelude](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/broker/prelude/): `ruststream_gcp_pubsub::prelude`, the one glob a Pub/Sub service imports
+- [Subscriptions](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/subscriptions/): a subscription name in `#[subscriber]` and the descriptor that carries every other setting
+- [GooglePubSub](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/subscriptions/google-pubsub/): one subscription by short id or full resource name, with its settings
+- [name](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/subscriptions/name/): `#[subscriber(GooglePubSub)]` with the subscription named at the mount site
+- [create_with_topic](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/subscriptions/create-with-topic/): the subscription and its topic created at startup, with message ordering on
+- [max_outstanding](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/subscriptions/max-outstanding/): the cap on deliveries unsettled at once
+- [ack_extension](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/subscriptions/ack-extension/): how far each background extension of a lease reaches
+- [max_lease](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/subscriptions/max-lease/): how long one unsettled delivery stays leased, and the budget of `retry_after`
+- [Batches](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/subscriptions/batches/): slice handlers over batches assembled on the client, with `batch(n)` and `batch_wait`
+- [Acknowledgement](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/settlement/): what `ack`, `retry` and `drop` do on Pub/Sub, exactly-once subscriptions included
+- [retry_after](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/settlement/retry-after/): a delivery held under its lease for the delay, then nacked
+- [Dead letters](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/settlement/dead-letters/): `max_attempts` and `dead_letter` as the subscription's own dead-letter policy
+- [Attempts](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/settlement/attempts/): the attempt number in the `pubsub-delivery-attempt` header
+- [PubSubPublish](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/publishing/): the publish policy, `Publish` in the prelude
+- [Headers](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/publishing/headers/): headers as Pub/Sub attributes, with no envelope
+- [Ordering](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/publishing/ordering/): messages that share an ordering key, delivered in the order they were published
+- [ordering_key](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/publishing/ordering/ordering-key/): the ordering key of one publish, on the publish builder
+- [Policy](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/publishing/ordering/policy/): `Publish::default().ordering_key(..)`, one key for a whole mount site
+- [PARTITION_KEY_HEADER](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/publishing/ordering/partition-key/): the `partition-key` header, the portable spelling of the ordering key
+- [Transform](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/publishing/ordering/transform/): a reply transform that sets the ordering key per delivery
+- [Bindings](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/asyncapi/): the `googlepubsub` bindings of the AsyncAPI document behind the `asyncapi` feature
+- [Server](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/asyncapi/server/): the host and port clients dial, under the protocol `googlepubsub`
+- [Messages](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/asyncapi/messages/): the ordering key a publish policy fixed, in the message binding
+- [Channels](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/asyncapi/channels/): a subscription as a channel received on, and a topic as one sent to
+- [Testing](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/testing/): `TestApp::start` with `PubSubBroker` in process behind the `testing` feature
+- [Live](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/components/testing/live/): `TestApp::start_live`, the same test body against the emulator
+
+## Architecture
+
+- [Architecture](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/): how Pub/Sub works, where the crate sits between Pub/Sub and the RustStream runtime, and what that costs
+- [Topics](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/pubsub/): a topic hands every message to each attached subscription, whose subscribers share it
+- [Leases](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/pubsub/leases/): the streaming pull's lease on each message, its extension and flow control
+- [Ordered delivery](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/pubsub/ordering/): messages sharing an ordering key, published in one region, delivered in order
+- [Redelivery](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/pubsub/redelivery/): a nack or an expired deadline, and the dead-letter policy that ends redelivery
+- [Design](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/design/): a streaming pull per subscription and a publisher per topic, between the runtime and the client
+- [Lifecycle](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/lifecycle/): `new`, `connect`, each subscription opened at startup, and the flush at shutdown
+- [Path](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/path/): one message from the streaming pull through the handler and the reply to its ack
+- [Settlement](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/settlement/): what `ack`, `retry`, `retry_after` and `drop` become on Pub/Sub
+- [Benchmarks](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/benchmarks/): what the crate costs over the raw `google-cloud-pubsub` client, and the cost of its own code
+- [Benchmarks: Numbers](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/benchmarks/numbers/): what each published number measures, and what it does not allow you to conclude
+- [Benchmarks: Methodology](https://powersemmi.github.io/ruststream-gcp-pubsub/latest/architecture/benchmarks/methodology/): the three loops, the run against the emulator, the broker-bound arithmetic and the code count
+
+## Optional
+
+- [API reference](https://docs.rs/ruststream-gcp-pubsub): the full rustdoc of the crate, whose overview maps each topic to its pages here
+- [RustStream llms.txt](https://powersemmi.github.io/ruststream/llms.txt): the index of the framework's own documentation
+- [Source](https://github.com/powersemmi/ruststream-gcp-pubsub): the crate's repository
