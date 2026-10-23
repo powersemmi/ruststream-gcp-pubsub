@@ -15,6 +15,9 @@ categories = ["asynchronous", "network-programming"]
 # The reference is the crate's documentation, and `default` is empty, so a default build on
 # docs.rs would publish it with the in-process mode and the document bindings missing - the two
 # the overview and the site's redirects send readers to.
+# Every file under `tests/` is a module of one test binary: one link instead of one per file.
+autotests = false
+
 [package.metadata.docs.rs]
 all-features = true
 
@@ -74,6 +77,10 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "ti
 # the ones a page shows carry the tests that prove what the page says.
 
 # --- examples: broker ---
+
+[[test]]
+name = "suite"
+path = "tests/main.rs"
 
 [[example]]
 name = "pubsub_broker"

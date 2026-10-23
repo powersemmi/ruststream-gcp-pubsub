@@ -22,7 +22,7 @@ use ruststream::{
 };
 use ruststream_gcp_pubsub::{ConnectedPubSubBroker, GooglePubSub, PubSubBroker};
 
-mod live;
+use crate::live;
 
 const TEST_PROJECT: &str = "ruststream-test";
 
