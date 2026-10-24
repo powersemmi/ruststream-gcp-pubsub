@@ -17,7 +17,11 @@ check:
     cargo check --workspace --no-default-features
 
 test:
-    cargo test --workspace --all-features
+    # The examples' tests are modules of one test binary, so `--tests` builds none per example;
+    # `check` compiles every example on its own. `--tests` leaves the doc examples out, so they
+    # run on their own line.
+    cargo test --workspace --all-features --tests
+    cargo test --workspace --all-features --doc
 
 brokers-up:
     docker compose -f docker-compose.test.yml up -d --wait
@@ -33,7 +37,7 @@ test-brokers: brokers-up
     # developer without a broker.
     PUBSUB_TEST_HOST=127.0.0.1:8085 \
     RUSTSTREAM_REQUIRE_LIVE=1 \
-        cargo test --workspace --all-features -- --test-threads=1
+        cargo test --workspace --all-features --tests -- --test-threads=1
 
 # What this crate's consumer and publisher cost over the google-cloud-pubsub client they wrap: two
 # scenarios, each run as a loop on this crate and as a loop on the client, against the emulator the

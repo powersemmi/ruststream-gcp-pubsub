@@ -178,7 +178,8 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/target-minimal
         run: |
           cargo check -p ruststream-gcp-pubsub-bench --all-targets
-          cargo test --workspace --all-features --no-fail-fast
+          cargo test --workspace --all-features --no-fail-fast --tests
+          cargo test --workspace --all-features --no-fail-fast --doc
 
       - name: Delete the minimal versions build
         if: always()
@@ -235,7 +236,11 @@ jobs:
       # --no-fail-fast: a failing target must not hide failures in the targets behind it; the log
       # then lists every red test, not just the first binary's.
       - name: cargo test
-        run: cargo test --workspace --all-features --no-fail-fast
+        # `--tests` and not every target: the examples' tests are modules of one test binary, so
+        # an example needs no binary of its own, and clippy has already compiled each one.
+        run: |
+          cargo test --workspace --all-features --no-fail-fast --tests
+          cargo test --workspace --all-features --no-fail-fast --doc
 
       # The gate the later toolchains wait on: it succeeds only when every stable step did.
       - name: Stable passed
@@ -274,7 +279,11 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: beta
           CARGO_TARGET_DIR: ${{ runner.temp }}/target-beta
-        run: cargo test --workspace --all-features --no-fail-fast
+        # `--tests` and not every target: the examples' tests are modules of one test binary, so
+        # an example needs no binary of its own, and clippy has already compiled each one.
+        run: |
+          cargo test --workspace --all-features --no-fail-fast --tests
+          cargo test --workspace --all-features --no-fail-fast --doc
 
       - name: Delete the beta build
         if: always()
@@ -299,7 +308,11 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: "1.95"
           CARGO_TARGET_DIR: ${{ runner.temp }}/target-floor
-        run: cargo test --workspace --all-features --no-fail-fast
+        # `--tests` and not every target: the examples' tests are modules of one test binary, so
+        # an example needs no binary of its own, and clippy has already compiled each one.
+        run: |
+          cargo test --workspace --all-features --no-fail-fast --tests
+          cargo test --workspace --all-features --no-fail-fast --doc
 
       - name: Delete the floor build
         if: always()
@@ -352,20 +365,14 @@ jobs:
           cargo test -p ruststream-gcp-pubsub --all-features --test suite -- \
             integration_pubsub:: conformance_pubsub:: topology_pubsub:: deadlines_pubsub:: \
             harness_pubsub:: --test-threads=1
-          cargo test -p ruststream-gcp-pubsub --all-features \
-            --example pubsub_broker_emulator \
-            --example manual_pubsub_broker_emulator \
-            --example pubsub_subscriptions_flow \
-            --example manual_pubsub_subscriptions_flow \
-            --example pubsub_publishing_ordering \
-            --example manual_pubsub_publishing_ordering \
-            --example pubsub_testing_live \
-            --example manual_pubsub_testing_live \
-            --example guide_flow_control \
-            --example manual_guide_flow_control \
-            --example guide_testing \
-            --example manual_guide_testing \
-            -- --test-threads=1
+          cargo test -p ruststream-gcp-pubsub --all-features --test examples -- \
+            pubsub_broker_emulator:: manual_pubsub_broker_emulator:: \
+            pubsub_subscriptions_flow:: manual_pubsub_subscriptions_flow:: \
+            pubsub_publishing_ordering:: manual_pubsub_publishing_ordering:: \
+            pubsub_testing_live:: manual_pubsub_testing_live:: \
+            guide_flow_control:: manual_guide_flow_control:: \
+            guide_testing:: manual_guide_testing:: \
+            --test-threads=1
 
       - name: Cleanup
         if: always()
