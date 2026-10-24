@@ -37,7 +37,7 @@ use ruststream_gcp_pubsub::{
     GooglePubSub, PubSubBroker, PubSubMessage, PubSubPublish, PubSubPublishOptions,
 };
 
-mod live;
+use crate::live;
 
 const TEST_PROJECT: &str = "ruststream-test";
 

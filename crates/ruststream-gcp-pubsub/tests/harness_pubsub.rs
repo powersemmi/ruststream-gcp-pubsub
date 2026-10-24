@@ -30,7 +30,7 @@ use ruststream_gcp_pubsub::prelude::*;
 use ruststream_gcp_pubsub::{DELIVERY_ATTEMPT_HEADER, PARTITION_KEY_HEADER};
 use serde::{Deserialize, Serialize};
 
-mod live;
+use crate::live;
 
 /// The project the service's broker is built with. The in-process mode dials nothing and reads no
 /// credentials, so no project has to exist.
