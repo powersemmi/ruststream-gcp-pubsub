@@ -24,7 +24,7 @@ use ruststream::{
 };
 use ruststream_gcp_pubsub::{ConnectedPubSubBroker, GooglePubSub, PubSubBroker};
 
-mod live;
+use crate::live;
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(15);
 const TEST_PROJECT: &str = "ruststream-test";

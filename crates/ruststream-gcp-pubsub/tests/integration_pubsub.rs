@@ -24,7 +24,7 @@ use ruststream_gcp_pubsub::{
 use tokio::runtime;
 use tokio::sync::oneshot;
 
-mod live;
+use crate::live;
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(15);
 const TEST_PROJECT: &str = "ruststream-test";
