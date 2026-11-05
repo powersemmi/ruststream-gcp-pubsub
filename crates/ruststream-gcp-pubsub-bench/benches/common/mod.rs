@@ -60,7 +60,10 @@ use google_cloud_auth::credentials::{Credentials, anonymous};
 use google_cloud_pubsub::client::{BasePublisher, SubscriptionAdmin, TopicAdmin};
 use google_cloud_pubsub::model::Message as GcpMessage;
 use gungraun::{Callgrind, Dhat, DhatMetric, EntryPoint, LibraryBenchmarkConfig};
-use ruststream::runtime::{AppInfo, BrokerScope, Identity, RunningApp, RustStream};
+use ruststream::runtime::{
+    AppInfo, BrokerScope, Identity, MountChain, MountRoutes, PublishIdentity, RunningApp,
+    RustStream,
+};
 use ruststream_gcp_pubsub::PubSubBroker;
 use serde::Deserialize;
 use tokio::runtime::{Builder, Runtime};
@@ -385,12 +388,23 @@ pub struct Pending {
     messages: usize,
 }
 
-/// The mount a scenario passes in: what `with_broker` does with the scope.
-pub type Mount<'a> = &'a mut BrokerScope<PubSubBroker, Identity, (), Latch>;
+/// The scope a scenario's mount receives: what `with_broker` hands its closure.
+pub type Mount = BrokerScope<PubSubBroker, Identity, (), Latch>;
+
+/// The chain a scenario's mount returns.
+pub trait Mounted:
+    MountChain<Routes: MountRoutes<PubSubBroker, Identity, Latch, PublishIdentity>>
+{
+}
+
+impl<Chain: MountChain<Routes: MountRoutes<PubSubBroker, Identity, Latch, PublishIdentity>>> Mounted
+    for Chain
+{
+}
 
 /// Recreates the topology and builds a one-handler service on the production broker, ready to be
 /// started by the body.
-pub fn pending(messages: usize, mount: impl FnOnce(Mount<'_>)) -> Pending {
+pub fn pending<Chain: Mounted>(messages: usize, mount: impl FnOnce(Mount) -> Chain) -> Pending {
     let host = host();
     topology(host.clone());
     let latch = Latch::default();
