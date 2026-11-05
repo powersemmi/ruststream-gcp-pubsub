@@ -39,13 +39,10 @@ async fn audit(order: &Order) -> HandlerOutcome {
 
 #[ruststream::app]
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        PubSubBroker::new("my-project"),
-        |b| {
-            b.include(place);
-            b.include(audit);
-        },
-    )
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(PubSubBroker::new("my-project"), |b| {
+            b.include(place).include(audit)
+        })
 }
 
 #[cfg(test)]

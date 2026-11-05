@@ -24,12 +24,8 @@ async fn place(order: &Order) -> HandlerOutcome {
 /// Application Default Credentials, against `pubsub.googleapis.com`.
 #[ruststream::app]
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        PubSubBroker::new("my-project"),
-        |b| {
-            b.include(place);
-        },
-    )
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(PubSubBroker::new("my-project"), |b| b.include(place))
 }
 // --8<-- [end:app]
 

@@ -8,7 +8,8 @@
 //! by lying, and the suites that compare the two transports run there.
 //!
 //! Which suites those are follows from what the crate implements: the routing suite and the
-//! lifecycle everywhere; the settlement meanings; [`capabilities::batches`] because the subscriber
+//! lifecycle everywhere, with the refused publish that hands its message back; the settlement
+//! meanings; [`capabilities::batches`] because the subscriber
 //! is a `BatchSubscriber`; [`retry::broker_moves`] because a Pub/Sub subscription moves a spent
 //! delivery itself, so both the descriptor and a bare name declare `Copies = BrokerMoves`; the
 //! keyed order and the per-message options because a publish carries an ordering key; and the
@@ -29,6 +30,7 @@ use std::time::Duration;
 use ruststream::conformance::harness::InProcessBroker;
 use ruststream::conformance::helpers::unique_subject;
 use ruststream::conformance::in_process::Refusal;
+use ruststream::conformance::lifecycle::Unsent;
 use ruststream::conformance::message_shape::{self, OptionCases};
 use ruststream::conformance::{capabilities, harness, in_process, lifecycle, retry, settlement};
 use ruststream::testing::Backlog;
@@ -136,6 +138,19 @@ async fn in_process_passes_lifecycle_by_name() {
     .await;
 }
 
+/// A publish through a handle that outlived its connection is refused before the client takes the
+/// message, so the refusal hands back the message whole.
+#[allow(clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_returns_a_refused_message() {
+    lifecycle::refused_publish_returns_message(
+        in_process,
+        |connected| connected.publisher(),
+        Unsent::Returned,
+    )
+    .await;
+}
+
 /// The in-process mode batches the way a streaming pull does, over the same buffer, so it owes the
 /// same contract: a batch never carries more than the size the subscription was opened with.
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
@@ -227,6 +242,19 @@ async fn pubsub_broker_passes_lifecycle() {
         move || PubSubBroker::new(TEST_PROJECT).emulator(host.clone()),
         |name| created(name),
         |connected| connected.publisher(),
+    )
+    .await;
+}
+
+/// The same refusal against the product, where the closed connection is the client's.
+#[allow(clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pubsub_broker_returns_a_refused_message() {
+    let Some(host) = test_host() else { return };
+    lifecycle::refused_publish_returns_message(
+        move || PubSubBroker::new(TEST_PROJECT).emulator(host.clone()),
+        |connected| connected.publisher(),
+        Unsent::Returned,
     )
     .await;
 }

@@ -42,12 +42,10 @@ async fn ship(order: &Order, Out(out): Out<impl Publisher>) -> HandlerOutcome {
 
 #[ruststream::app]
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        PubSubBroker::new("my-project"),
-        |b| {
-            b.include(ship).out(DefaultSlot, Publish::default()).build();
-        },
-    )
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(PubSubBroker::new("my-project"), |b| {
+            b.include(ship).out(DefaultSlot, Publish::default()).build()
+        })
 }
 
 #[cfg(test)]

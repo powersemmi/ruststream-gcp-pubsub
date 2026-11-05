@@ -9,6 +9,9 @@
 //! PUBSUB_TEST_HOST=127.0.0.1:8085 cargo test --example guide_testing --features testing
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
+
 use std::time::Duration;
 
 use ruststream_gcp_pubsub::prelude::*;
@@ -61,7 +64,7 @@ fn service(broker: PubSubBroker) -> impl App<State = ()> {
         b.include(send_refund)
             .max_attempts(nonzero!(5u32))
             .dead_letter("refunds-review")
-            .out_reply(Publish::default());
+            .out_reply(Publish::default())
     })
 }
 

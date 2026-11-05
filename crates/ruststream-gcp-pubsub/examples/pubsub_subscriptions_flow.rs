@@ -9,6 +9,8 @@
 //! PUBSUB_TEST_HOST=127.0.0.1:8085 cargo test --example pubsub_subscriptions_flow --features testing
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 // A plain build compiles the service; the tests that use it exist only in the test build.
 #![cfg_attr(not(test), allow(dead_code, unused_imports))]
 
@@ -83,11 +85,8 @@ async fn send(invoice: &Invoice) -> HandlerOutcome {
 // --8<-- [end:max-lease]
 
 fn service(broker: PubSubBroker) -> impl App<State = ()> {
-    RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(broker, |b| {
-        b.include(index);
-        b.include(render);
-        b.include(send);
-    })
+    RustStream::new(AppInfo::new("billing", "0.1.0"))
+        .with_broker(broker, |b| b.include(index).include(render).include(send))
 }
 
 #[ruststream::app]
@@ -204,7 +203,7 @@ mod tests {
                 // The cap ends the redeliveries, so the test sees how many came back.
                 b.include(too_late)
                     .max_attempts(nonzero!(5u32))
-                    .dead_letter("flow-invoices-dead");
+                    .dead_letter("flow-invoices-dead")
             },
         );
         let tb = TestApp::start(app).await?;

@@ -48,7 +48,7 @@ fn app() -> impl App {
         |b| {
             // The ledger is one sequence, so every entry goes out under one key.
             b.include(subscriber("orders-workers", Book).reply().build())
-                .out_reply(Publish::default().ordering_key("ledger"));
+                .out_reply(Publish::default().ordering_key("ledger"))
         },
     )
 }

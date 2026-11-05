@@ -77,6 +77,7 @@ async fn notify(entry: &Entry) -> Statement {
 
 /// Sends each reply under the key of the entry it answers, which the delivery reports in its
 /// `partition-key` header.
+#[derive(Clone)]
 struct UnderTheEntrysKey;
 
 impl<C> PublishTransform<ForReply<C>, PubSubPublishOptions> for UnderTheEntrysKey {
@@ -103,10 +104,12 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("ledger", "0.1.0")).with_broker(
         PubSubBroker::new("my-project").emulator("localhost:8085"),
         |b| {
-            b.include(post).out(DefaultSlot, Publish::default()).build();
-            b.include(notify)
+            b.include(post)
+                .out(DefaultSlot, Publish::default())
+                .build()
+                .include(notify)
                 .out_reply(Publish::default())
-                .transform(UnderTheEntrysKey);
+                .transform(UnderTheEntrysKey)
         },
     )
 }

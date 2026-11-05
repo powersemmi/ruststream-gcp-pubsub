@@ -29,12 +29,10 @@ async fn receipt(order: &Order) -> Receipt {
 
 #[ruststream::app]
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        PubSubBroker::new("my-project"),
-        |b| {
-            b.include(receipt).out_reply(Publish::default());
-        },
-    )
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(PubSubBroker::new("my-project"), |b| {
+            b.include(receipt).out_reply(Publish::default())
+        })
 }
 // --8<-- [end:app]
 

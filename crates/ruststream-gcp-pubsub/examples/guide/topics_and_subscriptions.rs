@@ -57,10 +57,10 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         PubSubBroker::new("my-project").emulator("localhost:8085"),
         |b| {
-            b.include(bill);
-            b.include(ship);
-            b.include(audit);
-            b.include(report.name(reports));
+            b.include(bill)
+                .include(ship)
+                .include(audit)
+                .include(report.name(reports))
         },
     )
 }

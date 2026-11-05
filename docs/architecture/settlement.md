@@ -35,7 +35,7 @@ Pub/Sub has no verb for "discard without redelivery" other than the ack, so `dro
 The exception is the last delivery the subscription's dead-letter policy allows. There a nack is
 what moves the message to the dead-letter topic, so `drop()` nacks. The crate reads the attempt
 from the delivery. The cap comes from the registration's
-[`max_attempts(n)`](api:ruststream::runtime::Mounting::max_attempts), or from the subscription
+[`max_attempts(n)`](api:ruststream::runtime::RouterWith::max_attempts), or from the subscription
 itself, read once at startup, when an operator set the policy outside the code. That read needs
 the `pubsub.subscriptions.get` permission; without it the service logs a warning and `drop()`
 acknowledges. The attempt count is approximate, so a count that reset makes `drop()` acknowledge

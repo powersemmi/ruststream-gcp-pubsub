@@ -69,8 +69,8 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         PubSubBroker::new("my-project"),
         |b| {
-            b.include(subscriber(orders(), Place).build());
-            b.include(subscriber(audit(), Audit).build());
+            b.include(subscriber(orders(), Place).build())
+                .include(subscriber(audit(), Audit).build())
         },
     )
 }

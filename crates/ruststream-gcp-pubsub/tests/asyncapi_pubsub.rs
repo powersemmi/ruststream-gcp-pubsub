@@ -39,7 +39,7 @@ fn document() -> Value {
         PubSubBroker::new("my-project").emulator("localhost:8085"),
         |b| {
             b.include(confirm)
-                .out_reply(Publish::default().ordering_key("order-42"));
+                .out_reply(Publish::default().ordering_key("order-42"))
         },
     );
     // --8<-- [end:mount]

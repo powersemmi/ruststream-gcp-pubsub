@@ -15,6 +15,8 @@
 //! destination, and the subscription's own dead-letter policy carries a spent delivery away. One
 //! of them runs twice with the same body, in process and against the emulator.
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 #![cfg(feature = "testing")]
 
 use std::time::Duration;
@@ -75,7 +77,7 @@ async fn the_ordering_step_on_a_slot_keeps_the_key_and_its_attribution() {
     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
         b.include(forward)
             .out(DefaultSlot, Publish::default())
-            .build();
+            .build()
     });
     let tb = TestApp::start(app)
         .await
@@ -115,7 +117,7 @@ async fn a_keyed_publish_keeps_the_codec_the_mount_site_named() {
         b.include(forward)
             .out(DefaultSlot, Publish::default())
             .codec(CborCodec)
-            .build();
+            .build()
     });
     let tb = TestApp::start(app)
         .await
@@ -158,7 +160,7 @@ async fn the_mount_sites_key_applies_where_the_call_names_none() {
     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
         b.include(audit_trail)
             .out(DefaultSlot, Publish::default().ordering_key("audit"))
-            .build();
+            .build()
     });
     let tb = TestApp::start(app)
         .await
@@ -196,9 +198,8 @@ async fn settle(orders: &[Order]) -> HandlerOutcome {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_batch_handler_runs_in_process() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
-        b.include(settle.batch(nonzero!(4)));
-    });
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(broker(), |b| b.include(settle.batch(nonzero!(4))));
     let tb = TestApp::start(app)
         .await
         .expect("the harness starts the app");
@@ -243,9 +244,8 @@ async fn receipt(order: &Order) -> Receipt {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reply_type_that_declares_a_topic_is_published_there() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
-        b.include(receipt);
-    });
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(broker(), |b| b.include(receipt));
     let tb = TestApp::start(app)
         .await
         .expect("the harness starts the app");
@@ -283,9 +283,8 @@ async fn audit(order: &Order) -> Audited {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reply_type_without_a_topic_is_published_where_the_mount_site_says() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
-        b.include(audit);
-    });
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(broker(), |b| b.include(audit));
     let tb = TestApp::start(app)
         .await
         .expect("the harness starts the app");
@@ -324,9 +323,8 @@ async fn confirm(order: &Order) -> HandlerOutcome {
 /// topics, never to a subscription.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_production_descriptor_is_reached_through_its_topic() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
-        b.include(confirm);
-    });
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(broker(), |b| b.include(confirm));
     let tb = TestApp::start(app)
         .await
         .expect("the harness starts the app");
@@ -374,10 +372,8 @@ async fn ship(order: &Order) -> HandlerOutcome {
 /// Every subscription attached to a topic receives every message published to it, each once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_topic_reaches_every_subscription_attached_to_it() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
-        b.include(bill);
-        b.include(ship);
-    });
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(broker(), |b| b.include(bill).include(ship));
     let tb = TestApp::start(app)
         .await
         .expect("the harness starts the app");
@@ -420,10 +416,8 @@ async fn second_worker(order: &Order) -> HandlerOutcome {
 /// one of them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn consumers_of_one_subscription_share_its_messages() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
-        b.include(first_worker);
-        b.include(second_worker);
-    });
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(broker(), |b| b.include(first_worker).include(second_worker));
     let tb = TestApp::start(app)
         .await
         .expect("the harness starts the app");
@@ -462,9 +456,7 @@ async fn the_routes_file_a_service_ships_runs_in_process() {
         broker(),
         // The descriptor on the subscribe side, the policy under its mount-site name on the
         // publish side, as the routes file writes them.
-        |b| {
-            b.include(plan).out_reply(Publish::default());
-        },
+        |b| b.include(plan).out_reply(Publish::default()),
     );
     let tb = TestApp::start(app)
         .await
@@ -498,7 +490,7 @@ async fn settle_descriptor(orders: &[Order]) -> HandlerOutcome {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_descriptor_mounted_batch_handler_runs_in_process() {
     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
-        b.include(settle_descriptor.batch(nonzero!(4)));
+        b.include(settle_descriptor.batch(nonzero!(4)))
     });
     let tb = TestApp::start(app)
         .await
@@ -537,9 +529,8 @@ async fn nameless(order: &Order) -> HandlerOutcome {
 /// fails to start exactly where it fails against Pub/Sub: before any subscription is opened.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_empty_descriptor_does_not_start() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
-        b.include(nameless);
-    });
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(broker(), |b| b.include(nameless));
 
     let err = TestApp::start(app)
         .await
@@ -625,7 +616,7 @@ async fn a_deferred_delivery_comes_back_when_the_delay_is_out() {
     let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker(), |b| {
         b.include(defers_the_first_delivery)
             .max_attempts(nonzero!(MAX_ATTEMPTS))
-            .dead_letter(DEAD_LETTER);
+            .dead_letter(DEAD_LETTER)
     });
     let tb = TestApp::start(app)
         .await
@@ -666,7 +657,7 @@ async fn a_deferred_delivery_still_runs_out_of_attempts() {
     let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker(), |b| {
         b.include(always_defers)
             .max_attempts(nonzero!(MAX_ATTEMPTS))
-            .dead_letter(DEAD_LETTER);
+            .dead_letter(DEAD_LETTER)
     });
     let tb = TestApp::start(app)
         .await
@@ -715,7 +706,7 @@ async fn a_spent_delivery_leaves_for_the_declared_dead_letter_topic() {
     let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker(), |b| {
         b.include(never_settles)
             .max_attempts(nonzero!(MAX_ATTEMPTS))
-            .dead_letter(DEAD_LETTER);
+            .dead_letter(DEAD_LETTER)
     });
     let tb = TestApp::start(app)
         .await
@@ -751,7 +742,7 @@ async fn a_dropped_delivery_does_not_reach_the_dead_letter_topic() {
     let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker(), |b| {
         b.include(drops_the_first_delivery)
             .max_attempts(nonzero!(MAX_ATTEMPTS))
-            .dead_letter(DEAD_LETTER);
+            .dead_letter(DEAD_LETTER)
     });
     let tb = TestApp::start(app)
         .await
@@ -784,7 +775,7 @@ async fn a_delivery_reports_which_attempt_it_is() {
     let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker(), |b| {
         b.include(settles_on_the_third_attempt)
             .max_attempts(nonzero!(MAX_ATTEMPTS))
-            .dead_letter(DEAD_LETTER);
+            .dead_letter(DEAD_LETTER)
     });
     let tb = TestApp::start(app)
         .await
@@ -855,7 +846,7 @@ async fn a_transform_on_the_reply_names_the_ordering_key() {
     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker(), |b| {
         b.include(keyed_receipt)
             .out_reply(Publish::default())
-            .transform(ReplyUnderTheOrdersKey);
+            .transform(ReplyUnderTheOrdersKey)
     });
     let tb = TestApp::start(app)
         .await
@@ -905,7 +896,7 @@ async fn a_bare_name_opens_with_the_declared_dead_letter_policy() {
     let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker(), |b| {
         b.include(never_settles_by_name)
             .max_attempts(nonzero!(MAX_ATTEMPTS))
-            .dead_letter(DEAD_LETTER);
+            .dead_letter(DEAD_LETTER)
     });
     let tb = TestApp::start(app)
         .await
@@ -937,7 +928,7 @@ async fn a_bare_name_opens_with_the_declared_dead_letter_policy() {
 async fn a_bare_name_refuses_half_a_declaration() {
     let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker(), |b| {
         b.include(never_settles_by_name)
-            .max_attempts(nonzero!(MAX_ATTEMPTS));
+            .max_attempts(nonzero!(MAX_ATTEMPTS))
     });
 
     let err = TestApp::start(app)
@@ -957,7 +948,7 @@ async fn a_bare_name_refuses_a_cap_outside_the_services_range() {
     let app = RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker(), |b| {
         b.include(never_settles_by_name)
             .max_attempts(nonzero!(3u32))
-            .dead_letter(DEAD_LETTER);
+            .dead_letter(DEAD_LETTER)
     });
 
     let err = TestApp::start(app)
@@ -999,7 +990,7 @@ fn dual_app(broker: PubSubBroker) -> RustStream {
     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker, |b| {
         b.include(defer_once)
             .max_attempts(nonzero!(MAX_ATTEMPTS))
-            .dead_letter(dual_name("dead"));
+            .dead_letter(dual_name("dead"))
     })
 }
 

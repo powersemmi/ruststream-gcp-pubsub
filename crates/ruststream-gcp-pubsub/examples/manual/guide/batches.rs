@@ -73,7 +73,7 @@ fn app() -> impl App {
                 .build(),
             )
             .max_attempts(nonzero!(5u32))
-            .dead_letter("clicks-dead");
+            .dead_letter("clicks-dead")
         },
     )
 }

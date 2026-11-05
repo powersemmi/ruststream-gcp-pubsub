@@ -51,7 +51,7 @@ fn app() -> impl App {
                     TakeOrder,
                 )
                 .build(),
-            );
+            )
         },
     )
 }

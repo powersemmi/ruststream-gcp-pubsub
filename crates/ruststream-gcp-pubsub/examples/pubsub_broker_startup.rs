@@ -31,7 +31,7 @@ fn app() -> impl App {
             // subscription with its dead-letter policy.
             b.include(place)
                 .max_attempts(nonzero!(5u32))
-                .dead_letter("orders-dead");
+                .dead_letter("orders-dead")
         },
     )
 }
@@ -72,7 +72,7 @@ mod tests {
             |b| {
                 b.include(place)
                     .max_attempts(nonzero!(3u32))
-                    .dead_letter("orders-dead");
+                    .dead_letter("orders-dead")
             },
         );
 

@@ -7,6 +7,8 @@
 //! PUBSUB_TEST_HOST=127.0.0.1:8085 cargo test --example manual_pubsub_broker_emulator --features testing
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 // A plain build compiles the service; the tests that use it exist only in the test build.
 #![cfg_attr(not(test), allow(dead_code, unused_imports))]
 
@@ -48,9 +50,8 @@ fn orders() -> GooglePubSub {
 }
 
 fn service(broker: PubSubBroker) -> impl App<State = ()> {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(subscriber(orders(), Place).build());
-    })
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(broker, |b| b.include(subscriber(orders(), Place).build()))
 }
 
 // --8<-- [start:broker]

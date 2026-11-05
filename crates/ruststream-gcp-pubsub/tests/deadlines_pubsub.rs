@@ -18,9 +18,10 @@ use std::pin::pin;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
+use futures::future::poll_fn;
 use ruststream::{
-    BatchSubscriber, Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher,
-    Subscriber,
+    BatchStream, BatchSubscriber, Broker, ConnectedBroker, IncomingMessage, OutgoingMessage,
+    Publisher, Settle, Subscriber,
 };
 use ruststream_gcp_pubsub::{ConnectedPubSubBroker, GooglePubSub, PubSubBroker};
 
@@ -179,21 +180,29 @@ async fn a_partial_batch_waits_out_the_descriptors_deadline() {
         .await
         .expect("publish succeeds");
 
+    // The runtime lends the slot a batch is collected in; the test lends one the same way.
+    let mut slot = Vec::new();
     let mut batches = pin!(subscriber.batches(NonZeroUsize::new(5).expect("a batch size")));
     assert!(
-        tokio::time::timeout(BEFORE_THE_BATCH, batches.next())
-            .await
-            .is_err(),
+        tokio::time::timeout(
+            BEFORE_THE_BATCH,
+            poll_fn(|cx| batches.as_mut().poll_fill(cx, &mut slot))
+        )
+        .await
+        .is_err(),
         "a batch short of its size must wait out the deadline the descriptor named",
     );
 
-    let batch = tokio::time::timeout(RECV_TIMEOUT, batches.next())
-        .await
-        .expect("the partial batch arrives once the deadline is out")
-        .expect("stream is open")
-        .expect("batch is ok");
-    assert_eq!(batch.len(), 1);
-    for message in batch {
+    tokio::time::timeout(
+        RECV_TIMEOUT,
+        poll_fn(|cx| batches.as_mut().poll_fill(cx, &mut slot)),
+    )
+    .await
+    .expect("the partial batch arrives once the deadline is out")
+    .expect("stream is open")
+    .expect("batch is ok");
+    assert_eq!(slot.len(), 1);
+    for message in slot {
         message.ack().await.expect("ack succeeds");
     }
 

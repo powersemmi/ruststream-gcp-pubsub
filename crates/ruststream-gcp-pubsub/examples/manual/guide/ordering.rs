@@ -97,6 +97,7 @@ impl Handle<Entry, Statement> for Notify {
 
 /// Sends each reply under the key of the entry it answers, which the delivery reports in its
 /// `partition-key` header.
+#[derive(Clone)]
 struct UnderTheEntrysKey;
 
 impl<C> PublishTransform<ForReply<C>, PubSubPublishOptions> for UnderTheEntrysKey {
@@ -133,8 +134,8 @@ fn app() -> impl App {
                 .build(),
             )
             .out(DefaultSlot, Publish::default())
-            .build();
-            b.include(
+            .build()
+            .include(
                 subscriber(
                     GooglePubSub::new("ledger-statements").create_with_topic("ledger"),
                     Notify,
@@ -143,7 +144,7 @@ fn app() -> impl App {
                 .build(),
             )
             .out_reply(Publish::default())
-            .transform(UnderTheEntrysKey);
+            .transform(UnderTheEntrysKey)
         },
     )
 }
