@@ -40,7 +40,8 @@ not UTF-8 fails the publish, because an attribute is text. A key named for the p
 message's ordering key, as [Ordered delivery](pubsub/ordering.md) draws.
 
 The publish returns once the service has assigned the message an id. A reply that fails to
-publish settles the delivery with a retry, so the message comes back.
+publish acknowledges the delivery, because the handler has done its work. The failure reaches the
+handler's [`.error`](https://powersemmi.github.io/ruststream/latest/components/subscribers/messages/error/) continuation, and without one it is logged.
 
 The delivery settles after the reply. An ack leaves with the client's next batch of
 acknowledgements, within about 100 milliseconds. What each outcome becomes is on
