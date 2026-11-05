@@ -15,7 +15,7 @@ use futures::{Stream, StreamExt};
 use ruststream::testing::{InProcess, TestableBroker};
 use ruststream::{
     ConnectedBroker, HeaderMap, IncomingMessage, OutgoingMessage, Publisher, RetryDeclaration,
-    Subscriber, SubscriptionSource, nonzero,
+    Settle, Subscriber, SubscriptionSource, nonzero,
 };
 use ruststream_gcp_pubsub::{
     ConnectedPubSubBroker, GooglePubSub, PubSubBroker, PubSubError, PubSubMessage,
@@ -190,7 +190,10 @@ async fn publishing_after_shutdown_errors() {
         .publish(OutgoingMessage::new("orders", b"late".as_slice()), None)
         .await
         .expect_err("a publish through the closed connection must error");
-    assert!(matches!(err, PubSubError::NotConnected), "got {err}");
+    assert!(
+        matches!(err.error(), PubSubError::NotConnected),
+        "got {err}"
+    );
 }
 
 /// What the service refuses at publish time is refused here with the same variant: a topic id it
@@ -229,7 +232,7 @@ async fn a_publish_the_service_refuses_is_refused() {
     ] {
         let err = publisher.publish(message, None).await.expect_err(case);
         assert!(
-            matches!(err, PubSubError::Publish { .. }),
+            matches!(err.error(), PubSubError::Publish { .. }),
             "{case}: got {err}"
         );
     }
