@@ -40,7 +40,7 @@ fn app() -> impl App {
         |b| {
             b.include(charge)
                 .max_attempts(nonzero!(5u32))
-                .dead_letter("payments-dead");
+                .dead_letter("payments-dead")
         },
     )
 }

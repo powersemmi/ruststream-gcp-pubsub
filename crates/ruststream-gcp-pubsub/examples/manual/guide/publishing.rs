@@ -100,24 +100,6 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         PubSubBroker::new("my-project").emulator("localhost:8085"),
         |b| {
-            b.include(
-                subscriber(
-                    GooglePubSub::new("orders-receipts").create_with_topic("orders"),
-                    ReceiptFor,
-                )
-                .reply()
-                .build(),
-            )
-            .out_reply(Publish::default());
-            b.include(
-                subscriber(
-                    GooglePubSub::new("orders-billing").create_with_topic("orders"),
-                    Bill,
-                )
-                .build(),
-            )
-            .out(DefaultSlot, Publish::default())
-            .build();
             b.after_startup(Publish::default(), async move |publisher| {
                 publisher
                     .message(&Started {
@@ -125,7 +107,25 @@ fn app() -> impl App {
                     })
                     .publish()
                     .await
-            });
+            })
+            .include(
+                subscriber(
+                    GooglePubSub::new("orders-receipts").create_with_topic("orders"),
+                    ReceiptFor,
+                )
+                .reply()
+                .build(),
+            )
+            .out_reply(Publish::default())
+            .include(
+                subscriber(
+                    GooglePubSub::new("orders-billing").create_with_topic("orders"),
+                    Bill,
+                )
+                .build(),
+            )
+            .out(DefaultSlot, Publish::default())
+            .build()
         },
     )
 }

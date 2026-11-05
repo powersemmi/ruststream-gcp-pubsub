@@ -76,7 +76,7 @@ fn service(config: Config) -> impl App<State = ()> {
         // Written onto the subscription at startup, which needs `pubsub.subscriptions.update`.
         b.include(subscriber("payments-workers", Charge).build())
             .max_attempts(nonzero!(5u32))
-            .dead_letter("payments-dead");
+            .dead_letter("payments-dead")
     })
 }
 

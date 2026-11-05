@@ -55,8 +55,11 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         PubSubBroker::new("my-project"),
         |b| {
-            b.include(receipt).out_reply(Publish::default());
-            b.include(bill).out(DefaultSlot, Publish::default()).build();
+            b.include(receipt)
+                .out_reply(Publish::default())
+                .include(bill)
+                .out(DefaultSlot, Publish::default())
+                .build()
         },
     )
 }

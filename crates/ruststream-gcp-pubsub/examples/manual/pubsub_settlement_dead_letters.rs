@@ -74,8 +74,8 @@ fn app() -> impl App {
             // `payments-dead`, payload and attributes as they arrived.
             b.include(subscriber(payments(), Charge).build())
                 .max_attempts(nonzero!(5u32))
-                .dead_letter("payments-dead");
-            b.include(subscriber(dead_letters(), OnDeadLetter).build());
+                .dead_letter("payments-dead")
+                .include(subscriber(dead_letters(), OnDeadLetter).build())
         },
     )
 }

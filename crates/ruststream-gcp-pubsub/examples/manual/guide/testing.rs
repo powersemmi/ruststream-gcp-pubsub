@@ -9,6 +9,9 @@
 //! PUBSUB_TEST_HOST=127.0.0.1:8085 cargo test --example manual_guide_testing --features testing
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
+
 use std::future::{Future, ready};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -83,7 +86,7 @@ fn service(broker: PubSubBroker) -> impl App<State = ()> {
         )
         .max_attempts(nonzero!(5u32))
         .dead_letter("refunds-review")
-        .out_reply(Publish::default());
+        .out_reply(Publish::default())
     })
 }
 

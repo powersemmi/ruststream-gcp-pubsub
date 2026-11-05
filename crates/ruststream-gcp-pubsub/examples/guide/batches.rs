@@ -55,7 +55,7 @@ fn app() -> impl App {
             // At most a hundred clicks per call; a click refused five times goes to `clicks-dead`.
             b.include(load.batch(nonzero!(100)))
                 .max_attempts(nonzero!(5u32))
-                .dead_letter("clicks-dead");
+                .dead_letter("clicks-dead")
         },
     )
 }

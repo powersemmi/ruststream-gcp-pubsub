@@ -99,8 +99,8 @@ fn app() -> impl App {
             // Five deliveries of one payment, the first included; then `payments-dead`.
             b.include(charge)
                 .max_attempts(nonzero!(5u32))
-                .dead_letter("payments-dead");
-            b.include(review);
+                .dead_letter("payments-dead")
+                .include(review)
         },
     )
 }

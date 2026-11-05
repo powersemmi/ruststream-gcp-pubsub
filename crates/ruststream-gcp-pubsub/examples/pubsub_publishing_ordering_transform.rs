@@ -33,6 +33,7 @@ async fn receipt(order: &Order) -> Receipt {
 // --8<-- [start:transform]
 /// Sends each receipt under the key of the order it answers, which the delivery reports in its
 /// `partition-key` header.
+#[derive(Clone)]
 struct ReplyUnderTheOrdersKey;
 
 impl<C> PublishTransform<ForReply<C>, PubSubPublishOptions> for ReplyUnderTheOrdersKey {
@@ -59,7 +60,7 @@ fn app() -> impl App {
         |b| {
             b.include(receipt)
                 .out_reply(Publish::default())
-                .transform(ReplyUnderTheOrdersKey);
+                .transform(ReplyUnderTheOrdersKey)
         },
     )
 }

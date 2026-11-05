@@ -38,12 +38,10 @@ impl Handle<Order> for Place {
 
 /// Application Default Credentials, against `pubsub.googleapis.com`.
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        PubSubBroker::new("my-project"),
-        |b| {
-            b.include(subscriber("orders-workers", Place).build());
-        },
-    )
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(PubSubBroker::new("my-project"), |b| {
+            b.include(subscriber("orders-workers", Place).build())
+        })
 }
 // --8<-- [end:app]
 

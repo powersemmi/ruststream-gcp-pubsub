@@ -45,7 +45,7 @@ fn app() -> impl App {
         |b| {
             b.include(confirm)
                 .out(DefaultSlot, Publish::default())
-                .build();
+                .build()
         },
     )
 }

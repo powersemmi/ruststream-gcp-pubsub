@@ -61,7 +61,7 @@ fn app() -> impl App {
         |b| {
             b.include(subscriber("orders-workers", Ship).build())
                 .out(DefaultSlot, Publish::default())
-                .build();
+                .build()
         },
     )
 }

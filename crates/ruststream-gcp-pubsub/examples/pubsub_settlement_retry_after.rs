@@ -35,12 +35,8 @@ async fn reconcile(payment: &Payment) -> HandlerOutcome {
 
 #[ruststream::app]
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(
-        PubSubBroker::new("my-project"),
-        |b| {
-            b.include(reconcile);
-        },
-    )
+    RustStream::new(AppInfo::new("payments", "0.1.0"))
+        .with_broker(PubSubBroker::new("my-project"), |b| b.include(reconcile))
 }
 
 #[cfg(test)]

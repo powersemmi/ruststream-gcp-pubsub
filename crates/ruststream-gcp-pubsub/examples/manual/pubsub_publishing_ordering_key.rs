@@ -57,7 +57,7 @@ fn app() -> impl App {
         |b| {
             b.include(subscriber("orders-workers", Confirm).build())
                 .out(DefaultSlot, Publish::default())
-                .build();
+                .build()
         },
     )
 }

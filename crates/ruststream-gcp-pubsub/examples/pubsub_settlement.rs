@@ -41,7 +41,7 @@ fn app() -> impl App {
         |b| {
             b.include(reserve)
                 .max_attempts(nonzero!(5u32))
-                .dead_letter("orders-dead");
+                .dead_letter("orders-dead")
         },
     )
 }

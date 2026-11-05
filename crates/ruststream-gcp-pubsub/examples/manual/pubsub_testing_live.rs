@@ -8,6 +8,8 @@
 //!     cargo test --example manual_pubsub_testing_live --features testing
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 // A plain build compiles the service; the tests that use it exist only in the test build.
 #![cfg_attr(not(test), allow(dead_code, unused_imports))]
 
@@ -54,7 +56,7 @@ fn payments() -> GooglePubSub {
 /// The service on `broker`: the production builder, unchanged in either mode.
 fn service(broker: PubSubBroker) -> impl App<State = ()> {
     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker, |b| {
-        b.include(subscriber(payments(), Accept).build());
+        b.include(subscriber(payments(), Accept).build())
     })
 }
 
