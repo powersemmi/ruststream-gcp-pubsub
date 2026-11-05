@@ -38,6 +38,6 @@ nack 之后或截止时间届满后，Pub/Sub 再次投递消息，直到死信�
 
 ## 在本 crate 中 {/* #in-this-crate */}
 
-投递把 `delivery_attempt` 报告为 `pubsub-delivery-attempt` 消息头。注册上的 [`max_attempts(n)`](api:ruststream::runtime::Mounting::max_attempts) 和 [`dead_letter(topic)`](api:ruststream::runtime::Mounting::dead_letter) 成为订阅的死信政策，在订阅打开时写入。上限不在 5 到 100 之间，或者两者只声明了一个，启动就会在调用服务之前失败。每种处理器结果如何体现在这张图上，见[结算](../settlement.md)。
+投递把 `delivery_attempt` 报告为 `pubsub-delivery-attempt` 消息头。注册上的 [`max_attempts(n)`](api:ruststream::runtime::RouterWith::max_attempts) 和 [`dead_letter(topic)`](api:ruststream::runtime::RouterWith::dead_letter) 成为订阅的死信政策，在订阅打开时写入。上限不在 5 到 100 之间，或者两者只声明了一个，启动就会在调用服务之前失败。每种处理器结果如何体现在这张图上，见[结算](../settlement.md)。
 
 规则来自 Google（[重试政策](https://docs.cloud.google.com/pubsub/docs/subscription-retry-policy)、[死信主题](https://docs.cloud.google.com/pubsub/docs/handling-failures)、[精确一次投递](https://docs.cloud.google.com/pubsub/docs/exactly-once-delivery)）。

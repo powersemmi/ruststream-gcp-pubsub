@@ -9,7 +9,7 @@ import TabItem from '@theme/TabItem';
 
 # Dead letters
 
-[`max_attempts(n)`](api:ruststream::runtime::Mounting::max_attempts) and [`dead_letter(topic)`](api:ruststream::runtime::Mounting::dead_letter) at the mount site become the subscription's own dead-letter policy, written at startup.
+[`max_attempts(n)`](api:ruststream::runtime::RouterWith::max_attempts) and [`dead_letter(topic)`](api:ruststream::runtime::RouterWith::dead_letter) at the mount site become the subscription's own dead-letter policy, written at startup.
 
 A Pub/Sub subscription moves a spent message itself.
 After `n` deliveries the service stops redelivering the message and publishes it to the dead-letter topic, with its payload and its attributes.

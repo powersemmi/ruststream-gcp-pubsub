@@ -79,7 +79,7 @@ Pub/Sub 只在有死信政策的订阅上统计尝试次数，而且这个计数
 </TabItem>
 </Tabs>
 
-[`max_attempts`](api:ruststream::runtime::Mounting::max_attempts) 和 [`dead_letter`](api:ruststream::runtime::Mounting::dead_letter) 成为订阅自己的死信政策，在启动时写入。
+[`max_attempts`](api:ruststream::runtime::RouterWith::max_attempts) 和 [`dead_letter`](api:ruststream::runtime::RouterWith::dead_letter) 成为订阅自己的死信政策，在启动时写入。
 第五次投递之后，Pub/Sub 不再投递这笔付款，而是把它发布到 `payments-dead`，载荷和属性保持到达时的样子。
 服务自己不发布任何东西，所以崩溃不会让这次转移丢失。
 Pub/Sub 接受 5 到 100 的上限；其他值，或者只写了这对设置中的一半，都会让启动失败。

@@ -50,8 +50,8 @@ regional endpoint ensures. Its deliveries take noticeably longer than on a stand
 ## In this crate
 
 A delivery reports `delivery_attempt` as the `pubsub-delivery-attempt` header. A registration's
-[`max_attempts(n)`](api:ruststream::runtime::Mounting::max_attempts) and
-[`dead_letter(topic)`](api:ruststream::runtime::Mounting::dead_letter) become the subscription's
+[`max_attempts(n)`](api:ruststream::runtime::RouterWith::max_attempts) and
+[`dead_letter(topic)`](api:ruststream::runtime::RouterWith::dead_letter) become the subscription's
 dead-letter policy, written when the subscription opens. A cap outside 5 to 100, or one of the two
 declared without the other, fails the start before any call to the service. How each handler
 outcome reaches this picture is on [Settlement](../settlement.md).
