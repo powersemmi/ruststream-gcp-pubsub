@@ -247,6 +247,11 @@ impl Publisher for PubSubPublisher {
             Link::Service(core) => core,
             #[cfg(feature = "testing")]
             Link::InProcess(project) => {
+                // The same refusal the service connection makes before its client takes the
+                // message, so a test sees the message come back as production does.
+                if let Err(err) = project.ensure_open() {
+                    return Err(PublishMessageError::with_message(err, msg));
+                }
                 let (name, payload, headers) = msg.into_parts();
                 let refused = |reason: String| PubSubError::Publish {
                     topic: project.topic_path(name),
