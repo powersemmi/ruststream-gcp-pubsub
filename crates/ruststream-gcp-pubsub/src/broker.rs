@@ -480,9 +480,7 @@ pub(crate) type CoreCell = Arc<OnceCell<Link>>;
 ///     // Application Default Credentials against `pubsub.googleapis.com`; `.emulator(host)`
 ///     // points the same broker at a local emulator instead.
 ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
-///         .with_broker(PubSubBroker::new("my-project"), |b| {
-///             b.include(handle);
-///         })
+///         .with_broker(PubSubBroker::new("my-project"), |b| b.include(handle))
 /// }
 /// # }
 /// # fn main() {}
@@ -661,12 +659,10 @@ impl Broker for PubSubBroker {
 ///
 /// /// The app `main` runs, and the one the test hands the harness.
 /// pub fn app() -> impl App {
-///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-///         PubSubBroker::new("my-project"),
-///         |b| {
-///             b.include(confirm).out_reply(Publish::default());
-///         },
-///     )
+///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+///         .with_broker(PubSubBroker::new("my-project"), |b| {
+///             b.include(confirm).out_reply(Publish::default())
+///         })
 /// }
 ///
 /// pub async fn a_confirmation_follows_an_order() -> Result<(), Box<dyn Error>> {

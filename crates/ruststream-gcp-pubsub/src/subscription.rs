@@ -73,9 +73,7 @@ pub(crate) struct DeliveryLimits {
 /// #[ruststream::app]
 /// fn app() -> impl App {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
-///         .with_broker(PubSubBroker::new("my-project"), |b| {
-///             b.include(handle);
-///         })
+///         .with_broker(PubSubBroker::new("my-project"), |b| b.include(handle))
 /// }
 /// # }
 /// # fn main() {}
@@ -182,9 +180,7 @@ impl GooglePubSub {
     /// #[ruststream::app]
     /// fn app() -> impl App {
     ///     RustStream::new(AppInfo::new("invoices", "0.1.0"))
-    ///         .with_broker(PubSubBroker::new("my-project"), |b| {
-    ///             b.include(send);
-    ///         })
+    ///         .with_broker(PubSubBroker::new("my-project"), |b| b.include(send))
     /// }
     /// # }
     /// # fn main() {}
@@ -226,7 +222,7 @@ impl GooglePubSub {
     ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
     ///         .with_broker(PubSubBroker::new("my-project"), |b| {
     ///             // Up to 100 orders per call, or whatever arrived within 200ms of the first.
-    ///             b.include(index.batch(nonzero!(100)));
+    ///             b.include(index.batch(nonzero!(100)))
     ///         })
     /// }
     /// # }
@@ -373,7 +369,7 @@ impl GooglePubSub {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
 ///         .with_broker(PubSubBroker::new("my-project"), |b| {
 ///             // The deployment names the subscription; every other setting is the default.
-///             b.include(handle.name("orders-workers"));
+///             b.include(handle.name("orders-workers"))
 ///         })
 /// }
 /// # }
@@ -435,7 +431,7 @@ impl IntoSource for GooglePubSub {
 ///             // Pub/Sub gives one payment five deliveries, then publishes it to `payments-dead`.
 ///             b.include(reconcile.batch(nonzero!(50)))
 ///                 .max_attempts(nonzero!(5u32))
-///                 .dead_letter("payments-dead");
+///                 .dead_letter("payments-dead")
 ///         },
 ///     )
 /// }

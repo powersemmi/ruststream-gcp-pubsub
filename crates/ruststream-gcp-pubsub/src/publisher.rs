@@ -78,7 +78,9 @@ use crate::topic_publishers::FirstTopic;
 /// pub fn app() -> impl App {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
 ///         .with_broker(PubSubBroker::new("my-project"), |b| {
-///             b.include(confirm).out(DefaultSlot, Publish::default()).build();
+///             b.include(confirm)
+///                 .out(DefaultSlot, Publish::default())
+///                 .build()
 ///         })
 /// }
 ///
@@ -387,7 +389,9 @@ fn unsent(
 /// fn app() -> impl App {
 ///     RustStream::new(AppInfo::new("shipments", "0.1.0"))
 ///         .with_broker(PubSubBroker::new("my-project"), |b| {
-///             b.include(track).out(DefaultSlot, Publish::default()).build();
+///             b.include(track)
+///                 .out(DefaultSlot, Publish::default())
+///                 .build()
 ///         })
 /// }
 /// # }
@@ -447,7 +451,7 @@ where
 ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
 ///         .with_broker(PubSubBroker::new("my-project"), |b| {
 ///             // A reply has no call site, so every receipt is ordered under the policy's key.
-///             b.include(receipt).out_reply(Publish::default().ordering_key("receipts"));
+///             b.include(receipt).out_reply(Publish::default().ordering_key("receipts"))
 ///         })
 /// }
 /// # }
