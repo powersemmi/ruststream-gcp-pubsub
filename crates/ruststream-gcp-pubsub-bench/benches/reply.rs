@@ -41,10 +41,12 @@ fn app(messages: usize) -> Pending {
 }
 
 // The client's batched acknowledgements put a fraction of an allocation on each delivery, so the
-// floor is stated over a thousand of them. The longest run allocated 187,618 to 191,121 blocks
-// over five runs, moved by the client's publish and lease timers, which fire more often on a
-// loaded machine; the floor, 194,700, is the highest plus more than that spread of 3,503.
-#[library_benchmark(config = common::config_every(89_935, 1_000, 14_830))]
+// floor is stated over a thousand of them. The longest run allocated 209,687 to 210,387 blocks
+// over seven runs on google-cloud-pubsub 1.7, moved by the client's publish and lease timers,
+// which fire more often on a loaded machine; the floor, 213,900, is the highest plus the widest
+// spread seen on this scenario, 3,503. The client's own publish path is most of a reply: moving
+// it from 1.3 to 1.6 added about 13 blocks per reply with this crate unchanged.
+#[library_benchmark(config = common::config_every(99_535, 1_000, 14_830))]
 #[bench::first(app(1))]
 #[bench::base(app(MESSAGES))]
 #[bench::twice(app(2 * MESSAGES))]
