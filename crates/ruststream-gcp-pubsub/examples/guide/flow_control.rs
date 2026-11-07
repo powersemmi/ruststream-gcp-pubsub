@@ -10,6 +10,9 @@
 //! cargo run --example guide_flow_control --features testing,ruststream/logging -- run
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
+
 use std::time::Duration;
 
 use ruststream_gcp_pubsub::prelude::*;
@@ -50,9 +53,7 @@ async fn render(request: &ReportRequest) -> HandlerOutcome {
 // --8<-- [start:app]
 /// The service on `broker`; `app` runs it against the local emulator.
 fn service(broker: PubSubBroker) -> impl App<State = ()> {
-    RustStream::new(AppInfo::new("reports", "0.1.0")).with_broker(broker, |b| {
-        b.include(render);
-    })
+    RustStream::new(AppInfo::new("reports", "0.1.0")).with_broker(broker, |b| b.include(render))
 }
 
 #[ruststream::app]

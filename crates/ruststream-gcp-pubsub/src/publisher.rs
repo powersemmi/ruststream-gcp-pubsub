@@ -14,10 +14,14 @@ use std::sync::Arc;
 
 use bytes::BytesMut;
 use google_cloud_pubsub::client::Publisher as GcpPublisher;
+use google_cloud_pubsub::model::Message as GcpMessage;
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::{Binding, Bindings};
 use ruststream::runtime::{PublishBuilder, PublishSink};
-use ruststream::{HeaderMap, OutgoingMessage, PairError, PublishPolicy, Publisher, Take};
+use ruststream::{
+    HeaderMap, OutgoingMessage, PairError, PublishMessageError, PublishOutcome, PublishPolicy,
+    Publisher, Take,
+};
 #[cfg(feature = "asyncapi")]
 use serde::Serialize;
 use tokio::runtime::Handle;
@@ -74,7 +78,9 @@ use crate::topic_publishers::FirstTopic;
 /// pub fn app() -> impl App {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
 ///         .with_broker(PubSubBroker::new("my-project"), |b| {
-///             b.include(confirm).out(DefaultSlot, Publish::default()).build();
+///             b.include(confirm)
+///                 .out(DefaultSlot, Publish::default())
+///                 .build()
 ///         })
 /// }
 ///
@@ -225,37 +231,65 @@ impl Publisher for PubSubPublisher {
     type Error = PubSubError;
     type Options = PubSubPublishOptions;
 
-    async fn publish(
+    /// A refusal before the client takes the message (a closed connection, a header that is not
+    /// text) hands the message back. Once the client has queued it, the payload is the client's,
+    /// so a failed send reports the error alone.
+    async fn publish<'msg>(
         &self,
-        msg: OutgoingMessage<'_, BytesMut>,
+        msg: OutgoingMessage<'msg, BytesMut>,
         options: Option<&Self::Options>,
-    ) -> Result<(), Self::Error> {
-        let core = match self.link()? {
+    ) -> PublishOutcome<'msg, PubSubError, Take> {
+        let link = match self.link() {
+            Ok(link) => link,
+            Err(err) => return Err(PublishMessageError::with_message(err, msg)),
+        };
+        let core = match link {
             Link::Service(core) => core,
             #[cfg(feature = "testing")]
             Link::InProcess(project) => {
+                // The same refusal the service connection makes before its client takes the
+                // message, so a test sees the message come back as production does.
+                if let Err(err) = project.ensure_open() {
+                    return Err(PublishMessageError::with_message(err, msg));
+                }
                 let (name, payload, headers) = msg.into_parts();
                 let refused = |reason: String| PubSubError::Publish {
                     topic: project.topic_path(name),
                     source: reason.into(),
                 };
-                let key =
-                    resolve_ordering_key(&headers, options, self.default_ordering_key.as_deref())
-                        .map_err(refused)?;
-                let message = to_gcp_message(payload, &headers, key).map_err(refused)?;
-                return project.publish(name, &message);
+                let message = match gcp_message(
+                    payload,
+                    &headers,
+                    options,
+                    self.default_ordering_key.as_deref(),
+                ) {
+                    Ok((message, _)) => message,
+                    Err((reason, payload)) => {
+                        return Err(unsent(refused(reason), name, payload, headers));
+                    }
+                };
+                return project
+                    .publish(name, &message)
+                    .map_err(PublishMessageError::new);
             }
         };
-        core.ensure_open()?;
-        let name = msg.name();
-        let (_, payload, headers) = msg.into_parts();
+        if let Err(err) = core.ensure_open() {
+            return Err(PublishMessageError::with_message(err, msg));
+        }
+        let (name, payload, headers) = msg.into_parts();
         let refused = |reason: String| PubSubError::Publish {
             topic: core.topic_name(name),
             source: reason.into(),
         };
-        let key = resolve_ordering_key(&headers, options, self.default_ordering_key.as_deref())
-            .map_err(refused)?;
-        let message = to_gcp_message(payload, &headers, key).map_err(refused)?;
+        let (message, key) = match gcp_message(
+            payload,
+            &headers,
+            options,
+            self.default_ordering_key.as_deref(),
+        ) {
+            Ok(prepared) => prepared,
+            Err((reason, payload)) => return Err(unsent(refused(reason), name, payload, headers)),
+        };
         // The client queues the message and hands back a future that owns its answer, so the
         // client publisher is borrowed for the call alone.
         let sent = self.with_client(core, name, |publisher| publisher.publish(message));
@@ -269,13 +303,45 @@ impl Publisher for PubSubPublisher {
                         publisher.resume_publish(key.to_owned());
                     });
                 }
-                Err(PubSubError::Publish {
+                Err(PublishMessageError::new(PubSubError::Publish {
                     topic: core.topic_name(name),
                     source: box_err(err),
-                })
+                }))
             }
         }
     }
+}
+
+/// The client's message for one publish, under the ordering key resolved for it, and that key.
+///
+/// # Errors
+///
+/// Returns the reason with the payload untouched when the key or a header is not text, so the
+/// refusal hands the message back whole.
+pub(crate) fn gcp_message<'a>(
+    payload: BytesMut,
+    headers: &'a HeaderMap,
+    options: Option<&'a PubSubPublishOptions>,
+    policy: Option<&'a str>,
+) -> Result<(GcpMessage, Option<&'a str>), (String, BytesMut)> {
+    let key = match resolve_ordering_key(headers, options, policy) {
+        Ok(key) => key,
+        Err(reason) => return Err((reason, payload)),
+    };
+    to_gcp_message(payload, headers, key).map(|message| (message, key))
+}
+
+/// A refusal that returns the message the client never took.
+fn unsent(
+    error: PubSubError,
+    name: &str,
+    payload: BytesMut,
+    headers: HeaderMap,
+) -> PublishMessageError<PubSubError, OutgoingMessage<'_, BytesMut>> {
+    PublishMessageError::with_message(
+        error,
+        OutgoingMessage::with_payload(name, payload).with_headers(headers),
+    )
 }
 
 /// Names the ordering key of one publish.
@@ -328,7 +394,9 @@ impl Publisher for PubSubPublisher {
 /// fn app() -> impl App {
 ///     RustStream::new(AppInfo::new("shipments", "0.1.0"))
 ///         .with_broker(PubSubBroker::new("my-project"), |b| {
-///             b.include(track).out(DefaultSlot, Publish::default()).build();
+///             b.include(track)
+///                 .out(DefaultSlot, Publish::default())
+///                 .build()
 ///         })
 /// }
 /// # }
@@ -388,7 +456,7 @@ where
 ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
 ///         .with_broker(PubSubBroker::new("my-project"), |b| {
 ///             // A reply has no call site, so every receipt is ordered under the policy's key.
-///             b.include(receipt).out_reply(Publish::default().ordering_key("receipts"));
+///             b.include(receipt).out_reply(Publish::default().ordering_key("receipts"))
 ///         })
 /// }
 /// # }

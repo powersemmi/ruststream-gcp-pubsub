@@ -26,12 +26,10 @@ async fn place(order: &Order) -> HandlerOutcome {
 
 /// One service per region, each reading the subscription of its region.
 fn service(subscription: String) -> impl App<State = ()> {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        PubSubBroker::new("my-project"),
-        |b| {
-            b.include(place.name(subscription));
-        },
-    )
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(PubSubBroker::new("my-project"), |b| {
+            b.include(place.name(subscription))
+        })
 }
 // --8<-- [end:name]
 

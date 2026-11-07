@@ -19,7 +19,7 @@ use std::time::Duration;
 use futures::Stream;
 
 use google_cloud_pubsub::subscriber::{MessageStream, ShutdownToken};
-use ruststream::{BatchSubscriber, BufferedSubscriber, Subscriber};
+use ruststream::{BatchStream, BatchSubscriber, BufferedSubscriber, Subscriber};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
@@ -137,7 +137,7 @@ impl BatchSubscriber for PubSubSubscriber {
     fn batches(
         &mut self,
         size: NonZeroUsize,
-    ) -> impl Stream<Item = Result<Self::Batch, PubSubError>> + Send + '_ {
+    ) -> impl BatchStream<Self::Batch, Error = PubSubError> + Send + '_ {
         self.buffer.batches(size)
     }
 }

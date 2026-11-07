@@ -46,7 +46,7 @@ fn service(subscription: String) -> impl App<State = ()> {
                 subscriber(Unnamed::<GooglePubSub>::new(), Place)
                     .name(subscription)
                     .build(),
-            );
+            )
         },
     )
 }

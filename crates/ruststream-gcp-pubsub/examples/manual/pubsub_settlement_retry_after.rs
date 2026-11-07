@@ -56,7 +56,7 @@ fn app() -> impl App {
                     Reconcile,
                 )
                 .build(),
-            );
+            )
         },
     )
 }

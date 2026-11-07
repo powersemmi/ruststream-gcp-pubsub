@@ -30,7 +30,7 @@ fn app() -> impl App {
         PubSubBroker::new("my-project"),
         |b| {
             // At most 50 orders reach the handler per call.
-            b.include(settle.batch(nonzero!(50)));
+            b.include(settle.batch(nonzero!(50)))
         },
     )
 }

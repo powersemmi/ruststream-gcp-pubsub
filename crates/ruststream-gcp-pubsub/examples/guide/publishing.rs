@@ -68,8 +68,6 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         PubSubBroker::new("my-project").emulator("localhost:8085"),
         |b| {
-            b.include(receipt).out_reply(Publish::default());
-            b.include(bill).out(DefaultSlot, Publish::default()).build();
             b.after_startup(Publish::default(), async move |publisher| {
                 publisher
                     .message(&Started {
@@ -77,7 +75,12 @@ fn app() -> impl App {
                     })
                     .publish()
                     .await
-            });
+            })
+            .include(receipt)
+            .out_reply(Publish::default())
+            .include(bill)
+            .out(DefaultSlot, Publish::default())
+            .build()
         },
     )
 }

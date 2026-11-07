@@ -6,7 +6,10 @@
     unused_qualifications,
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    // A run drives the service on the thread that blocks on it, and the app's cold path carries no
+    // Send.
+    clippy::future_not_send
 )]
 //! What this crate, and then the runtime on top of it, cost over the `google-cloud-pubsub` client.
 //!
@@ -85,7 +88,7 @@ use google_cloud_pubsub::model::Message as GcpMessage;
 // path for it, so a `use` here would be an unused import.
 use ruststream::runtime::{AppInfo, HandlerOutcome, RunningApp, RustStream};
 use ruststream::{
-    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
+    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, Settle, Subscriber,
     SubscriptionSource, subscriber,
 };
 use ruststream_gcp_pubsub::{GooglePubSub, PubSubBroker, PubSubPublishOptions, PubSubPublisher};
@@ -558,9 +561,7 @@ async fn handle(order: &Order, ctx: &mut Context<'_, (), Run>) -> HandlerOutcome
 async fn start(broker: PubSubBroker, run: Run) -> RunningApp {
     RustStream::new(AppInfo::new("pubsub-bench", "0.0.0"))
         .on_startup(async move |()| Ok::<_, Infallible>(run))
-        .with_broker(broker, |b| {
-            b.include(handle);
-        })
+        .with_broker(broker, |b| b.include(handle))
         .start()
         .await
         .expect("the service starts")

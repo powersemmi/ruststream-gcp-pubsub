@@ -127,14 +127,14 @@ fn app() -> impl App {
                 .build(),
             )
             .max_attempts(nonzero!(5u32))
-            .dead_letter("payments-dead");
-            b.include(
+            .dead_letter("payments-dead")
+            .include(
                 subscriber(
                     GooglePubSub::new("payments-dead-review").create_with_topic("payments-dead"),
                     Review,
                 )
                 .build(),
-            );
+            )
         },
     )
 }

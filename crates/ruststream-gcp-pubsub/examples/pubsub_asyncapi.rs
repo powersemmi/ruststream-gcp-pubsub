@@ -43,7 +43,7 @@ fn service(broker: PubSubBroker) -> impl App<State = ()> {
     RustStream::new(AppInfo::new("orders", "1.0.0")).with_broker_labeled("pubsub", broker, |b| {
         // Every receipt goes out under one key, so the document states it.
         b.include(receipt)
-            .out_reply(Publish::default().ordering_key("receipts"));
+            .out_reply(Publish::default().ordering_key("receipts"))
     })
 }
 // --8<-- [end:messages]

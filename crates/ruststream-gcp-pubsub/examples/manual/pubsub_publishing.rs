@@ -94,8 +94,8 @@ fn app() -> impl App {
                 .reply()
                 .build(),
             )
-            .out_reply(Publish::default());
-            b.include(
+            .out_reply(Publish::default())
+            .include(
                 subscriber(
                     GooglePubSub::new("orders-billing").create_with_topic("orders"),
                     Bill,
@@ -103,7 +103,7 @@ fn app() -> impl App {
                 .build(),
             )
             .out(DefaultSlot, Publish::default())
-            .build();
+            .build()
         },
     )
 }

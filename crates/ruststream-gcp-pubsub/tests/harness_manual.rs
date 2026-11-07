@@ -46,7 +46,7 @@ async fn a_handle_body_mounts_on_a_pubsub_descriptor() {
                 )
                 .undocumented()
                 .build(),
-            );
+            )
         },
     );
     let tb = TestApp::start(app).await.expect("start");

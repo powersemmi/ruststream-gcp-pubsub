@@ -45,7 +45,9 @@
 //! fn app() -> impl App {
 //!     RustStream::new(AppInfo::new("orders", "0.1.0"))
 //!         .with_broker(PubSubBroker::new("my-project"), |b| {
-//!             b.include(confirm).out(DefaultSlot, Publish::default()).build();
+//!             b.include(confirm)
+//!                 .out(DefaultSlot, Publish::default())
+//!                 .build()
 //!         })
 //! }
 //! # }

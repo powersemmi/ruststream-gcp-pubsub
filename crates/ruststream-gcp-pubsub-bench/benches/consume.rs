@@ -28,9 +28,7 @@ async fn consume(order: &Order, ctx: &mut Context<'_, (), Latch>) -> HandlerOutc
 }
 
 fn app(messages: usize) -> Pending {
-    common::pending(messages, |b| {
-        b.include(consume);
-    })
+    common::pending(messages, |b| b.include(consume))
 }
 
 // The client's batched acknowledgements put a fraction of an allocation on each delivery, so the

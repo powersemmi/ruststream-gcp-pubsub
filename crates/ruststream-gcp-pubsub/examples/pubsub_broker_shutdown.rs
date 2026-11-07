@@ -29,9 +29,8 @@ async fn ship(order: &Order) -> Shipment {
 
 fn service(broker: PubSubBroker) -> impl App<State = ()> {
     // At shutdown the runtime flushes the shipments still buffered for `shipments`.
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(ship).out_reply(Publish::default());
-    })
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(broker, |b| b.include(ship).out_reply(Publish::default()))
 }
 
 #[ruststream::app]

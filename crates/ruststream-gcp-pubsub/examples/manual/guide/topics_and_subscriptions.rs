@@ -99,16 +99,16 @@ fn app() -> impl App {
                     Bill,
                 )
                 .build(),
-            );
-            b.include(
+            )
+            .include(
                 subscriber(
                     GooglePubSub::new("orders-shipping").create_with_topic("orders"),
                     Ship,
                 )
                 .build(),
-            );
-            b.include(subscriber("orders-audit", Audit).build());
-            b.include(subscriber(GooglePubSub::new(reports), Report).build());
+            )
+            .include(subscriber("orders-audit", Audit).build())
+            .include(subscriber(GooglePubSub::new(reports), Report).build())
         },
     )
 }

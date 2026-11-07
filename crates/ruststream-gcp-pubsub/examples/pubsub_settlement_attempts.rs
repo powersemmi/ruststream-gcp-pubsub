@@ -46,7 +46,7 @@ fn app() -> impl App {
             // The dead-letter policy is what makes Pub/Sub count the attempts.
             b.include(reserve)
                 .max_attempts(nonzero!(5u32))
-                .dead_letter("orders-dead");
+                .dead_letter("orders-dead")
         },
     )
 }

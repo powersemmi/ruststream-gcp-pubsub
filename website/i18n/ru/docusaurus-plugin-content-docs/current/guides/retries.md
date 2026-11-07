@@ -79,7 +79,7 @@ Pub/Sub считает попытки только на подписке с по
 </TabItem>
 </Tabs>
 
-[`max_attempts`](api:ruststream::runtime::Mounting::max_attempts) и [`dead_letter`](api:ruststream::runtime::Mounting::dead_letter) становятся собственной политикой dead-letter подписки, которая записывается при запуске.
+[`max_attempts`](api:ruststream::runtime::RouterWith::max_attempts) и [`dead_letter`](api:ruststream::runtime::RouterWith::dead_letter) становятся собственной политикой dead-letter подписки, которая записывается при запуске.
 После пятой доставки Pub/Sub перестаёт доставлять платёж и публикует его в `payments-dead` с полезной нагрузкой и атрибутами в том виде, в каком они пришли.
 Сам сервис ничего не публикует, поэтому сбой не может потерять перенос.
 Pub/Sub принимает предел от 5 до 100. Любое другое значение или только одно из двух объявлений прерывает запуск.

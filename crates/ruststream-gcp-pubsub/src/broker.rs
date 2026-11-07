@@ -43,9 +43,7 @@ use crate::error::{PubSubError, box_err};
 #[cfg(feature = "testing")]
 use crate::in_process::{self, Project};
 #[cfg(feature = "testing")]
-use crate::message::to_gcp_message;
-#[cfg(feature = "testing")]
-use crate::publisher::resolve_ordering_key;
+use crate::publisher::gcp_message;
 use crate::publisher::{PubSubPublish, PubSubPublisher};
 use crate::runtime_slot::{RuntimeRegistration, RuntimeSlot};
 use crate::subscriber::PubSubSubscriber;
@@ -482,9 +480,7 @@ pub(crate) type CoreCell = Arc<OnceCell<Link>>;
 ///     // Application Default Credentials against `pubsub.googleapis.com`; `.emulator(host)`
 ///     // points the same broker at a local emulator instead.
 ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
-///         .with_broker(PubSubBroker::new("my-project"), |b| {
-///             b.include(handle);
-///         })
+///         .with_broker(PubSubBroker::new("my-project"), |b| b.include(handle))
 /// }
 /// # }
 /// # fn main() {}
@@ -663,12 +659,10 @@ impl Broker for PubSubBroker {
 ///
 /// /// The app `main` runs, and the one the test hands the harness.
 /// pub fn app() -> impl App {
-///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-///         PubSubBroker::new("my-project"),
-///         |b| {
-///             b.include(confirm).out_reply(Publish::default());
-///         },
-///     )
+///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+///         .with_broker(PubSubBroker::new("my-project"), |b| {
+///             b.include(confirm).out_reply(Publish::default())
+///         })
 /// }
 ///
 /// pub async fn a_confirmation_follows_an_order() -> Result<(), Box<dyn Error>> {
@@ -704,9 +698,7 @@ impl Broker for PubSubBroker {
 /// ```
 #[cfg(feature = "testing")]
 impl InProcess for PubSubBroker {
-    fn connect_in_process(
-        self,
-    ) -> impl Future<Output = Result<Self::Connected, Self::Error>> + Send {
+    fn connect_in_process(self) -> impl Future<Output = Result<Self::Connected, Self::Error>> {
         // A clone of this broker that already connected in process shares the cell, and that
         // transport is the one every handle of the broker speaks over. A clone connected to the
         // service filled it with a connection the harness cannot drive, and a test must not
@@ -864,14 +856,17 @@ impl TestableBroker for ConnectedPubSubBroker {
         let project = self.project("inject");
         // An external producer publishes the bytes with the headers as attributes, and names the
         // ordering key the way this crate's own publisher reads it.
-        let wire = resolve_ordering_key(message.headers(), None, None)
-            .and_then(|key| {
-                to_gcp_message(BytesMut::from(message.payload()), message.headers(), key)
-            })
-            .map_err(|reason| PubSubError::Publish {
-                topic: project.topic_path(message.name()),
-                source: reason.into(),
-            });
+        let wire = gcp_message(
+            BytesMut::from(message.payload()),
+            message.headers(),
+            None,
+            None,
+        )
+        .map(|(wire, _)| wire)
+        .map_err(|(reason, _)| PubSubError::Publish {
+            topic: project.topic_path(message.name()),
+            source: reason.into(),
+        });
         if let Err(err) = wire.and_then(|wire| project.publish(message.name(), &wire)) {
             panic!(
                 "the injected message to {:?} is not one Pub/Sub takes: {err}",

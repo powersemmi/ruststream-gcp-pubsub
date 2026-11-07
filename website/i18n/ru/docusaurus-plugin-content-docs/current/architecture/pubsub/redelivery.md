@@ -51,8 +51,8 @@ Pub/Sub переносит сообщение так: публикует его 
 ## В этом крейте {/* #in-this-crate */}
 
 Доставка сообщает `delivery_attempt` в заголовке `pubsub-delivery-attempt`.
-[`max_attempts(n)`](api:ruststream::runtime::Mounting::max_attempts) и
-[`dead_letter(topic)`](api:ruststream::runtime::Mounting::dead_letter) регистрации становятся
+[`max_attempts(n)`](api:ruststream::runtime::RouterWith::max_attempts) и
+[`dead_letter(topic)`](api:ruststream::runtime::RouterWith::dead_letter) регистрации становятся
 политикой dead-letter подписки, которая записывается, когда подписка открывается. Предел вне
 диапазона от 5 до 100 или только одно из двух объявлений без другого прерывает старт до первого
 обращения к Pub/Sub. Как каждый исход обработчика попадает в эту картину, показывает страница

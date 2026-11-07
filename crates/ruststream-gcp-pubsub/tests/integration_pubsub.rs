@@ -14,7 +14,7 @@ use google_cloud_pubsub::model::DeadLetterPolicy;
 use ruststream::runtime::PublishExt;
 use ruststream::{
     AckError, Broker, ConnectedBroker, HeaderMap, IncomingMessage, Outgoing, OutgoingMessage,
-    PublishPolicy, Publisher, RetryDeclaration, Serialized, Subscribe, Subscriber,
+    PublishPolicy, Publisher, RetryDeclaration, Serialized, Settle, Subscribe, Subscriber,
     SubscriptionSource, nonzero,
 };
 use ruststream_gcp_pubsub::{
@@ -947,7 +947,7 @@ async fn a_publish_to_a_topic_that_is_not_there_names_the_topic() {
         .expect_err("a publish to a topic that is not there must fail");
 
     assert!(
-        matches!(err, PubSubError::Publish { ref topic, .. } if topic.ends_with(&name)),
+        matches!(err.error(), PubSubError::Publish { topic, .. } if topic.ends_with(&name)),
         "the error must name the topic it could not reach: {err}",
     );
 

@@ -49,7 +49,7 @@ fn app() -> impl App {
                 )
                 .batch(nonzero!(50))
                 .build(),
-            );
+            )
         },
     )
 }

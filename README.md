@@ -43,12 +43,12 @@ codecs and middleware come from the framework; this crate is the transport.
 
 ```toml
 [dependencies]
-ruststream = { version = "0.7", features = ["macros", "json"] }
-ruststream-gcp-pubsub = "0.7"
+ruststream = { version = "0.8", features = ["macros", "json"] }
+ruststream-gcp-pubsub = "0.8"
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
-ruststream-gcp-pubsub = { version = "0.7", features = ["testing"] }
+ruststream-gcp-pubsub = { version = "0.8", features = ["testing"] }
 ```
 
 ## Write a service
@@ -85,9 +85,7 @@ async fn handle(order: &Order, Out(out): Out<impl Publisher>) -> HandlerOutcome 
 fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         PubSubBroker::new("my-project").emulator("localhost:8085"),
-        |b| {
-            b.include(handle).out(DefaultSlot, Publish::default()).build();
-        },
+        |b| b.include(handle).out(DefaultSlot, Publish::default()).build(),
     )
 }
 ```

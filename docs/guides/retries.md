@@ -78,7 +78,7 @@ Pub/Sub counts attempts only on a subscription with a dead-letter policy, and it
 </TabItem>
 </Tabs>
 
-[`max_attempts`](api:ruststream::runtime::Mounting::max_attempts) and [`dead_letter`](api:ruststream::runtime::Mounting::dead_letter) become the subscription's own dead-letter policy, written at startup.
+[`max_attempts`](api:ruststream::runtime::RouterWith::max_attempts) and [`dead_letter`](api:ruststream::runtime::RouterWith::dead_letter) become the subscription's own dead-letter policy, written at startup.
 After the fifth delivery Pub/Sub stops delivering the payment and publishes it to `payments-dead`, payload and attributes as they arrived.
 The service publishes nothing itself, so a crash cannot lose the move.
 Pub/Sub accepts a cap from 5 to 100; anything else, or one half of the pair alone, fails the startup.

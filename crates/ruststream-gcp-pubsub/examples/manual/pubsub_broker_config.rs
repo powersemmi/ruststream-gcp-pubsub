@@ -5,6 +5,8 @@
 //! cargo test --example manual_pubsub_broker_config --features testing,asyncapi
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 // A plain build compiles the service; the tests that use it exist only in the test build.
 #![cfg_attr(not(test), allow(dead_code, unused_imports))]
 
@@ -45,7 +47,7 @@ const KEY_FILE: &str = "/var/secrets/pubsub/key.json";
 
 fn service(broker: PubSubBroker) -> impl App<State = ()> {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker_labeled("pubsub", broker, |b| {
-        b.include(subscriber("orders-workers", Place).build());
+        b.include(subscriber("orders-workers", Place).build())
     })
 }
 

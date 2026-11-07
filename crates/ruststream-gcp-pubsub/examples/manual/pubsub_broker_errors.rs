@@ -66,7 +66,7 @@ fn app() -> impl App {
         |b| {
             b.include(subscriber("orders-workers", Ship).build())
                 .out(DefaultSlot, Publish::default())
-                .build();
+                .build()
         },
     )
 }
@@ -161,12 +161,10 @@ mod tests {
                 ready(Ok(()))
             }
         }
-        let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-            PubSubBroker::new("my-project"),
-            |b| {
-                b.include(subscriber(GooglePubSub::new(""), Nowhere).build());
-            },
-        );
+        let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
+            .with_broker(PubSubBroker::new("my-project"), |b| {
+                b.include(subscriber(GooglePubSub::new(""), Nowhere).build())
+            });
 
         let failed = TestApp::start(app).await.err();
         let failed = failed.expect("startup took an empty subscription name");
